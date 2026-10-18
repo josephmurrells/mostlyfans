@@ -1,9 +1,9 @@
 use eframe::egui::{self, RichText};
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::ControlState;
 
 use crate::format;
 
-pub fn show(ui: &mut egui::Ui, state: &ServiceState) {
+pub fn show(ui: &mut egui::Ui, state: &ControlState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading("Temperatures");
         egui::Grid::new("sensors")

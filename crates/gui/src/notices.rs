@@ -1,0 +1,48 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Topic {
+    Guardian,
+    GuardianJob,
+    Autostart,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Notices {
+    entries: Arc<Mutex<BTreeMap<Topic, String>>>,
+}
+
+impl Notices {
+    fn entries(&self) -> MutexGuard<'_, BTreeMap<Topic, String>> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn set(&self, topic: Topic, text: impl Into<String>) {
+        self.entries().insert(topic, text.into());
+    }
+
+    pub fn clear(&self, topic: Topic) {
+        self.entries().remove(&topic);
+    }
+
+    pub fn list(&self) -> Vec<String> {
+        self.entries().values().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notices_are_replaced_per_topic() {
+        let notices = Notices::default();
+        notices.set(Topic::Guardian, "first");
+        notices.set(Topic::Autostart, "path");
+        notices.set(Topic::Guardian, "second");
+        assert_eq!(notices.list(), vec!["second", "path"]);
+        notices.clear(Topic::Guardian);
+        assert_eq!(notices.list(), vec!["path"]);
+    }
+}

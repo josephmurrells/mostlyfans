@@ -1,19 +1,27 @@
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText, ViewportCommand};
 use fanforge_core::config::Config;
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::{ControlState, HardwareStatus};
 
-use crate::connection::{Connection, LinkStatus, Outgoing, RequestKind};
+use crate::autostart::AutostartState;
+use crate::banner;
+use crate::connection::{Connection, ControlStatus, Request, RequestKind};
 use crate::curves::CurveEditor;
 use crate::format;
-use crate::settings::SettingsView;
+use crate::instance::ShowGate;
+use crate::notices::Notices;
+use crate::pawnio_setup::{OnInstalled, PawnIoPanel};
+use crate::settings::{AutostartPanel, SettingsView};
 use crate::tray::{Tray, TrayAction, reveal};
 use crate::{fans, sensors};
 
 const NOTICE_DURATION: Duration = Duration::from_secs(5);
 const APPLY_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+const VISIBLE_REFRESH: Duration = Duration::from_millis(500);
+const HIDDEN_REFRESH: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -29,7 +37,11 @@ struct PendingApply {
 }
 
 pub struct FanForgeApp {
+    show_gate: ShowGate,
     connection: Connection,
+    notices: Notices,
+    autostart: AutostartPanel,
+    pawnio: PawnIoPanel,
     tray: Option<Tray>,
     draft: Option<Config>,
     dirty: bool,
@@ -41,9 +53,26 @@ pub struct FanForgeApp {
 }
 
 impl FanForgeApp {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(
+        ctx: &egui::Context,
+        connection: Connection,
+        notices: Notices,
+        show_gate: ShowGate,
+        autostart: AutostartState,
+        on_driver_installed: OnInstalled,
+    ) -> Self {
         let repaint_ctx = ctx.clone();
-        let connection = Connection::start(move || repaint_ctx.request_repaint());
+        let refresher = thread::Builder::new()
+            .name("tray-refresh".into())
+            .spawn(move || {
+                loop {
+                    thread::sleep(HIDDEN_REFRESH);
+                    repaint_ctx.request_repaint();
+                }
+            });
+        if let Err(error) = refresher {
+            tracing::warn!(%error, "tray refresh unavailable while the window is hidden");
+        }
         let tray = match Tray::new(ctx) {
             Ok(tray) => Some(tray),
             Err(error) => {
@@ -53,6 +82,10 @@ impl FanForgeApp {
         };
         Self {
             connection,
+            notices,
+            autostart: AutostartPanel::new(autostart),
+            pawnio: PawnIoPanel::new(on_driver_installed),
+            show_gate,
             tray,
             draft: None,
             dirty: false,
@@ -71,7 +104,7 @@ impl FanForgeApp {
     fn apply(&mut self) {
         if let Some(draft) = &self.draft {
             self.connection
-                .send(Outgoing::ReplaceConfig(Box::new(draft.clone())));
+                .send(Request::ReplaceConfig(Box::new(draft.clone())));
             self.pending = Some(PendingApply {
                 config: draft.clone(),
                 accepted_at: None,
@@ -99,7 +132,7 @@ impl FanForgeApp {
         }
     }
 
-    fn settle_pending(&mut self, state: Option<&ServiceState>) {
+    fn settle_pending(&mut self, state: Option<&ControlState>) {
         let Some(pending) = &self.pending else {
             return;
         };
@@ -115,7 +148,7 @@ impl FanForgeApp {
         }
     }
 
-    fn handle_tray(&mut self, ctx: &egui::Context, state: Option<&ServiceState>) {
+    fn handle_tray(&mut self, ctx: &egui::Context, state: Option<&ControlState>) {
         let Some(tray) = self.tray.as_mut() else {
             return;
         };
@@ -139,21 +172,20 @@ impl FanForgeApp {
                     if let Some(draft) = self.draft.as_mut() {
                         draft.active_profile = name.clone();
                     }
-                    self.connection.send(Outgoing::SetActiveProfile(name));
+                    self.connection.send(Request::SetActiveProfile(name));
                 }
             }
         }
     }
 
-    fn header(&mut self, ui: &mut egui::Ui, link: &LinkStatus, state: Option<&ServiceState>) {
+    fn header(&mut self, ui: &mut egui::Ui, status: &ControlStatus, state: Option<&ControlState>) {
         ui.horizontal(|ui| {
             ui.heading("FanForge");
             ui.separator();
-            match link {
-                LinkStatus::Connected => ui.colored_label(format::OK, "Service connected"),
-                LinkStatus::Connecting => ui.colored_label(format::MUTED, "Connecting…"),
-                LinkStatus::Disconnected(reason) => {
-                    ui.colored_label(format::DANGER, format!("Service: {reason}"))
+            match status {
+                ControlStatus::Running => ui.colored_label(format::OK, "Fan control active"),
+                ControlStatus::Stopped(_) => {
+                    ui.colored_label(format::DANGER, "Fan control stopped")
                 }
             };
             if let Some(state) = state {
@@ -188,11 +220,23 @@ impl FanForgeApp {
                 }
             });
         });
+        if let ControlStatus::Stopped(reason) = status {
+            let restart = banner::with_action(ui, format::DANGER, reason, "Restart control");
+            if restart && let Err(error) = self.connection.restart() {
+                self.notify(format!("Restart failed: {error}"), format::DANGER);
+            }
+        }
+        for notice in self.notices.list() {
+            banner::show(ui, format::WARN, &notice);
+        }
+        let driver_missing =
+            state.is_some_and(|state| state.hardware == HardwareStatus::DriverMissing);
+        self.pawnio.show(ui, driver_missing);
         let Some(state) = state else {
             return;
         };
         if state.critical {
-            banner(
+            banner::show(
                 ui,
                 format::DANGER,
                 "Critical temperature: every fan is at 100%",
@@ -204,14 +248,14 @@ impl FanForgeApp {
             } else {
                 format!("{} is running", state.conflicts.join(", "))
             };
-            banner(
+            banner::show(
                 ui,
                 format::WARN,
                 &format!("Monitor-only mode: {reason}. Fans are left to the BIOS."),
             );
         }
         for warning in &state.warnings {
-            banner(ui, format::WARN, warning);
+            banner::show(ui, format::WARN, warning);
         }
     }
 
@@ -241,21 +285,16 @@ impl FanForgeApp {
     }
 }
 
-fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.18))
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(4.0)
-        .inner_margin(6.0)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.colored_label(color, text);
-        });
+impl Drop for FanForgeApp {
+    fn drop(&mut self) {
+        self.show_gate.close();
+    }
 }
 
 impl eframe::App for FanForgeApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let (_, state) = self.connection.view();
+        ctx.request_repaint_after(VISIBLE_REFRESH);
         self.handle_tray(ctx, state.as_deref());
         self.handle_results();
         self.settle_pending(state.as_deref());
@@ -268,17 +307,17 @@ impl eframe::App for FanForgeApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let (link, state): (LinkStatus, Option<Arc<ServiceState>>) = self.connection.view();
+        let (status, state): (ControlStatus, Option<Arc<ControlState>>) = self.connection.view();
         if !self.dirty {
             self.draft = state.as_ref().map(|state| state.config.clone());
         }
 
-        egui::Panel::top("header").show(ui, |ui| self.header(ui, &link, state.as_deref()));
+        egui::Panel::top("header").show(ui, |ui| self.header(ui, &status, state.as_deref()));
         egui::Panel::bottom("footer").show(ui, |ui| self.footer(ui));
         egui::CentralPanel::default().show(ui, |ui| {
             let (Some(state), Some(draft)) = (state.as_deref(), self.draft.as_mut()) else {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Waiting for the FanForge service. Install it with `fanforge-service install` as administrator.");
+                    ui.label("Starting fan control…");
                 });
                 return;
             };
@@ -289,7 +328,10 @@ impl eframe::App for FanForgeApp {
                     sensors::show(ui, state);
                     false
                 }
-                Tab::Settings => self.settings.show(ui, state, draft),
+                Tab::Settings => {
+                    self.settings
+                        .show(ui, state, draft, &mut self.autostart, &self.notices)
+                }
             };
             self.dirty |= changed;
         });

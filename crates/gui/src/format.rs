@@ -1,7 +1,7 @@
 use eframe::egui::Color32;
 use fanforge_core::config::{Config, FanMode};
 use fanforge_core::engine::FanState;
-use fanforge_core::protocol::{HardwareStatus, ServiceState};
+use fanforge_core::state::{ControlState, HardwareStatus};
 use fanforge_core::telemetry::FanReading;
 use fanforge_core::{Duty, FanId};
 
@@ -27,6 +27,7 @@ pub fn fan_state(state: &FanState) -> (String, Color32) {
 pub fn hardware(status: &HardwareStatus) -> (String, Color32) {
     match status {
         HardwareStatus::Ready => ("Hardware ready".to_owned(), OK),
+        HardwareStatus::DriverMissing => ("PawnIO driver not installed".to_owned(), DANGER),
         HardwareStatus::Suspended => ("System suspended".to_owned(), MUTED),
         HardwareStatus::Unavailable(reason) => (format!("Hardware unavailable: {reason}"), DANGER),
     }
@@ -57,7 +58,7 @@ pub fn mode_name(mode: &FanMode) -> &'static str {
     }
 }
 
-pub fn fan_name(config: &Config, state: &ServiceState, fan: &FanId) -> String {
+pub fn fan_name(config: &Config, state: &ControlState, fan: &FanId) -> String {
     config
         .fans
         .get(fan)

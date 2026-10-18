@@ -1,11 +1,11 @@
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use fanforge_core::FanId;
 use fanforge_core::config::Config;
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::ControlState;
 
 pub enum LoopMessage {
     ReplaceConfig(Box<Config>, SyncSender<Result<(), String>>),
@@ -13,6 +13,7 @@ pub enum LoopMessage {
     Identify(FanId),
     Suspend(SyncSender<()>),
     Resume,
+    RetryHardware,
     Stop,
 }
 
@@ -70,16 +71,36 @@ impl Heartbeat {
 
 #[derive(Debug)]
 pub struct Shared {
-    pub state: RwLock<Option<ServiceState>>,
+    pub state: RwLock<Option<Arc<ControlState>>>,
     pub heartbeat: Heartbeat,
+    halted: AtomicBool,
 }
 
-impl Shared {
-    pub fn new() -> Self {
+impl Default for Shared {
+    fn default() -> Self {
         Self {
             state: RwLock::new(None),
             heartbeat: Heartbeat::new(),
+            halted: AtomicBool::new(false),
         }
+    }
+}
+
+impl Shared {
+    pub fn halt(&self) {
+        self.halted.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_halted(&self) -> bool {
+        self.halted.load(Ordering::SeqCst)
+    }
+
+    pub fn halt_flag(&self) -> &AtomicBool {
+        &self.halted
+    }
+
+    pub fn state(&self) -> Option<Arc<ControlState>> {
+        self.state.read().ok().and_then(|state| state.clone())
     }
 }
 
@@ -100,5 +121,14 @@ mod tests {
         heartbeat.beat(Duration::from_millis(1), false);
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(heartbeat.stalled_for(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn halting_is_sticky() {
+        let shared = Shared::default();
+        assert!(!shared.is_halted());
+        shared.halt();
+        shared.halt();
+        assert!(shared.is_halted());
     }
 }

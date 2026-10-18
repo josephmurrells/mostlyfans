@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -342,8 +343,20 @@ impl<P: PortIo> It8655e<P> {
     }
 
     pub fn set_duty(&mut self, channel: usize, duty: u8) -> Result<(), HwError> {
+        self.set_duty_unless_halted(channel, duty, &AtomicBool::new(false))
+    }
+
+    pub fn set_duty_unless_halted(
+        &mut self,
+        channel: usize,
+        duty: u8,
+        halted: &AtomicBool,
+    ) -> Result<(), HwError> {
         check_channel(channel)?;
         self.transaction(|ec| {
+            if halted.load(Ordering::SeqCst) {
+                return Err(HwError::Halted);
+            }
             let main = ec.read(MAIN_CONTROL_REG)?;
             let bit = 1 << channel;
             if main & bit == 0 {
