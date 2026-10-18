@@ -1,0 +1,17 @@
+[package]
+name = "fanforge-ipc"
+description = "Named-pipe transport between the FanForge service and its clients."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fanforge-core.workspace = true
+fanforge-win.workspace = true
+thiserror.workspace = true
+windows.workspace = true
+windows-service.workspace = true
+
+[lints]
+workspace = true

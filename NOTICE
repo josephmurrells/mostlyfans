@@ -1,0 +1,17 @@
+FanForge includes or is derived from the following third-party work.
+
+PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin)
+  Copyright (C) namazso
+  https://github.com/namazso/PawnIO.Modules
+  Licensed under the GNU Lesser General Public License v2.1.
+  The binaries are the signed builds redistributed by LibreHardwareMonitor.
+
+LibreHardwareMonitor
+  https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+  Licensed under the Mozilla Public License 2.0.
+  IT8655E register addresses, the bank-select fix for issue #780, and the PawnIO
+  ioctl interface were taken from its source as reference; no files were copied.
+
+Linux k10temp driver
+  https://github.com/torvalds/linux/blob/master/drivers/hwmon/k10temp.c
+  Reference for AMD family 17h/19h temperature register decoding.
