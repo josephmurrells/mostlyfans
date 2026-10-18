@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use fanforge_core::board::{BoardIdentity, BoardInfo, BoardProfile, FanLimits};
 use fanforge_core::engine::{Action, Command};
@@ -36,12 +37,13 @@ pub fn channel_index(fan: &FanId) -> Option<usize> {
 pub fn force_all_auto<P: PortIo>(
     chip: &mut It8655e<P>,
     snapshot: &BiosSnapshot,
+    budget: Duration,
 ) -> Result<(), HwError> {
+    let deadline = Instant::now() + budget;
     let mut first_error = None;
     for channel in 0..FAN_CHANNELS {
-        if let Err(error) =
-            chip.restore_patiently(channel, snapshot.channel(channel), RELEASE_BUDGET)
-        {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if let Err(error) = chip.restore_patiently(channel, snapshot.channel(channel), remaining) {
             tracing::error!(channel, %error, "failed to return channel to BIOS control");
             first_error.get_or_insert(error);
         }
@@ -131,6 +133,10 @@ impl<P: PortIo> Hardware<P> {
         &self.snapshot
     }
 
+    pub fn owns_any(&self) -> bool {
+        !self.snapshot.owned.is_empty()
+    }
+
     fn persist_snapshot(&self) -> Result<(), HwError> {
         self.snapshot
             .save(&self.snapshot_path)
@@ -215,11 +221,14 @@ impl<P: PortIo> Hardware<P> {
         sensors
     }
 
-    pub fn apply(&mut self, command: &Command) -> Result<(), HwError> {
+    pub fn apply(&mut self, command: &Command, halted: &AtomicBool) -> Result<(), HwError> {
         let channel = channel_index(&command.fan)
             .ok_or_else(|| HwError::UnknownFan(command.fan.to_string()))?;
         match command.action {
             Action::SetDuty(duty) => {
+                if halted.load(Ordering::SeqCst) {
+                    return Err(HwError::Halted);
+                }
                 if !self.snapshot.is_owned(channel) {
                     let current = self.chip.channel_states()?[channel];
                     self.snapshot.claim(channel, current);
@@ -228,7 +237,8 @@ impl<P: PortIo> Hardware<P> {
                         return Err(error);
                     }
                 }
-                self.chip.set_duty(channel, duty.to_raw())
+                self.chip
+                    .set_duty_unless_halted(channel, duty.to_raw(), halted)
             }
             Action::Release => {
                 self.chip.restore_patiently(
@@ -286,6 +296,8 @@ fn sensor(id: &str, label: &str, celsius: Option<f32>) -> SensorReading {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static RUNNING: AtomicBool = AtomicBool::new(false);
     use crate::board::embedded_profiles;
     use crate::ite::fake::{FakeIte, SharedFake};
 
@@ -326,20 +338,26 @@ mod tests {
         let mut hardware = hardware("own", &fake, &path);
         hardware.initialize_channels(true).unwrap();
         hardware
-            .apply(&Command {
-                fan: "pwm2".into(),
-                action: Action::SetDuty(Duty::new(60.0)),
-            })
+            .apply(
+                &Command {
+                    fan: "pwm2".into(),
+                    action: Action::SetDuty(Duty::new(60.0)),
+                },
+                &RUNNING,
+            )
             .unwrap();
         let saved = BiosSnapshot::load(&path).unwrap();
         assert!(saved.is_owned(1));
         assert_eq!(saved.channel(1).unwrap().duty, 0x40);
 
         hardware
-            .apply(&Command {
-                fan: "pwm2".into(),
-                action: Action::Release,
-            })
+            .apply(
+                &Command {
+                    fan: "pwm2".into(),
+                    action: Action::Release,
+                },
+                &RUNNING,
+            )
             .unwrap();
         assert!(!BiosSnapshot::load(&path).unwrap().is_owned(1));
         assert_eq!(fake.with(|chip| chip.reg(0x6B)), 0x40);
@@ -354,10 +372,13 @@ mod tests {
             let mut hardware = hardware("crash-a", &fake, &path);
             hardware.initialize_channels(true).unwrap();
             hardware
-                .apply(&Command {
-                    fan: "pwm1".into(),
-                    action: Action::SetDuty(Duty::new(35.0)),
-                })
+                .apply(
+                    &Command {
+                        fan: "pwm1".into(),
+                        action: Action::SetDuty(Duty::new(35.0)),
+                    },
+                    &RUNNING,
+                )
                 .unwrap();
         }
         let mut restarted = hardware("crash-b", &fake, &path);
@@ -374,11 +395,37 @@ mod tests {
         std::fs::write(dir.path().join("missing-dir"), b"file, not a directory").unwrap();
         let fake = SharedFake::new(FakeIte::new());
         let mut hardware = hardware("refuse", &fake, &path);
-        let result = hardware.apply(&Command {
-            fan: "pwm1".into(),
-            action: Action::SetDuty(Duty::new(50.0)),
-        });
+        let result = hardware.apply(
+            &Command {
+                fan: "pwm1".into(),
+                action: Action::SetDuty(Duty::new(50.0)),
+            },
+            &RUNNING,
+        );
         assert!(result.is_err());
         assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x80);
+    }
+
+    #[test]
+    fn a_halted_flag_refuses_manual_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let fake = SharedFake::new(FakeIte::new());
+        let mut hardware = hardware("halted", &fake, &path);
+        let halted = AtomicBool::new(true);
+        let command = Command {
+            fan: "pwm1".into(),
+            action: Action::SetDuty(Duty::new(50.0)),
+        };
+        assert!(matches!(
+            hardware.apply(&command, &halted),
+            Err(HwError::Halted)
+        ));
+        assert!(matches!(
+            hardware.chip.set_duty_unless_halted(0, 0x10, &halted),
+            Err(HwError::Halted)
+        ));
+        assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x80);
+        assert!(!hardware.owns_any());
     }
 }

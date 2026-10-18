@@ -12,12 +12,13 @@ publish = false
 fanforge-core = { path = "crates/core" }
 fanforge-win = { path = "crates/win" }
 fanforge-hw = { path = "crates/hw" }
-fanforge-ipc = { path = "crates/ipc" }
+fanforge-control = { path = "crates/control" }
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 eframe = "0.37"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tempfile = "3"
 thiserror = "2.0"
 toml = "1.1"
@@ -28,15 +29,25 @@ tray-icon = "0.26"
 windows-service = "0.8"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Pipes",
+    "Win32_System_Power",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [workspace.lints.rust]

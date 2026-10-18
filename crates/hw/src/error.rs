@@ -4,9 +4,7 @@ use thiserror::Error;
 pub enum HwError {
     #[error("the PawnIO driver is not installed; install it from https://pawnio.eu")]
     PawnIoMissing,
-    #[error(
-        "access to the PawnIO driver was denied; run as administrator or as the FanForge service"
-    )]
+    #[error("access to the PawnIO driver was denied; run FanForge as administrator")]
     AccessDenied,
     #[error("PawnIO call `{call}` failed: {source}")]
     Driver {
@@ -48,6 +46,8 @@ pub enum HwError {
     UnsupportedCpu(String),
     #[error("unknown fan `{0}`")]
     UnknownFan(String),
+    #[error("fan control is halted; manual speeds are refused")]
+    Halted,
     #[error(transparent)]
     Store(#[from] fanforge_core::store::StoreError),
 }

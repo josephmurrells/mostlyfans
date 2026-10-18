@@ -1,7 +1,7 @@
 use eframe::egui::{self, ComboBox, DragValue, RichText};
 use fanforge_core::config::{Config, FanMode};
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::ControlState;
 use fanforge_core::{CurveId, SensorId};
 
 use crate::curve_plot::{self, Live};
@@ -14,7 +14,7 @@ pub struct CurveEditor {
 }
 
 impl CurveEditor {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &ServiceState, draft: &mut Config) -> bool {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
         let mut changed = false;
         if self
             .selected
@@ -51,7 +51,7 @@ impl CurveEditor {
         changed
     }
 
-    fn list(&mut self, ui: &mut egui::Ui, state: &ServiceState, draft: &mut Config) -> bool {
+    fn list(&mut self, ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
         let mut changed = false;
         ui.heading("Curves");
         for curve in &draft.curves {
@@ -151,7 +151,7 @@ impl CurveEditor {
     fn editor(
         &mut self,
         ui: &mut egui::Ui,
-        state: &ServiceState,
+        state: &ControlState,
         curve: &mut CurveDef,
         others: &[(CurveId, String)],
     ) -> bool {
@@ -227,7 +227,7 @@ fn sensor_of(kind: &mut CurveKind) -> Option<&mut SensorId> {
     }
 }
 
-fn default_sensor(state: &ServiceState) -> SensorId {
+fn default_sensor(state: &ControlState) -> SensorId {
     state
         .readings
         .sensors
@@ -237,7 +237,7 @@ fn default_sensor(state: &ServiceState) -> SensorId {
         .map_or_else(|| SensorId::new("cpu/tctl"), |sensor| sensor.id.clone())
 }
 
-fn sensor_picker(ui: &mut egui::Ui, state: &ServiceState, sensor: &mut SensorId) -> bool {
+fn sensor_picker(ui: &mut egui::Ui, state: &ControlState, sensor: &mut SensorId) -> bool {
     let mut changed = false;
     let selected = state
         .readings
@@ -272,7 +272,7 @@ fn sensor_picker(ui: &mut egui::Ui, state: &ServiceState, sensor: &mut SensorId)
     changed
 }
 
-fn live_output(state: &ServiceState, curve: &CurveId) -> Option<f32> {
+fn live_output(state: &ControlState, curve: &CurveId) -> Option<f32> {
     let modes = state.config.active_modes()?;
     let fan = modes
         .iter()
