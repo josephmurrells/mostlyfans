@@ -217,10 +217,10 @@ pub fn show(
             changed = true;
         }
     }
-    let idle = interaction.dragging.is_none() && !ui.input(|input| input.pointer.primary_down());
-    if response.drag_stopped() {
+    if !response.dragged_by(PointerButton::Primary) {
         interaction.dragging = None;
     }
+    let idle = interaction.dragging.is_none() && !ui.input(|input| input.pointer.primary_down());
     let removing = if response.double_clicked() && idle {
         match (nearest, pointer) {
             (None, Some(cursor)) if points.len() < limits.max => {
@@ -242,7 +242,6 @@ pub fn show(
     if let Some(index) = removing {
         if points.len() > limits.min {
             points.remove(index);
-            interaction.dragging = None;
             changed = true;
         } else {
             refused = Some(Refusal::Remove);
@@ -754,6 +753,16 @@ mod tests {
         let to = screen(&harness, 70.0, 70.0);
         drag_with(&mut harness, &[from, to], PointerButton::Secondary);
         assert_eq!(harness.state().points, three_points());
+    }
+
+    #[test]
+    fn a_drag_whose_release_was_missed_does_not_block_removal() {
+        let mut harness = harness(three_points(), GRAPH);
+        harness.state_mut().interaction.dragging = Some(Drag::start(&three_points(), 1));
+        let pos = screen(&harness, 60.0, 50.0);
+        click_with(&mut harness, pos, PointerButton::Secondary);
+        assert_eq!(harness.state().points.len(), 2);
+        assert_eq!(harness.state().interaction.dragging, None);
     }
 
     #[test]
