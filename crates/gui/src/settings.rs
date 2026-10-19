@@ -2,7 +2,7 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Slider, vec2};
+use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Slider, SliderClamping, vec2};
 use fanforge_core::config::{
     Config, MAX_INTERVAL_MS, MAX_NAME_LEN, MAX_PROFILES, MIN_INTERVAL_MS, Profile,
 };
@@ -457,7 +457,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                 .add(
                     Slider::new(&mut safety.critical_c, 40.0..=110.0)
                         .suffix(" °C")
-                        .step_by(0.5),
+                        .fixed_decimals(1).clamping(SliderClamping::Edits),
                 )
                 .labelled_by(label.id)
                 .changed();
@@ -469,7 +469,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                 .add(
                     Slider::new(&mut safety.release_c, 0.0..=max_release)
                         .suffix(" °C")
-                        .step_by(0.5),
+                        .fixed_decimals(1).clamping(SliderClamping::Edits),
                 )
                 .labelled_by(label.id)
                 .changed();

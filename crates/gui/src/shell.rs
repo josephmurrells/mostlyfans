@@ -60,6 +60,7 @@ pub struct Shell {
     dirty: bool,
     pending: Option<PendingApply>,
     switch_prompt: Option<String>,
+    queued_switch: Option<String>,
     profile_override: Option<(String, Instant)>,
     history: History,
     alerts: AlertArea,
@@ -95,6 +96,7 @@ impl Shell {
             dirty: false,
             pending: None,
             switch_prompt: None,
+            queued_switch: None,
             profile_override: None,
             history: History::default(),
             alerts: AlertArea::default(),
@@ -121,13 +123,23 @@ impl Shell {
         if let Some(state) = &state {
             self.history.record(state, Instant::now());
         }
-        self.handle_results();
+        self.handle_results(state.as_deref());
         self.settle_pending(state.as_deref());
         self.autostart.poll(&self.notices);
     }
 
     pub fn request_profile(&mut self, name: String) -> bool {
-        if self.dirty {
+        let (_, state) = self.link.view();
+        if state
+            .as_deref()
+            .is_some_and(|state| self.shown_profile(state) == name)
+        {
+            return false;
+        }
+        if self.pending.is_some() {
+            self.queued_switch = Some(name);
+            false
+        } else if self.dirty {
             self.switch_prompt = Some(name);
             true
         } else {
@@ -161,7 +173,7 @@ impl Shell {
         self.pending = None;
     }
 
-    fn handle_results(&mut self) {
+    fn handle_results(&mut self, state: Option<&ControlState>) {
         for result in self.link.take_results() {
             match (result.kind, result.outcome) {
                 (RequestKind::Config, Ok(())) => {
@@ -171,12 +183,18 @@ impl Shell {
                 }
                 (RequestKind::Config, Err(message)) => {
                     self.pending = None;
+                    self.queued_switch = None;
                     self.toasts
                         .error(format!("Your changes were rejected: {message}"));
                 }
                 (RequestKind::Profile | RequestKind::Identify, Ok(())) => {}
                 (RequestKind::Profile, Err(message)) => {
-                    self.profile_override = None;
+                    if let Some((name, _)) = self.profile_override.take()
+                        && let (Some(draft), Some(state)) = (self.draft.as_mut(), state)
+                        && draft.active_profile == name
+                    {
+                        draft.active_profile = state.config.active_profile.clone();
+                    }
                     self.toasts
                         .error(format!("The profile could not be switched: {message}"));
                 }
@@ -199,7 +217,17 @@ impl Shell {
             self.pending = None;
             self.dirty = false;
             self.draft = None;
-            self.toasts.info(Tone::Ok, "Changes applied");
+            if visible {
+                self.toasts.info(Tone::Ok, "Changes applied");
+            } else {
+                self.toasts.info(
+                    Tone::Warn,
+                    "Changes sent, but fan control has not confirmed them yet",
+                );
+            }
+            if let Some(name) = self.queued_switch.take() {
+                self.switch_profile(name);
+            }
         }
     }
 
@@ -287,7 +315,10 @@ impl Shell {
             .show(ui, |ui| {
                 ui.set_max_width(ui.available_width().min(CONTENT_MAX_WIDTH));
                 self.alert_area(ui, &status, state.as_deref());
-                self.page(ui, &status, state.as_deref(), overall.is_live());
+                let editable = self.pending.is_none();
+                ui.add_enabled_ui(editable, |ui| {
+                    self.page(ui, &status, state.as_deref(), overall.is_live());
+                });
             });
         self.profile_prompt(&ctx, state.as_deref());
         self.toasts.show(&ctx);
@@ -518,6 +549,10 @@ impl Shell {
             (Some(state), Some(draft)) => changes::count(&state.config, draft),
             _ => 0,
         };
+        let draft_has_profile = self
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.profiles.contains_key(&name));
         let mut choice = None;
         let modal = egui::Modal::new(Id::unique("switch-profile")).show(ctx, |ui| {
             ui.set_width(400.0);
@@ -529,7 +564,13 @@ impl Shell {
             )));
             ui.add_space(SPACE_L);
             ui.horizontal(|ui| {
-                if widgets::primary_button(ui, "Apply and switch").clicked() {
+                let exists = draft_has_profile;
+                let apply = ui.add_enabled_ui(exists, |ui| {
+                    widgets::primary_button(ui, "Apply and switch").on_disabled_hover_text(
+                        "Your unsaved changes rename or delete this profile",
+                    )
+                });
+                if apply.inner.clicked() {
                     choice = Some(SwitchChoice::ApplyAndSwitch);
                 }
                 if ui.button("Discard and switch").clicked() {

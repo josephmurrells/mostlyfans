@@ -84,7 +84,10 @@ impl Overall {
             Self::Unavailable => "Hardware unavailable".to_owned(),
             Self::Suspended => "Suspended".to_owned(),
             Self::MonitorOnly => "Monitor only".to_owned(),
-            Self::FanFault(count) => format!("{count} {} need attention", fans(*count)),
+            Self::FanFault(count) => {
+                let verb = if *count == 1 { "needs" } else { "need" };
+                format!("{count} {} {verb} attention", fans(*count))
+            }
             Self::Controlling(count) => format!("Controlling {count} {}", fans(*count)),
             Self::BiosOnly => "BIOS controls every fan".to_owned(),
         }

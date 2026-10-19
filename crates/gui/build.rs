@@ -8,7 +8,7 @@ mod glyph {
     include!("src/glyph.rs");
 }
 
-const ICON_SIZES: [u32; 4] = [16, 32, 48, 256];
+const ICON_SIZES: [u32; 5] = [16, 24, 32, 48, 64];
 
 fn bitmap(size: u32) -> Vec<u8> {
     let rgba = glyph::fan_rgba(size, glyph::BLUE);
@@ -47,7 +47,7 @@ fn icon_file(path: &Path) {
     }
     let mut offset = 6 + 16 * images.len() as u32;
     for (size, data) in &images {
-        let edge = if *size >= 256 { 0 } else { *size as u8 };
+        let edge = *size as u8;
         bytes.extend_from_slice(&[edge, edge, 0, 0]);
         bytes.extend_from_slice(&1_u16.to_le_bytes());
         bytes.extend_from_slice(&32_u16.to_le_bytes());

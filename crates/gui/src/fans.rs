@@ -1,4 +1,4 @@
-use eframe::egui::{self, ComboBox, Id, Margin, RichText, Slider, Stroke};
+use eframe::egui::{self, ComboBox, Id, Margin, RichText, Slider, SliderClamping, Stroke};
 use fanforge_core::config::{Config, FanMode, FanSettings, MAX_NAME_LEN};
 use fanforge_core::engine::FanState;
 use fanforge_core::state::ControlState;
@@ -244,6 +244,12 @@ impl FansView {
             subtitle.push_str(" · usually the CPU fan");
         }
         ui.label(widgets::muted(subtitle));
+        if let Some(reason) = page.identify_block {
+            ui.label(widgets::caption(
+                ui,
+                format!("Identify is unavailable: {reason}."),
+            ));
+        }
         ui.add_space(SPACE_S);
         ui.horizontal(|ui| {
             if let Some(status) = status {
@@ -516,7 +522,8 @@ fn control_card(
                 let slider = ui.add(
                     Slider::new(&mut percent, 0.0..=100.0)
                         .suffix("%")
-                        .integer()
+                        .fixed_decimals(0)
+                        .clamping(SliderClamping::Edits)
                         .text("Speed"),
                 );
                 if slider.changed() {
@@ -634,7 +641,7 @@ fn advanced_card(
                         ui.vertical(|ui| {
                             let mut percent = settings.min_duty.percent();
                             if ui
-                                .add(Slider::new(&mut percent, 0.0..=100.0).suffix("%").integer())
+                                .add(Slider::new(&mut percent, 0.0..=100.0).suffix("%").fixed_decimals(0).clamping(SliderClamping::Edits))
                                 .labelled_by(label.id)
                                 .changed()
                             {
@@ -655,7 +662,7 @@ fn advanced_card(
                         ui.vertical(|ui| {
                             let mut percent = settings.spin_up_duty.percent();
                             if ui
-                                .add(Slider::new(&mut percent, 0.0..=100.0).suffix("%").integer())
+                                .add(Slider::new(&mut percent, 0.0..=100.0).suffix("%").fixed_decimals(0).clamping(SliderClamping::Edits))
                                 .labelled_by(label.id)
                                 .changed()
                             {
