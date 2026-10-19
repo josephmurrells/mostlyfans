@@ -118,20 +118,27 @@ fn snapped(point: CurvePoint, step: f32) -> CurvePoint {
 
 fn neighbour_bounds(points: &[CurvePoint], index: usize) -> (f32, f32) {
     let temp = points[index].temp;
-    let others = points
+    let low = index
+        .checked_sub(1)
+        .and_then(|before| points.get(before))
+        .map_or(0.0, |point| point.temp);
+    let high = points.get(index + 1).map_or(MAX_TEMP, |point| point.temp);
+    (low.min(high).min(temp), low.max(high).max(temp))
+}
+
+fn stacked_pick(points: &[CurvePoint], index: usize, rightward: bool) -> usize {
+    let target = points[index];
+    let mut stacked = points
         .iter()
         .enumerate()
-        .filter(|(other, _)| *other != index)
-        .map(|(_, point)| point.temp);
-    others.fold((0.0, MAX_TEMP), |(low, high), other| {
-        if other < temp {
-            (low.max(other), high)
-        } else if other > temp {
-            (low, high.min(other))
-        } else {
-            (low, high)
-        }
-    })
+        .filter(|(_, point)| **point == target)
+        .map(|(stacked, _)| stacked);
+    let picked = if rightward {
+        stacked.next_back()
+    } else {
+        stacked.next()
+    };
+    picked.unwrap_or(index)
 }
 
 fn snap_between(value: f32, step: f32, low: f32, high: f32) -> f32 {
@@ -203,9 +210,12 @@ pub fn show(
     let mut refused = None;
     if response.drag_started_by(PointerButton::Primary) {
         let origin = ui.input(|input| input.pointer.press_origin()).or(pointer);
+        let rightward = origin
+            .zip(pointer)
+            .is_some_and(|(origin, cursor)| cursor.x > origin.x);
         interaction.dragging = origin
             .and_then(|cursor| point_at(&mapping, points, cursor))
-            .map(|index| Drag::start(points, index));
+            .map(|index| Drag::start(points, stacked_pick(points, index, rightward)));
     }
     if response.dragged_by(PointerButton::Primary)
         && let (Some(drag), Some(cursor)) = (interaction.dragging, pointer)
@@ -224,7 +234,9 @@ pub fn show(
     let removing = if response.double_clicked() && idle {
         match (nearest, pointer) {
             (None, Some(cursor)) if points.len() < limits.max => {
-                points.push(snapped(mapping.to_curve(cursor), FINE_STEP));
+                let point = snapped(mapping.to_curve(cursor), FINE_STEP);
+                let at = points.partition_point(|existing| existing.temp <= point.temp);
+                points.insert(at, point);
                 changed = true;
                 None
             }
@@ -636,15 +648,11 @@ mod tests {
     }
 
     #[test]
-    fn neighbour_bounds_follow_temperature_order() {
-        let points = vec![
-            CurvePoint::new(70.0, 70.0),
-            CurvePoint::new(30.0, 30.0),
-            CurvePoint::new(50.0, 40.0),
-        ];
-        assert_eq!(neighbour_bounds(&points, 1), (0.0, 50.0));
-        assert_eq!(neighbour_bounds(&points, 2), (30.0, 70.0));
-        assert_eq!(neighbour_bounds(&points, 0), (50.0, MAX_TEMP));
+    fn neighbour_bounds_follow_index_order() {
+        let points = three_points();
+        assert_eq!(neighbour_bounds(&points, 0), (0.0, 60.0));
+        assert_eq!(neighbour_bounds(&points, 1), (30.0, 85.0));
+        assert_eq!(neighbour_bounds(&points, 2), (60.0, MAX_TEMP));
         assert_eq!(
             neighbour_bounds(&[CurvePoint::new(40.0, 40.0)], 0),
             (0.0, MAX_TEMP)
@@ -652,17 +660,99 @@ mod tests {
     }
 
     #[test]
-    fn tied_points_can_leave_the_tie_either_way() {
+    fn neighbour_bounds_stay_ordered_for_an_unsorted_list() {
+        let points = vec![
+            CurvePoint::new(70.0, 70.0),
+            CurvePoint::new(30.0, 30.0),
+            CurvePoint::new(50.0, 40.0),
+        ];
+        assert_eq!(neighbour_bounds(&points, 0), (0.0, 70.0));
+        assert_eq!(neighbour_bounds(&points, 1), (30.0, 70.0));
+        assert_eq!(neighbour_bounds(&points, 2), (30.0, MAX_TEMP));
+    }
+
+    #[test]
+    fn stacked_points_are_picked_by_drag_direction() {
         let stacked = vec![
             CurvePoint::new(20.0, 10.0),
             CurvePoint::new(50.0, 40.0),
-            CurvePoint::new(50.0, 50.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(90.0, 90.0),
+        ];
+        assert_eq!(stacked_pick(&stacked, 1, false), 1);
+        assert_eq!(stacked_pick(&stacked, 1, true), 2);
+        assert_eq!(stacked_pick(&stacked, 3, true), 3);
+    }
+
+    #[test]
+    fn a_stacked_point_can_be_dragged_out_either_way() {
+        let stacked = vec![
+            CurvePoint::new(20.0, 10.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(90.0, 90.0),
+        ];
+        let mut harness = harness(stacked, GRAPH);
+        let from = screen(&harness, 50.0, 40.0);
+        let to = screen(&harness, 70.0, 40.0);
+        drag_with(&mut harness, &[from, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(50.0, 40.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(70.0, 40.0));
+    }
+
+    #[test]
+    fn a_point_added_in_the_middle_is_kept_in_order_and_drags_in_place() {
+        let mut harness = harness(three_points(), GRAPH);
+        let pos = screen(&harness, 45.0, 20.0);
+        double_click(&mut harness, pos);
+        assert_eq!(harness.state().points[1], CurvePoint::new(45.0, 20.0));
+        assert_eq!(harness.state().points.len(), 4);
+        let to = screen(&harness, 47.0, 25.0);
+        drag_with(&mut harness, &[pos, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(47.0, 25.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(60.0, 50.0));
+    }
+
+    #[test]
+    fn tied_points_separate_by_index() {
+        let stacked = vec![
+            CurvePoint::new(20.0, 10.0),
+            CurvePoint::new(50.0, 40.0),
             CurvePoint::new(50.0, 60.0),
             CurvePoint::new(90.0, 90.0),
         ];
-        for index in 1..=3 {
-            assert_eq!(neighbour_bounds(&stacked, index), (20.0, 90.0));
-        }
+        assert_eq!(neighbour_bounds(&stacked, 1), (20.0, 50.0));
+        assert_eq!(neighbour_bounds(&stacked, 2), (50.0, 90.0));
+    }
+
+    #[test]
+    fn a_line_start_never_passes_its_end() {
+        let line = [CurvePoint::new(40.0, 30.0), CurvePoint::new(80.0, 100.0)];
+        assert_eq!(neighbour_bounds(&line, 0), (0.0, 80.0));
+        assert_eq!(neighbour_bounds(&line, 1), (40.0, MAX_TEMP));
+        let reversed = [CurvePoint::new(80.0, 30.0), CurvePoint::new(40.0, 100.0)];
+        assert_eq!(neighbour_bounds(&reversed, 0), (0.0, 80.0));
+        assert_eq!(neighbour_bounds(&reversed, 1), (40.0, MAX_TEMP));
+    }
+
+    #[test]
+    fn a_point_dragged_onto_its_neighbour_cannot_pass_it_on_a_later_drag() {
+        let mut harness = harness(three_points(), GRAPH);
+        let first = [
+            screen(&harness, 60.0, 50.0),
+            screen(&harness, 85.0, 60.0),
+            screen(&harness, 100.0, 60.0),
+        ];
+        drag_with(&mut harness, &first, PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(85.0, 60.0));
+        let second = [
+            screen(&harness, 85.0, 60.0),
+            screen(&harness, 100.0, 60.0),
+            screen(&harness, 115.0, 60.0),
+        ];
+        drag_with(&mut harness, &second, PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(85.0, 60.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(85.0, 100.0));
     }
 
     #[test]
