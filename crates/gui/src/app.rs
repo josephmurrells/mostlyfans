@@ -242,16 +242,14 @@ impl FanForgeApp {
                 "Critical temperature: every fan is at 100%",
             );
         }
-        if state.monitor_only {
-            let reason = if state.conflicts.is_empty() {
-                "this board has no control profile".to_owned()
-            } else {
-                format!("{} is running", state.conflicts.join(", "))
-            };
+        if state.monitor_only && !state.conflicts.is_empty() {
             banner::show(
                 ui,
                 format::WARN,
-                &format!("Monitor-only mode: {reason}. Fans are left to the BIOS."),
+                &format!(
+                    "Monitor-only mode: {} is running. Fans are left to the BIOS.",
+                    state.conflicts.join(", ")
+                ),
             );
         }
         for warning in &state.warnings {

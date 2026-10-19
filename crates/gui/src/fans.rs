@@ -41,11 +41,22 @@ fn fan_card(
         return false;
     };
     let status = state.fans.iter().find(|status| &status.id == fan);
-    let limits = state.limits.get(fan).copied().unwrap_or_default();
+    let hardware_limits = state.limits.get(fan).copied().unwrap_or_default();
+    let limits = hardware_limits.for_header(draft.settings(fan).case_fan);
+    let likely_cpu = state
+        .board
+        .as_ref()
+        .is_some_and(|board| board.likely_cpu_fan.as_ref() == Some(fan));
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format::fan_name(draft, state, fan)).heading());
-        ui.label(RichText::new(format!("({})", reading.label)).color(format::MUTED));
+        let name = format::fan_name(draft, state, fan);
+        ui.label(RichText::new(&name).heading());
+        if name != reading.label {
+            ui.label(RichText::new(format!("({})", reading.label)).color(format::MUTED));
+        }
+        if likely_cpu {
+            ui.label(RichText::new("usually the CPU fan").color(format::MUTED));
+        }
         ui.separator();
         ui.label(RichText::new(format::rpm(reading)).strong());
         ui.separator();
@@ -204,6 +215,26 @@ fn fan_card(
                 }
             });
             ui.horizontal(|ui| {
+                let response = ui
+                    .checkbox(
+                        &mut settings.case_fan,
+                        "Case fan (not the CPU fan or a pump)",
+                    )
+                    .on_hover_text(format!(
+                        "Lowers this header's floor from {} to {}; with 0 RPM allowed it may also stop",
+                        hardware_limits.floor,
+                        hardware_limits.for_header(true).floor
+                    ));
+                if response.changed() {
+                    settings.allow_stop &= settings.case_fan;
+                    settings_changed = true;
+                }
+                if settings.case_fan && likely_cpu {
+                    ui.colored_label(format::WARN, "This header is usually the CPU fan");
+                }
+            });
+            let limits = hardware_limits.for_header(settings.case_fan);
+            ui.horizontal(|ui| {
                 ui.label("Minimum duty");
                 let mut percent = settings.min_duty.percent();
                 if ui
@@ -213,9 +244,12 @@ fn fan_card(
                     settings.min_duty = Duty::new(percent);
                     settings_changed = true;
                 }
-                ui.label(
-                    RichText::new(format!("hardware floor {}", limits.floor)).color(format::MUTED),
-                );
+                if !settings.case_fan {
+                    ui.label(
+                        RichText::new(format!("safety floor {}", limits.floor))
+                            .color(format::MUTED),
+                    );
+                }
             });
             ui.horizontal(|ui| {
                 let response = ui.add_enabled(
@@ -227,9 +261,7 @@ fn fan_card(
                 );
                 settings_changed |= response.changed();
                 if !limits.stop_permitted {
-                    response.on_disabled_hover_text(
-                        "This header must keep spinning (CPU fan or unverified board profile)",
-                    );
+                    response.on_disabled_hover_text("Mark this header as a case fan first");
                 }
             });
             ui.horizontal(|ui| {

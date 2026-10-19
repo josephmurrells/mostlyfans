@@ -1,6 +1,6 @@
 # FanForge
 
-Rust fan control for Windows. Lists every motherboard fan, sets fixed speeds, and drives fans from temperature curves. It is built for the **ASUS PRIME B350-PLUS** (ITE IT8655E) and works from a cold boot without HWiNFO.
+Rust fan control for Windows. Lists every fan header the Super I/O chip exposes, sets fixed speeds, and drives fans from temperature curves. There are no per-motherboard profiles: headers show up as Fan 1, Fan 2, … and you rename them in the Fans tab once you know which is which. (Earlier builds named the PRIME B350-PLUS headers CPU_FAN, CHA_FAN1 and CHA_FAN2; those are now Fan 1–3.) The supported chip is the ITE IT8655E (developed on an ASUS PRIME B350-PLUS), and it works from a cold boot without HWiNFO.
 
 The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: the firmware leaves the IT8655E on the wrong EC bank, and FanForge selects bank 0 before every access.
 
@@ -85,8 +85,8 @@ fanforge-diag diff cold.json after-hwinfo.json
   - **Failed hardware:** if the hardware stops responding and can't be re-initialised, fans are released, through a fresh handle if needed, before it is dropped.
   - **Known limit:** "End process tree" kills both processes. Fans then stay at or above their floors until FanForge next starts and restores BIOS control. Power loss or a crash of Windows resets the chip to BIOS control.
 - **Floors and fallbacks:**
-  - Speed floors come from the board profile and are enforced by the control loop, whatever the config asks for.
-  - The PRIME B350-PLUS profile is still unverified, so every fan keeps a 30% floor and 0 RPM is disabled.
+  - FanForge can't tell for sure which header drives the CPU fan; header 1 is marked "usually the CPU fan" because that's the norm on ITE boards. Every header keeps a 30% floor with 0 RPM disabled until you tick **Case fan** in its settings. A case fan's floor drops to 20%, and it stops only if you also allow 0 RPM. The control loop enforces this whatever the config asks for.
+  - 30% may be too low for a pump, so set a higher minimum duty for it.
   - Until a curve's sensor has read healthy, the fan stays under BIOS control; if the sensor keeps failing, that fan goes to 100%.
   - A critical Tctl (85 °C by default), or a critical sensor that stops reporting, drives every fan to 100%.
 - **Conflicts:** when another fan controller is running (FanControl, SpeedFan, Fan Xpert, …), FanForge switches to monitor-only. It does not touch the chip at startup and only releases fans it drove itself.
@@ -97,7 +97,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 - Calibration
 - GPU temperature sensors (NVML)
 - MSI installer
-- Nuvoton chips and other boards
+- Nuvoton and other ITE chips
 - Code signing
 - Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes
 
