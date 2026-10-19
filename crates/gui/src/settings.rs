@@ -281,19 +281,9 @@ fn board(ui: &mut egui::Ui, state: &ControlState) {
             board.identity.manufacturer, board.identity.product
         ));
         ui.label(format!(
-            "Profile: {}  ·  Super I/O {:#06x}",
-            board.profile_name, board.chip_id
+            "Super I/O {:#06x}  ·  {} fan headers",
+            board.chip_id, board.fan_headers
         ));
-        let verified = if board.verified {
-            "verified"
-        } else {
-            "unverified (provisional header names)"
-        };
-        ui.label(RichText::new(verified).color(if board.verified {
-            format::OK
-        } else {
-            format::WARN
-        }));
     }
     ui.label(RichText::new(format!("Version {}", state.version)).color(format::MUTED));
 }

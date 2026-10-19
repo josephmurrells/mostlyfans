@@ -38,6 +38,7 @@ pub enum FanMode {
 #[serde(default)]
 pub struct FanSettings {
     pub name: Option<String>,
+    pub case_fan: bool,
     pub min_duty: Duty,
     pub allow_stop: bool,
     pub spin_up_duty: Duty,
@@ -47,6 +48,7 @@ impl Default for FanSettings {
     fn default() -> Self {
         Self {
             name: None,
+            case_fan: false,
             min_duty: Duty::OFF,
             allow_stop: false,
             spin_up_duty: Duty::new(50.0),
