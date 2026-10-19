@@ -15,6 +15,7 @@ use fanforge_hw::ite::{FAN_CHANNELS, It8655e, RegisterDump};
 use fanforge_hw::mutex::{ISA_BUS, NamedMutex};
 use fanforge_hw::pawnio;
 use fanforge_hw::port::LpcIo;
+use fanforge_hw::sensors;
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, force_all_auto, open_chip};
 use fanforge_win::InstanceMutex;
@@ -40,6 +41,8 @@ enum Command {
     Detect,
     #[command(about = "Print one round of fan and temperature readings")]
     Read,
+    #[command(about = "Print GPU and drive temperatures (no driver or elevation needed)")]
+    Temps,
     #[command(
         about = "Dump Super I/O config and every EC bank as JSON without changing chip state"
     )]
@@ -72,6 +75,7 @@ fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Detect => detect(),
         Command::Read => read(),
+        Command::Temps => temps(),
         Command::Dump { out } => dump(out.as_deref()),
         Command::Diff { before, after } => diff(&before, &after),
         Command::SetPwm {
@@ -111,6 +115,24 @@ fn detect() -> DiagResult {
         config.chip_id, config.version, config.base_address
     );
     println!("Fan headers: {FAN_CHANNELS}");
+    Ok(())
+}
+
+fn temps() -> DiagResult {
+    for mut source in sensors::default_sources() {
+        match source.read() {
+            Ok(readings) if readings.is_empty() => println!("{}: no sensors", source.name()),
+            Ok(readings) => {
+                for sensor in readings {
+                    let celsius = sensor
+                        .celsius
+                        .map_or_else(|| "n/a".to_owned(), |celsius| format!("{celsius:.1} °C"));
+                    println!("{:<32} {celsius:>9}  {}", sensor.label, sensor.id);
+                }
+            }
+            Err(error) => println!("{}: {error}", source.name()),
+        }
+    }
     Ok(())
 }
 
