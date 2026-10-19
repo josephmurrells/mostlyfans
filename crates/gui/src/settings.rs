@@ -1,8 +1,116 @@
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+
 use eframe::egui::{self, ComboBox, DragValue, RichText};
 use fanforge_core::config::{Config, MAX_INTERVAL_MS, MIN_INTERVAL_MS, Profile};
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::ControlState;
 
+use crate::autostart::{self, AutostartState};
 use crate::format;
+use crate::notices::{Notices, Topic};
+
+type AutostartOutcome = (AutostartState, Option<String>);
+
+#[derive(Debug)]
+pub struct AutostartPanel {
+    state: AutostartState,
+    error: Option<String>,
+    pending: Option<Receiver<AutostartOutcome>>,
+}
+
+impl AutostartPanel {
+    pub fn new(state: AutostartState) -> Self {
+        Self {
+            state,
+            error: None,
+            pending: None,
+        }
+    }
+
+    fn apply(&mut self, enable: bool, ctx: &egui::Context) {
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let ctx = ctx.clone();
+        let spawned = thread::Builder::new()
+            .name("autostart".into())
+            .spawn(move || {
+                let result = if enable {
+                    autostart::enable()
+                } else {
+                    autostart::disable()
+                };
+                let error = result.err().map(|error| error.to_string());
+                done_tx.send((autostart::state(), error)).ok();
+                ctx.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.pending = Some(done_rx),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn poll(&mut self, notices: &Notices) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        let outcome = match pending.try_recv() {
+            Ok(outcome) => outcome,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => (
+                self.state.clone(),
+                Some("the autostart change stopped unexpectedly".to_owned()),
+            ),
+        };
+        (self.state, self.error) = outcome;
+        self.pending = None;
+        if !matches!(self.state, AutostartState::Mismatch(_)) {
+            notices.clear(Topic::Autostart);
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, notices: &Notices) {
+        self.poll(notices);
+        if self.pending.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Updating the autostart task…");
+            });
+            return;
+        }
+        match self.state.clone() {
+            AutostartState::Unavailable(reason) => {
+                ui.add_enabled(false, egui::Checkbox::new(&mut false, "Start with Windows"));
+                ui.label(RichText::new(reason).color(format::MUTED));
+            }
+            AutostartState::Off | AutostartState::On => {
+                let mut enabled = self.state == AutostartState::On;
+                if ui
+                    .checkbox(&mut enabled, "Start with Windows, minimised to the tray")
+                    .changed()
+                {
+                    self.apply(enabled, ui.ctx());
+                }
+                ui.label(
+                    RichText::new(
+                        "Keeps a protected copy in Program Files for this, so sign-in needs no UAC prompt. Turning it off removes the copy.",
+                    )
+                    .color(format::MUTED),
+                );
+            }
+            AutostartState::Mismatch(command) => {
+                ui.colored_label(
+                    format::WARN,
+                    format!("The autostart task starts {}", command.display()),
+                );
+                if ui.button("Repair autostart").clicked() {
+                    self.apply(true, ui.ctx());
+                }
+            }
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(format::DANGER, error);
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct SettingsView {
@@ -10,7 +118,14 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &ServiceState, draft: &mut Config) -> bool {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &ControlState,
+        draft: &mut Config,
+        autostart: &mut AutostartPanel,
+        notices: &Notices,
+    ) -> bool {
         let mut changed = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Profiles");
@@ -31,6 +146,9 @@ impl SettingsView {
             ui.separator();
             ui.heading("Safety");
             changed |= safety(ui, state, draft);
+            ui.separator();
+            ui.heading("Startup");
+            autostart.show(ui, notices);
             ui.separator();
             ui.heading("Board");
             board(ui, state);
@@ -82,7 +200,7 @@ impl SettingsView {
     }
 }
 
-fn safety(ui: &mut egui::Ui, state: &ServiceState, draft: &mut Config) -> bool {
+fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
     let mut changed = false;
     let safety = &mut draft.safety;
     egui::Grid::new("safety").num_columns(2).show(ui, |ui| {
@@ -154,7 +272,7 @@ fn safety(ui: &mut egui::Ui, state: &ServiceState, draft: &mut Config) -> bool {
     changed
 }
 
-fn board(ui: &mut egui::Ui, state: &ServiceState) {
+fn board(ui: &mut egui::Ui, state: &ControlState) {
     let (text, color) = format::hardware(&state.hardware);
     ui.colored_label(color, text);
     if let Some(board) = &state.board {
@@ -177,5 +295,5 @@ fn board(ui: &mut egui::Ui, state: &ServiceState) {
             format::WARN
         }));
     }
-    ui.label(RichText::new(format!("Service version {}", state.version)).color(format::MUTED));
+    ui.label(RichText::new(format!("Version {}", state.version)).color(format::MUTED));
 }

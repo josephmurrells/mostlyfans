@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use fanforge_core::Duty;
-use fanforge_core::paths::{self, SERVICE_NAME};
 use fanforge_hw::HwError;
 use fanforge_hw::board::{detect_identity, select_profile};
 use fanforge_hw::ite::{FAN_CHANNELS, It8655e, RegisterDump};
@@ -18,8 +17,8 @@ use fanforge_hw::pawnio;
 use fanforge_hw::port::LpcIo;
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, force_all_auto, open_chip};
-use windows_service::service::{ServiceAccess, ServiceState};
-use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+use fanforge_win::InstanceMutex;
+use fanforge_win::paths::{self, INSTANCE_MUTEX};
 
 const MIN_DIAG_DUTY: f32 = 30.0;
 
@@ -62,7 +61,7 @@ enum Command {
             help = "Seconds before BIOS control is restored"
         )]
         timeout: u64,
-        #[arg(long, help = "Run even if the FanForge service is active")]
+        #[arg(long, help = "Run even if FanForge is running")]
         force: bool,
     },
     #[command(about = "Return every fan channel to BIOS control")]
@@ -168,19 +167,16 @@ fn diff(before: &Path, after: &Path) -> DiagResult {
     Ok(())
 }
 
-fn service_running() -> bool {
-    ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .and_then(|manager| manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS))
-        .and_then(|service| service.query_status())
-        .is_ok_and(|status| status.current_state != ServiceState::Stopped)
+fn app_running() -> bool {
+    InstanceMutex::exists(INSTANCE_MUTEX)
 }
 
 fn set_pwm(channel: usize, duty: f32, timeout: Duration, force: bool) -> DiagResult {
     if !(MIN_DIAG_DUTY..=100.0).contains(&duty) {
         return Err(format!("duty must be between {MIN_DIAG_DUTY} and 100").into());
     }
-    if service_running() && !force {
-        return Err("the FanForge service is running; stop it first or pass --force".into());
+    if app_running() && !force {
+        return Err("FanForge is running; quit it from the tray first or pass --force".into());
     }
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
     let mut chip = open_chip()?;
@@ -226,7 +222,7 @@ fn watch(
 
 fn restore() -> DiagResult {
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
-    force_all_auto(&mut open_chip()?, &snapshot)?;
+    force_all_auto(&mut open_chip()?, &snapshot, RELEASE_BUDGET * 3)?;
     println!("all {FAN_CHANNELS} channels returned to BIOS control");
     Ok(())
 }

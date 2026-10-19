@@ -1,14 +1,14 @@
 use eframe::egui::{self, ComboBox, RichText, Slider};
 use fanforge_core::config::{Config, FanMode};
-use fanforge_core::protocol::ServiceState;
+use fanforge_core::state::ControlState;
 use fanforge_core::{Duty, FanId};
 
-use crate::connection::{Connection, Outgoing};
+use crate::connection::{Connection, Request};
 use crate::format;
 
 pub fn show(
     ui: &mut egui::Ui,
-    state: &ServiceState,
+    state: &ControlState,
     draft: &mut Config,
     connection: &Connection,
 ) -> bool {
@@ -31,7 +31,7 @@ pub fn show(
 
 fn fan_card(
     ui: &mut egui::Ui,
-    state: &ServiceState,
+    state: &ControlState,
     draft: &mut Config,
     connection: &Connection,
     fan: &FanId,
@@ -61,7 +61,7 @@ fn fan_card(
                 .on_hover_text("Spin this fan at 100% for 3 seconds")
                 .clicked()
             {
-                connection.send(Outgoing::Identify(fan.clone()));
+                connection.send(Request::Identify(fan.clone()));
             }
         });
     });

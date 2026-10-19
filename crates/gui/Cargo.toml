@@ -1,6 +1,6 @@
 [package]
 name = "fanforge-gui"
-description = "FanForge desktop GUI."
+description = "FanForge desktop app: controls the fans while it runs, from the window or the tray."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,22 @@ path = "src/main.rs"
 
 [dependencies]
 fanforge-core.workspace = true
-fanforge-ipc.workspace = true
+fanforge-control.workspace = true
+fanforge-hw.workspace = true
+fanforge-win.workspace = true
+clap.workspace = true
 eframe.workspace = true
+sha2.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 tray-icon.workspace = true
+
+[build-dependencies]
+embed-manifest = "1.4"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
