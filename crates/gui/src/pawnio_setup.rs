@@ -13,8 +13,7 @@ use fanforge_hw::pawnio;
 use fanforge_win::paths;
 use sha2::{Digest, Sha256};
 
-use crate::banner;
-use crate::format;
+use crate::alerts::{Action, Alert, Severity};
 
 pub const VERSION: &str = "2.2.0";
 const URL: &str =
@@ -145,7 +144,7 @@ impl PawnIoPanel {
         }
     }
 
-    fn start(&mut self, ctx: &egui::Context) {
+    pub fn start(&mut self, ctx: &egui::Context) {
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         let ctx = ctx.clone();
         let on_installed = Arc::clone(&self.on_installed);
@@ -181,49 +180,40 @@ impl PawnIoPanel {
         self.pending = None;
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, driver_missing: bool) {
+    pub fn alert(&mut self, driver_missing: bool) -> Option<Alert> {
         self.poll();
         if self.pending.is_some() {
-            banner::frame(ui, format::WARN, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.colored_label(
-                        format::WARN,
-                        format!("Downloading and installing PawnIO {VERSION}…"),
-                    );
-                });
-            });
-            return;
+            return Some(
+                Alert::new(
+                    Severity::Driver,
+                    format!("Downloading and installing PawnIO {VERSION}…"),
+                )
+                .busy(),
+            );
         }
         if self.outcome == Some(Ok(Installed::RestartRequired)) {
-            banner::show(
-                ui,
-                format::WARN,
+            return Some(Alert::new(
+                Severity::Driver,
                 "PawnIO is installed. Restart Windows to finish, then start FanForge again.",
-            );
-            return;
+            ));
         }
         if !driver_missing {
-            return;
+            return None;
         }
-        let install = banner::with_action(
-            ui,
-            format::DANGER,
-            "The PawnIO driver is not installed. FanForge needs it to reach the fan controller.",
-            "Install PawnIO",
-        );
-        ui.label(
-            egui::RichText::new(format!(
-                "Downloads the official PawnIO {VERSION} installer from its GitHub release and runs it only if its SHA-256 checksum matches."
-            ))
-            .color(format::MUTED),
-        );
-        if let Some(Err(error)) = &self.outcome {
-            ui.colored_label(format::DANGER, format!("PawnIO install failed: {error}"));
-        }
-        if install {
-            self.start(ui.ctx());
-        }
+        let detail = match &self.outcome {
+            Some(Err(error)) => format!("The last install failed: {error}"),
+            _ => format!(
+                "Downloads the official PawnIO {VERSION} installer and runs it only if its SHA-256 checksum matches."
+            ),
+        };
+        Some(
+            Alert::new(
+                Severity::Driver,
+                "The PawnIO driver is not installed. FanForge needs it to reach the fan controller.",
+            )
+            .detail(detail)
+            .action(Action::InstallPawnIo),
+        )
     }
 }
 
