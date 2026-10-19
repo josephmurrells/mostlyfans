@@ -919,6 +919,44 @@ mod tests {
     }
 
     #[test]
+    fn critical_and_identify_skip_even_the_slowest_smoothing() {
+        let slowest = Tuning {
+            hysteresis_c: 20.0,
+            response_secs: 60.0,
+            step_up_per_sec: 0.1,
+            step_down_per_sec: 0.1,
+        };
+        let mut config = config_with(&[
+            (
+                "pwm1",
+                FanMode::Curve {
+                    curve: "cpu".into(),
+                },
+            ),
+            (
+                "pwm2",
+                FanMode::Curve {
+                    curve: "cpu".into(),
+                },
+            ),
+        ]);
+        config.curves[0].tuning = slowest;
+        let mut rig = Rig::new(config, open_limits());
+        rig.set_temp(Some(45.0));
+        rig.tick();
+        rig.engine.identify("pwm2".into(), Duration::from_secs(2));
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, "pwm2").state, FanState::Identifying);
+        assert_eq!(Rig::status(&outcome, "pwm2").output, Some(Duty::FULL));
+        assert!(Rig::status(&outcome, "pwm1").output < Some(Duty::FULL));
+
+        rig.set_temp(Some(90.0));
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::Critical);
+        assert_eq!(Rig::status(&outcome, "pwm1").output, Some(Duty::FULL));
+    }
+
+    #[test]
     fn monitor_only_releases_controlled_fans() {
         let mut rig = Rig::new(
             config_with(&[(
