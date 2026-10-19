@@ -1,11 +1,61 @@
-use eframe::egui::{self, ComboBox, DragValue, RichText};
-use fanforge_core::config::{Config, FanMode};
+use eframe::egui::{self, ComboBox, DragValue, Id, Margin, RichText, vec2};
+use fanforge_core::config::{Config, FanMode, MAX_CURVE_POINTS, MAX_CURVES, MAX_NAME_LEN};
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
 use fanforge_core::state::ControlState;
 use fanforge_core::{CurveId, SensorId};
 
-use crate::curve_plot::{self, Live};
+use crate::curve_plot::{self, FloorMark, Live};
 use crate::format;
+use crate::icons;
+use crate::theme::{self, PAGE, SPACE_M, SPACE_S};
+use crate::widgets::{self, Segment};
+
+const LIST_WIDTH: f32 = 250.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Smoothing {
+    Fast,
+    Smooth,
+    Gentle,
+    Custom,
+}
+
+impl Smoothing {
+    pub fn tuning(self) -> Option<Tuning> {
+        match self {
+            Self::Fast => Some(Tuning {
+                hysteresis_c: 1.0,
+                response_secs: 0.5,
+                step_up_per_sec: 50.0,
+                step_down_per_sec: 20.0,
+            }),
+            Self::Smooth => Some(Tuning::default()),
+            Self::Gentle => Some(Tuning {
+                hysteresis_c: 3.0,
+                response_secs: 6.0,
+                step_up_per_sec: 10.0,
+                step_down_per_sec: 3.0,
+            }),
+            Self::Custom => None,
+        }
+    }
+
+    pub fn of(tuning: &Tuning) -> Self {
+        [Self::Fast, Self::Smooth, Self::Gentle]
+            .into_iter()
+            .find(|preset| preset.tuning().as_ref() == Some(tuning))
+            .unwrap_or(Self::Custom)
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Fast => "Reacts within a second. Fans change speed often.",
+            Self::Smooth => "Follows temperature over a couple of seconds.",
+            Self::Gentle => "Slow, quiet changes. Short spikes are ignored.",
+            Self::Custom => "Your own values, set under Advanced.",
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct CurveEditor {
@@ -24,120 +74,177 @@ impl CurveEditor {
             self.selected = draft.curves.first().map(|curve| curve.id.clone());
         }
         egui::Panel::left("curve-list")
-            .resizable(true)
-            .default_size(200.0)
+            .resizable(false)
+            .exact_size(LIST_WIDTH)
+            .frame(egui::Frame::new().inner_margin(Margin {
+                right: SPACE_M as i8,
+                ..Margin::ZERO
+            }))
             .show(ui, |ui| {
                 changed |= self.list(ui, state, draft);
             });
-        egui::CentralPanel::default().show(ui, |ui| {
-            let Some(index) = self
-                .selected
-                .as_ref()
-                .and_then(|id| draft.curves.iter().position(|curve| &curve.id == id))
-            else {
-                ui.label("Create a curve to control fans from temperatures.");
-                return;
-            };
-            let others: Vec<(CurveId, String)> = draft
-                .curves
-                .iter()
-                .filter(|curve| curve.id != draft.curves[index].id)
-                .map(|curve| (curve.id.clone(), curve.name.clone()))
-                .collect();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                changed |= self.editor(ui, state, &mut draft.curves[index], &others);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().inner_margin(Margin {
+                left: SPACE_M as i8,
+                ..Margin::ZERO
+            }))
+            .show(ui, |ui| {
+                let Some(index) = self
+                    .selected
+                    .as_ref()
+                    .and_then(|id| draft.curves.iter().position(|curve| &curve.id == id))
+                else {
+                    ui.add_space(SPACE_M * 3.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(widgets::value("No curves yet", theme::SECTION));
+                        ui.label(widgets::muted(
+                            "A curve sets fan speed from a temperature. Create one with New curve.",
+                        ));
+                    });
+                    return;
+                };
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    changed |= self.editor(ui, state, draft, index);
+                });
             });
-        });
         changed
     }
 
     fn list(&mut self, ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
         let mut changed = false;
-        ui.heading("Curves");
-        for curve in &draft.curves {
-            if ui
-                .selectable_label(self.selected.as_ref() == Some(&curve.id), &curve.name)
-                .clicked()
-            {
-                self.selected = Some(curve.id.clone());
-                self.dragging = None;
-            }
-        }
-        ui.separator();
-        let sensor = default_sensor(state);
-        let templates = [
-            (
-                "+ Graph",
-                CurveKind::Graph {
-                    sensor: sensor.clone(),
-                    points: vec![
-                        CurvePoint::new(30.0, 30.0),
-                        CurvePoint::new(50.0, 40.0),
-                        CurvePoint::new(70.0, 70.0),
-                        CurvePoint::new(85.0, 100.0),
-                    ],
-                },
-            ),
-            (
-                "+ Linear",
-                CurveKind::Linear {
-                    sensor,
-                    start: CurvePoint::new(40.0, 30.0),
-                    end: CurvePoint::new(80.0, 100.0),
-                },
-            ),
-            ("+ Flat", CurveKind::Flat { duty: 50.0 }),
-        ];
-        ui.horizontal_wrapped(|ui| {
-            for (label, kind) in templates {
-                if ui.button(label).clicked() {
-                    self.add(draft, kind);
-                    changed = true;
-                }
-            }
-            if ui
-                .add_enabled(!draft.curves.is_empty(), egui::Button::new("+ Mix"))
-                .clicked()
-            {
-                let curves = draft
-                    .curves
-                    .iter()
-                    .take(2)
-                    .map(|curve| curve.id.clone())
-                    .collect();
-                self.add(
-                    draft,
-                    CurveKind::Mix {
-                        op: MixOp::Max,
-                        curves,
+        ui.horizontal(|ui| {
+            ui.label(widgets::value("Curves", PAGE));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                changed |= self.new_curve_menu(ui, state, draft);
+            });
+        });
+        ui.add_space(SPACE_S);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for curve in &draft.curves {
+                let selected = self.selected.as_ref() == Some(&curve.id);
+                let users = curve_users(draft, state, &curve.id).len();
+                let response = widgets::list_item(
+                    ui,
+                    Id::unique(("curve-row", curve.id.as_str())),
+                    selected,
+                    &curve.name,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            curve_plot::thumbnail(ui, curve, vec2(44.0, 30.0));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&curve.name).strong());
+                                let usage = match users {
+                                    0 => "Not used".to_owned(),
+                                    1 => "Used by 1 fan or curve".to_owned(),
+                                    count => format!("Used by {count} fans or curves"),
+                                };
+                                ui.label(widgets::caption(ui, usage));
+                            });
+                        });
                     },
                 );
-                changed = true;
+                if response.clicked() {
+                    self.selected = Some(curve.id.clone());
+                    self.dragging = None;
+                }
             }
         });
-        if let Some(selected) = self.selected.clone() {
-            let users = curve_users(draft, &selected);
-            let delete = ui.add_enabled(users.is_empty(), egui::Button::new("Delete selected"));
-            let delete = if users.is_empty() {
-                delete
-            } else {
-                delete.on_disabled_hover_text(format!("Used by: {}", users.join(", ")))
-            };
-            if delete.clicked() {
-                draft.curves.retain(|curve| curve.id != selected);
-                self.selected = None;
-                changed = true;
-            }
-        }
         changed
     }
 
-    fn add(&mut self, draft: &mut Config, kind: CurveKind) {
+    fn new_curve_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &ControlState,
+        draft: &mut Config,
+    ) -> bool {
+        let mut changed = false;
+        let full = draft.curves.len() >= MAX_CURVES;
+        ui.add_enabled_ui(!full, |ui| {
+            ui.menu_button(widgets::with_icon(icons::ADD, "New curve"), |ui| {
+                ui.set_min_width(280.0);
+                let sensor = default_sensor(state);
+                let templates = [
+                    (
+                        "Custom points",
+                        "Drag points to shape the curve.",
+                        "Custom",
+                        CurveKind::Graph {
+                            sensor: sensor.clone(),
+                            points: vec![
+                                CurvePoint::new(30.0, 30.0),
+                                CurvePoint::new(50.0, 40.0),
+                                CurvePoint::new(70.0, 70.0),
+                                CurvePoint::new(85.0, 100.0),
+                            ],
+                        },
+                    ),
+                    (
+                        "Straight line",
+                        "Rises evenly between two temperatures.",
+                        "Linear",
+                        CurveKind::Linear {
+                            sensor,
+                            start: CurvePoint::new(40.0, 30.0),
+                            end: CurvePoint::new(80.0, 100.0),
+                        },
+                    ),
+                    (
+                        "Fixed speed",
+                        "The same speed at every temperature.",
+                        "Fixed",
+                        CurveKind::Flat { duty: 50.0 },
+                    ),
+                ];
+                for (title, description, name, kind) in templates {
+                    if menu_entry(ui, title, description, true) {
+                        self.add(draft, name, kind);
+                        changed = true;
+                        ui.close();
+                    }
+                }
+                let can_mix = !draft.curves.is_empty();
+                if menu_entry(
+                    ui,
+                    "Combine curves",
+                    if can_mix {
+                        "The highest, lowest or average of other curves."
+                    } else {
+                        "Create another curve first."
+                    },
+                    can_mix,
+                ) {
+                    let curves = draft
+                        .curves
+                        .iter()
+                        .take(2)
+                        .map(|curve| curve.id.clone())
+                        .collect();
+                    self.add(
+                        draft,
+                        "Combined",
+                        CurveKind::Mix {
+                            op: MixOp::Max,
+                            curves,
+                        },
+                    );
+                    changed = true;
+                    ui.close();
+                }
+            });
+        });
+        changed
+    }
+
+    fn add(&mut self, draft: &mut Config, base: &str, kind: CurveKind) {
         let id = (1..)
             .map(|n| CurveId::new(format!("curve-{n}")))
             .find(|id| !draft.curves.iter().any(|curve| &curve.id == id))
             .unwrap_or_else(|| CurveId::new("curve"));
-        let name = format!("Curve {}", draft.curves.len() + 1);
+        let name = (1..)
+            .map(|n| format!("{base} {n}"))
+            .find(|name| !draft.curves.iter().any(|curve| &curve.name == name))
+            .unwrap_or_else(|| base.to_owned());
         draft.curves.push(CurveDef {
             id: id.clone(),
             name,
@@ -152,55 +259,104 @@ impl CurveEditor {
         &mut self,
         ui: &mut egui::Ui,
         state: &ControlState,
-        curve: &mut CurveDef,
-        others: &[(CurveId, String)],
+        draft: &mut Config,
+        index: usize,
     ) -> bool {
         let mut changed = false;
+        let id = draft.curves[index].id.clone();
+        let users = curve_users(draft, state, &id);
+        let others: Vec<(CurveId, String)> = draft
+            .curves
+            .iter()
+            .filter(|curve| curve.id != id)
+            .map(|curve| (curve.id.clone(), curve.name.clone()))
+            .collect();
+        let floor = floor_mark(draft, state, &id);
+        let mut delete = false;
+
+        let curve = &mut draft.curves[index];
         ui.horizontal(|ui| {
-            ui.label("Name");
-            changed |= ui.text_edit_singleline(&mut curve.name).changed();
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut curve.name)
+                        .font(theme::semibold(PAGE))
+                        .char_limit(MAX_NAME_LEN)
+                        .desired_width(320.0)
+                        .frame(egui::Frame::NONE),
+                )
+                .on_hover_text("Click to rename")
+                .changed();
+            ui.label(RichText::new(icons::RENAME).color(theme::of(ui).text_muted));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                delete = widgets::confirm(
+                    ui,
+                    Id::unique(("delete-curve", id.as_str())),
+                    &widgets::with_icon(icons::DELETE, "Delete"),
+                    "Delete this curve?",
+                    users.is_empty(),
+                );
+            });
         });
-        if let Some(sensor) = sensor_of(&mut curve.kind) {
-            changed |= sensor_picker(ui, state, sensor);
+        if users.is_empty() {
+            ui.label(widgets::muted("Not used by any fan yet."));
+        } else {
+            ui.label(widgets::muted(format!("Used by {}", users.join(", "))));
         }
-        let live = Live {
-            temp: curve
-                .kind
-                .sensor()
-                .and_then(|sensor| state.readings.temperature(sensor)),
-            output: live_output(state, &curve.id),
-        };
-        match &mut curve.kind {
-            CurveKind::Graph { points, .. } => {
-                changed |= self.plot(ui, points, 1, &live);
-                changed |= point_table(ui, points);
+        ui.add_space(SPACE_M);
+
+        widgets::card(ui, |ui| {
+            widgets::card_title(ui, "Shape", None);
+            if let Some(sensor) = sensor_of(&mut curve.kind) {
+                changed |= sensor_picker(ui, state, sensor);
+                ui.add_space(SPACE_S);
             }
-            CurveKind::Linear { start, end, .. } => {
-                let mut points = vec![*start, *end];
-                if self.plot(ui, &mut points, 2, &live) && points.len() == 2 {
-                    *start = points[0];
-                    *end = points[1];
-                    changed = true;
+            let live = Live {
+                temp: curve
+                    .kind
+                    .sensor()
+                    .and_then(|sensor| state.readings.temperature(sensor)),
+                output: live_output(state, &curve.id),
+            };
+            match &mut curve.kind {
+                CurveKind::Graph { points, .. } => {
+                    changed |= self.plot(ui, points, 1, &live, floor.as_ref());
+                    changed |= point_table(ui, points);
                 }
-                ui.horizontal(|ui| {
-                    ui.label("From");
-                    changed |= point_editor(ui, start);
-                    ui.label("to");
-                    changed |= point_editor(ui, end);
-                });
+                CurveKind::Linear { start, end, .. } => {
+                    let mut points = vec![*start, *end];
+                    if self.plot(ui, &mut points, 2, &live, floor.as_ref()) && points.len() == 2 {
+                        *start = points[0];
+                        *end = points[1];
+                        changed = true;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("From");
+                        changed |= point_editor(ui, start);
+                        ui.label("to");
+                        changed |= point_editor(ui, end);
+                    });
+                }
+                CurveKind::Flat { duty } => {
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Speed");
+                        changed |= ui
+                            .add(egui::Slider::new(duty, 0.0..=100.0).suffix("%").integer())
+                            .labelled_by(label.id)
+                            .changed();
+                    });
+                }
+                CurveKind::Mix { op, curves } => changed |= mix_editor(ui, op, curves, &others),
             }
-            CurveKind::Flat { duty } => {
-                ui.horizontal(|ui| {
-                    ui.label("Duty");
-                    changed |= ui
-                        .add(egui::Slider::new(duty, 0.0..=100.0).suffix("%"))
-                        .changed();
-                });
-            }
-            CurveKind::Mix { op, curves } => changed |= mix_editor(ui, op, curves, others),
+        });
+        ui.add_space(SPACE_M);
+        widgets::card(ui, |ui| {
+            changed |= smoothing_editor(ui, &id, &mut curve.tuning);
+        });
+        if delete {
+            draft.curves.retain(|curve| curve.id != id);
+            self.selected = None;
+            changed = true;
         }
-        ui.separator();
-        changed |= tuning_editor(ui, &mut curve.tuning);
         changed
     }
 
@@ -210,14 +366,43 @@ impl CurveEditor {
         points: &mut Vec<CurvePoint>,
         min_points: usize,
         live: &Live,
+        floor: Option<&FloorMark>,
     ) -> bool {
-        let changed = curve_plot::show(ui, points, &mut self.dragging, min_points, live);
-        ui.label(
-            RichText::new("Drag points to edit. Double-click empty space to add a point, or a point to remove it.")
-                .color(format::MUTED),
-        );
+        let changed = curve_plot::show(ui, points, &mut self.dragging, min_points, live, floor);
+        ui.label(widgets::caption(
+            ui,
+            "Drag a point to move it. Double-click empty space to add a point, or a point to remove it.",
+        ));
         changed
     }
+}
+
+fn menu_entry(ui: &mut egui::Ui, title: &str, description: &str, enabled: bool) -> bool {
+    let text = format!("{title}\n{description}");
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(text))
+            .frame(false)
+            .min_size(vec2(260.0, 0.0)),
+    );
+    response.clicked()
+}
+
+fn floor_mark(config: &Config, state: &ControlState, curve: &CurveId) -> Option<FloorMark> {
+    let modes = config.active_modes()?;
+    modes
+        .iter()
+        .filter(|(_, mode)| matches!(mode, FanMode::Curve { curve: used } if used == curve))
+        .map(|(fan, _)| {
+            let limits = state.limits.get(fan).copied().unwrap_or_default();
+            let floor = format::effective_floor(limits, &config.settings(fan));
+            (format::fan_name(config, state, fan), floor.percent)
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(name, percent)| FloorMark {
+            percent,
+            label: format!("{name} never goes below {percent:.0}%"),
+        })
 }
 
 fn sensor_of(kind: &mut CurveKind) -> Option<&mut SensorId> {
@@ -246,9 +431,10 @@ fn sensor_picker(ui: &mut egui::Ui, state: &ControlState, sensor: &mut SensorId)
         .find(|candidate| &candidate.id == sensor)
         .map_or_else(|| sensor.to_string(), |candidate| candidate.label.clone());
     ui.horizontal(|ui| {
-        ui.label("Sensor");
+        let label = ui.label("Temperature from");
         ComboBox::from_id_salt("curve-sensor")
             .selected_text(selected)
+            .width(200.0)
             .show_ui(ui, |ui| {
                 for candidate in &state.readings.sensors {
                     let label = format!(
@@ -265,9 +451,12 @@ fn sensor_picker(ui: &mut egui::Ui, state: &ControlState, sensor: &mut SensorId)
                         changed = true;
                     }
                 }
-            });
-        let reading = state.readings.temperature(sensor);
-        ui.label(format::celsius(reading));
+            })
+            .response
+            .labelled_by(label.id);
+        ui.label(widgets::muted(format::celsius(
+            state.readings.temperature(sensor),
+        )));
     });
     changed
 }
@@ -287,51 +476,65 @@ fn live_output(state: &ControlState, curve: &CurveId) -> Option<f32> {
 }
 
 fn point_editor(ui: &mut egui::Ui, point: &mut CurvePoint) -> bool {
-    let temp = ui.add(
-        DragValue::new(&mut point.temp)
-            .range(0.0..=125.0)
-            .speed(0.5)
-            .suffix(" °C"),
-    );
-    let duty = ui.add(
-        DragValue::new(&mut point.duty)
-            .range(0.0..=100.0)
-            .speed(0.5)
-            .suffix(" %"),
-    );
+    let temp = ui
+        .add(
+            DragValue::new(&mut point.temp)
+                .range(0.0..=125.0)
+                .speed(0.5)
+                .suffix(" °C"),
+        )
+        .on_hover_text("Temperature");
+    let duty = ui
+        .add(
+            DragValue::new(&mut point.duty)
+                .range(0.0..=100.0)
+                .speed(0.5)
+                .suffix(" %"),
+        )
+        .on_hover_text("Fan speed");
     temp.changed() || duty.changed()
 }
 
 fn point_table(ui: &mut egui::Ui, points: &mut Vec<CurvePoint>) -> bool {
     let mut changed = false;
     let mut remove = None;
-    egui::CollapsingHeader::new("Points")
-        .default_open(false)
+    ui.add_space(SPACE_S);
+    let can_remove = points.len() > 1;
+    egui::Grid::new("curve-points")
+        .num_columns(3)
+        .spacing(vec2(SPACE_S, SPACE_S))
         .show(ui, |ui| {
-            egui::Grid::new("curve-points")
-                .striped(true)
-                .show(ui, |ui| {
-                    let can_remove = points.len() > 1;
-                    for (index, point) in points.iter_mut().enumerate() {
-                        changed |= point_editor(ui, point);
-                        if ui
-                            .add_enabled(can_remove, egui::Button::new("Remove"))
-                            .clicked()
-                        {
-                            remove = Some(index);
-                        }
-                        ui.end_row();
-                    }
-                });
-            if ui.button("Add point").clicked() {
-                let last = points
-                    .last()
-                    .copied()
-                    .unwrap_or(CurvePoint::new(50.0, 50.0));
-                points.push(CurvePoint::new((last.temp + 10.0).min(125.0), last.duty));
-                changed = true;
+            ui.label(widgets::caption(ui, "Temperature"));
+            ui.label(widgets::caption(ui, "Speed"));
+            ui.label("");
+            ui.end_row();
+            for (index, point) in points.iter_mut().enumerate() {
+                changed |= point_editor(ui, point);
+                if ui
+                    .add_enabled(can_remove, egui::Button::new(icons::CLOSE).small())
+                    .on_hover_text("Remove this point")
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+                ui.end_row();
             }
         });
+    if ui
+        .add_enabled(
+            points.len() < MAX_CURVE_POINTS,
+            egui::Button::new(widgets::with_icon(icons::ADD, "Add point")),
+        )
+        .clicked()
+    {
+        let last = points
+            .iter()
+            .max_by(|a, b| a.temp.total_cmp(&b.temp))
+            .copied()
+            .unwrap_or(CurvePoint::new(50.0, 50.0));
+        points.push(CurvePoint::new((last.temp + 10.0).min(125.0), last.duty));
+        changed = true;
+    }
     if let Some(index) = remove {
         points.remove(index);
         changed = true;
@@ -346,16 +549,17 @@ fn mix_editor(
     others: &[(CurveId, String)],
 ) -> bool {
     let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label("Combine with");
-        for (candidate, label) in [
-            (MixOp::Max, "Maximum"),
-            (MixOp::Min, "Minimum"),
-            (MixOp::Average, "Average"),
-        ] {
-            changed |= ui.radio_value(op, candidate, label).changed();
-        }
-    });
+    ui.label("Use the");
+    changed |= widgets::segmented(
+        ui,
+        op,
+        &[
+            Segment::new(MixOp::Max, "Highest"),
+            Segment::new(MixOp::Min, "Lowest"),
+            Segment::new(MixOp::Average, "Average"),
+        ],
+    );
+    ui.label("of these curves:");
     for (id, name) in others {
         let mut included = curves.contains(id);
         if ui.checkbox(&mut included, name).changed() {
@@ -368,70 +572,111 @@ fn mix_editor(
         }
     }
     if curves.is_empty() {
-        ui.colored_label(format::WARN, "Select at least one curve.");
+        ui.label(
+            RichText::new(format!("{}  Select at least one curve.", icons::WARNING))
+                .color(theme::of(ui).warn),
+        );
     }
     changed
 }
 
-fn tuning_editor(ui: &mut egui::Ui, tuning: &mut Tuning) -> bool {
+fn smoothing_editor(ui: &mut egui::Ui, id: &CurveId, tuning: &mut Tuning) -> bool {
     let mut changed = false;
-    egui::Grid::new("curve-tuning")
-        .num_columns(2)
+    widgets::card_title(
+        ui,
+        "Smoothing",
+        Some("How quickly fans follow temperature changes."),
+    );
+    let current = Smoothing::of(tuning);
+    let mut chosen = current;
+    widgets::segmented(
+        ui,
+        &mut chosen,
+        &[
+            Segment::new(Smoothing::Fast, "Fast"),
+            Segment::new(Smoothing::Smooth, "Smooth"),
+            Segment::new(Smoothing::Gentle, "Gentle"),
+            Segment::new(Smoothing::Custom, "Custom").disabled_because(
+                (current != Smoothing::Custom).then_some("Change a value under Advanced"),
+            ),
+        ],
+    );
+    if chosen != current
+        && let Some(preset) = chosen.tuning()
+    {
+        *tuning = preset;
+        changed = true;
+    }
+    ui.label(widgets::muted(Smoothing::of(tuning).describe()));
+    ui.label(widgets::caption(
+        ui,
+        "Critical temperature and Identify always go straight to full speed, whatever the smoothing.",
+    ));
+    ui.add_space(SPACE_S);
+    egui::CollapsingHeader::new("Advanced")
+        .id_salt(("smoothing-advanced", id.as_str()))
         .show(ui, |ui| {
-            let mut row = |ui: &mut egui::Ui,
-                           label: &str,
-                           value: &mut f32,
-                           max: f32,
-                           suffix: &str,
-                           hint: &str| {
-                ui.label(label).on_hover_text(hint);
-                changed |= ui
-                    .add(
-                        DragValue::new(value)
-                            .range(0.0..=max)
-                            .speed(0.1)
-                            .suffix(suffix),
-                    )
-                    .changed();
-                ui.end_row();
-            };
-            row(
-                ui,
-                "Hysteresis",
-                &mut tuning.hysteresis_c,
-                20.0,
-                " °C",
-                "Ignore temperature drops smaller than this",
-            );
-            row(
-                ui,
-                "Response time",
-                &mut tuning.response_secs,
-                60.0,
-                " s",
-                "Smoothing time constant; 0 reacts instantly",
-            );
-            row(
-                ui,
-                "Max ramp up",
-                &mut tuning.step_up_per_sec,
-                100.0,
-                " %/s",
-                "0 means unlimited",
-            );
-            row(
-                ui,
-                "Max ramp down",
-                &mut tuning.step_down_per_sec,
-                100.0,
-                " %/s",
-                "0 means unlimited",
-            );
+            egui::Grid::new(("curve-tuning", id.as_str()))
+                .num_columns(3)
+                .spacing(vec2(SPACE_M, SPACE_S))
+                .show(ui, |ui| {
+                    let mut row = |ui: &mut egui::Ui,
+                                   label: &str,
+                                   value: &mut f32,
+                                   max: f32,
+                                   suffix: &str,
+                                   hint: &str| {
+                        let label = ui.label(label);
+                        changed |= ui
+                            .add(
+                                DragValue::new(value)
+                                    .range(0.0..=max)
+                                    .speed(0.1)
+                                    .suffix(suffix),
+                            )
+                            .labelled_by(label.id)
+                            .changed();
+                        ui.label(widgets::caption(ui, hint));
+                        ui.end_row();
+                    };
+                    row(
+                        ui,
+                        "Hysteresis",
+                        &mut tuning.hysteresis_c,
+                        20.0,
+                        " °C",
+                        "Ignore temperature drops smaller than this.",
+                    );
+                    row(
+                        ui,
+                        "Response time",
+                        &mut tuning.response_secs,
+                        60.0,
+                        " s",
+                        "Averages the temperature over this time; 0 reacts instantly.",
+                    );
+                    row(
+                        ui,
+                        "Max ramp up",
+                        &mut tuning.step_up_per_sec,
+                        100.0,
+                        " %/s",
+                        "Fastest speed increase; 0 means unlimited.",
+                    );
+                    row(
+                        ui,
+                        "Max ramp down",
+                        &mut tuning.step_down_per_sec,
+                        100.0,
+                        " %/s",
+                        "Fastest speed decrease; 0 means unlimited.",
+                    );
+                });
         });
     changed
 }
 
-fn curve_users(config: &Config, curve: &CurveId) -> Vec<String> {
+fn curve_users(config: &Config, state: &ControlState, curve: &CurveId) -> Vec<String> {
     let mut users: Vec<String> = config
         .profiles
         .iter()
@@ -440,7 +685,9 @@ fn curve_users(config: &Config, curve: &CurveId) -> Vec<String> {
                 .fans
                 .iter()
                 .filter(|(_, mode)| matches!(mode, FanMode::Curve { curve: used } if used == curve))
-                .map(move |(fan, _)| format!("{fan} in {profile}"))
+                .map(move |(fan, _)| {
+                    format!("{} in {profile}", format::fan_name(config, state, fan))
+                })
         })
         .collect();
     users.extend(
@@ -451,4 +698,48 @@ fn curve_users(config: &Config, curve: &CurveId) -> Vec<String> {
             .map(|other| other.name.clone()),
     );
     users
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures;
+
+    #[test]
+    fn presets_round_trip_and_anything_else_is_custom() {
+        for preset in [Smoothing::Fast, Smoothing::Smooth, Smoothing::Gentle] {
+            let tuning = preset.tuning().unwrap();
+            assert_eq!(Smoothing::of(&tuning), preset);
+        }
+        assert_eq!(Smoothing::of(&Tuning::default()), Smoothing::Smooth);
+        let custom = Tuning {
+            hysteresis_c: 4.5,
+            ..Tuning::default()
+        };
+        assert_eq!(Smoothing::of(&custom), Smoothing::Custom);
+        assert_eq!(Smoothing::Custom.tuning(), None);
+    }
+
+    #[test]
+    fn the_floor_mark_uses_the_strictest_fan_on_the_curve() {
+        let state = fixtures::state();
+        let mut config = state.config.clone();
+        let mark = floor_mark(&config, &state, &CurveId::new("curve-1")).unwrap();
+        assert_eq!(mark.percent, 30.0);
+        assert_eq!(mark.label, "CPU cooler never goes below 30%");
+        config
+            .profiles
+            .get_mut(&config.active_profile)
+            .unwrap()
+            .fans
+            .clear();
+        assert!(floor_mark(&config, &state, &CurveId::new("curve-1")).is_none());
+    }
+
+    #[test]
+    fn curve_users_name_the_fan_and_profile() {
+        let state = fixtures::state();
+        let users = curve_users(&state.config, &state, &CurveId::new("curve-1"));
+        assert_eq!(users, vec!["CPU cooler in Balanced"]);
+    }
 }
