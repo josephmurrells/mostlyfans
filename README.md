@@ -8,12 +8,11 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 
 | Crate | Binary | Purpose |
 |---|---|---|
-| `fanforge-core` | – | Curves, control engine, safety rules, config, IPC protocol. Platform independent. |
-| `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, registry, process list). |
+| `fanforge-core` | – | Curves, control engine, safety rules, config, published state. Platform independent. |
+| `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts). |
 | `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, bank-safe IT8655E driver, Ryzen SMN temperatures. |
-| `fanforge-ipc` | – | Hardened named pipe transport. |
-| `fanforge-service` | `fanforge-service.exe` | Windows service (LocalSystem): control loop, watchdog, IPC server. |
-| `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Unprivileged. |
+| `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
+| `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
 | `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, dump, diff, guarded set-pwm, restore. |
 
 ## Building
@@ -28,20 +27,35 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Setup
 
-1. Install the signed **PawnIO** driver from <https://pawnio.eu>. FanForge never uses WinRing0.
-2. From an elevated terminal, run `target\release\fanforge-service.exe install`. This:
-   - copies the service binary to `C:\Program Files\FanForge` (so the SYSTEM service never runs a user-writable file);
-   - locks down `C:\ProgramData\FanForge` to SYSTEM and Administrators;
-   - registers the service with automatic start and restart-on-failure, then starts it.
-3. Run `target\release\fanforge.exe` as your normal user.
+1. FanForge needs the signed **PawnIO** driver (<https://pawnio.eu>), and never uses WinRing0. If PawnIO is missing, the app shows an **Install PawnIO** button. It downloads the official PawnIO 2.2.0 installer from [its GitHub release](https://github.com/namazso/PawnIO.Setup/releases/tag/2.2.0) with Windows' `curl.exe`, over HTTPS only. The installer runs silently, and only if its SHA-256 matches the pinned value; fan control then starts without restarting FanForge. If Windows needs a restart to finish, the app says so. You can also install PawnIO yourself first.
+2. FanForge is portable. Put `fanforge.exe` (from `target\release`) anywhere and run it. It asks for administrator rights. There's nothing to install.
 
-To remove the service, run `fanforge-service.exe uninstall`. It stops the service first, which hands every fan back to the BIOS.
+Settings and logs live in `C:\ProgramData\FanForge`, which FanForge locks down to SYSTEM and Administrators. They aren't stored next to the exe, because an elevated app must not read files that a normal program could change.
 
-`fanforge-service run` starts the same control loop in a console for debugging; it refuses to start unless the terminal is elevated. Debug builds of the GUI accept `FANFORGE_DEV_ANY_SERVER=1` to talk to a console instance; release builds always verify that the pipe belongs to the installed service.
+FanForge controls the fans only while it runs. Closing the window hides it to the tray and control continues. **Quit FanForge** in the tray menu hands every fan back to BIOS automatic control and exits. Nothing runs in the background when FanForge isn't running.
+
+- **Elevation:** release builds carry a `requireAdministrator` manifest, so every manual start shows a UAC prompt, including a second start that only brings the open window forward. The build is unsigned, so UAC shows "unknown publisher".
+- **Start with Windows:** a toggle in Settings.
+  - **On:** it copies the running exe to `C:\Program Files\FanForge` and registers a scheduled task (`FanForge`) that starts that copy with `--minimized` at sign-in, without a UAC prompt.
+  - **Why a copy:** if the elevated task pointed at the portable exe in a folder you can write to, any program running as you could swap it and get it run elevated at sign-in.
+  - **Updates:** whenever you run a newer portable exe, the copy is updated to match.
+  - **Task limits:** the task never times out and ignores battery state.
+  - **Repair:** if the task ever points somewhere else, Settings offers to repair it.
+  - **Off:** removes the task and the copy.
+- **One copy per PC:** a second start brings the open window forward. A start from another user session is refused.
+- **Old service:** if the earlier service build is installed, FanForge offers to stop and remove it before taking control. If you decline, it only monitors.
+
+To remove FanForge:
+1. Turn off **Start with Windows**.
+2. Quit FanForge from the tray.
+3. Delete the exe.
+4. Optionally, delete `C:\ProgramData\FanForge` to remove your settings.
+
+Debug builds don't request elevation. Run them from an elevated terminal.
 
 ## Confirm the root cause on your PC
 
-Run these from an elevated terminal, with the FanForge service stopped:
+Run these from an elevated terminal, with FanForge quit:
 
 ```powershell
 fanforge-diag detect
@@ -65,16 +79,18 @@ fanforge-diag diff cold.json after-hwinfo.json
 - **Bus access:** every hardware access holds `Global\Access_ISABUS.HTP.Method` and selects EC bank 0 first. An abandoned mutex triggers a full chip re-initialisation. Releases retry for up to 2 s when another tool holds the bus.
 - **BIOS snapshot:** before FanForge first drives a channel, it saves that channel's BIOS settings and marks it "owned" in `bios_snapshot.toml`. It refuses manual control if that file can't be written. After a crash, owned channels are restored from the saved values; channels it doesn't own are re-captured on every start, so BIOS changes are picked up.
 - **Fail-safe returns to BIOS control:**
-  - The service hands the fans back to BIOS automatic control when it stops, the system shuts down, the system suspends, or the control loop panics (the runtime releases fans while unwinding).
-  - The watchdog does the same if the control loop stalls, using the on-disk snapshot; it then exits so the service manager restarts it.
-  - If the hardware stops responding and can't be re-initialised, fans are released, through a fresh handle if needed, before it is dropped.
+  - **Quit, crash, sleep:** fans go back to BIOS control when you quit from the tray, the session ends (sign-out, restart, shutdown, Restart Manager), the system sleeps, or the control thread panics. A panic leaves a **Restart control** button.
+  - **Stalled loop:** the in-process watchdog fires when the control loop stalls (3× the interval, at least 3 s). It releases the fans from the on-disk snapshot and exits.
+  - **Guardian:** a second `fanforge.exe --guardian` process watches the app through an inherited process handle and an anonymous pipe. If the app is killed (`taskkill /F`, Task Manager), crashes, or stops sending heartbeats while it owns a fan (6 s by default), the guardian ends it if needed and returns every fan to BIOS control. If the guardian dies it is restarted, at most 3 times in 10 minutes, then the app warns that it is unprotected.
+  - **Failed hardware:** if the hardware stops responding and can't be re-initialised, fans are released, through a fresh handle if needed, before it is dropped.
+  - **Known limit:** "End process tree" kills both processes. Fans then stay at or above their floors until FanForge next starts and restores BIOS control. Power loss or a crash of Windows resets the chip to BIOS control.
 - **Floors and fallbacks:**
-  - Speed floors are enforced inside the service, whatever a client asks for.
+  - Speed floors come from the board profile and are enforced by the control loop, whatever the config asks for.
   - The PRIME B350-PLUS profile is still unverified, so every fan keeps a 30% floor and 0 RPM is disabled.
   - Until a curve's sensor has read healthy, the fan stays under BIOS control; if the sensor keeps failing, that fan goes to 100%.
   - A critical Tctl (85 °C by default), or a critical sensor that stops reporting, drives every fan to 100%.
 - **Conflicts:** when another fan controller is running (FanControl, SpeedFan, Fan Xpert, …), FanForge switches to monitor-only. It does not touch the chip at startup and only releases fans it drove itself.
-- **Config limits:** profile, curve, point and name counts are capped, so a client can't push a config too large to serve back.
+- **Config limits:** profile, curve, point and name counts are capped.
 
 ## Not yet implemented
 
@@ -83,11 +99,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 - MSI installer
 - Nuvoton chips and other boards
 - Code signing
-
-Also open from the code review:
-
-- IPC request timeouts and rate limiting
-- Optimistic-concurrency revisions on config writes
+- Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes
 
 ## Third-party components
 

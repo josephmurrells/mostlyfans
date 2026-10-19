@@ -31,33 +31,41 @@ pub struct PawnIoModule {
     handle: OwnedHandle,
 }
 
+fn open_device() -> Result<OwnedHandle, HwError> {
+    let path = wide(DEVICE_PATH);
+    let raw = unsafe {
+        CreateFileW(
+            PCWSTR(path.as_ptr()),
+            (GENERIC_READ | GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .map_err(|error| match error.code() {
+        code if code == ERROR_FILE_NOT_FOUND.to_hresult()
+            || code == ERROR_PATH_NOT_FOUND.to_hresult() =>
+        {
+            HwError::PawnIoMissing
+        }
+        code if code == ERROR_ACCESS_DENIED.to_hresult() => HwError::AccessDenied,
+        _ => HwError::Driver {
+            call: "open".to_owned(),
+            source: error,
+        },
+    })?;
+    unsafe { own_handle(raw) }.ok_or(HwError::PawnIoMissing)
+}
+
+pub fn driver_present() -> bool {
+    !matches!(open_device(), Err(HwError::PawnIoMissing))
+}
+
 impl PawnIoModule {
     pub fn load(blob: &[u8]) -> Result<Self, HwError> {
-        let path = wide(DEVICE_PATH);
-        let raw = unsafe {
-            CreateFileW(
-                PCWSTR(path.as_ptr()),
-                (GENERIC_READ | GENERIC_WRITE).0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                None,
-            )
-        }
-        .map_err(|error| match error.code() {
-            code if code == ERROR_FILE_NOT_FOUND.to_hresult()
-                || code == ERROR_PATH_NOT_FOUND.to_hresult() =>
-            {
-                HwError::PawnIoMissing
-            }
-            code if code == ERROR_ACCESS_DENIED.to_hresult() => HwError::AccessDenied,
-            _ => HwError::Driver {
-                call: "open".to_owned(),
-                source: error,
-            },
-        })?;
-        let handle = unsafe { own_handle(raw) }.ok_or(HwError::PawnIoMissing)?;
+        let handle = open_device()?;
         unsafe {
             DeviceIoControl(
                 borrow_handle(&handle),

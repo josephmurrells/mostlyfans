@@ -1,18 +1,39 @@
 #![cfg(windows)]
 
+mod dialog;
 mod directory;
 mod handle;
+mod integrity;
+pub mod paths;
+mod pipe;
+mod power;
 mod process;
 mod registry;
 mod security;
+mod session;
+mod shell;
+mod sync;
 mod token;
 
+pub use dialog::{DialogKind, message_box};
 pub use directory::{PRIVATE_DATA_SDDL, secure_directory};
 pub use handle::{borrow_handle, own_handle};
-pub use process::running_process_names;
+pub use pipe::{AnonymousPipe, nonblocking_writer};
+pub use power::{PowerEvent, PowerSubscription, subscribe_power, unbiased_time};
+pub use process::{
+    Breakaway, Process, Spawned, current_process_in_job, current_session_id,
+    duplicate_current_process, inherited_pipe, inherited_process, lock_against_replacement,
+    quote_argument, run_captured, running_process_names, spawn_with_handles,
+};
 pub use registry::read_local_machine_string;
 pub use security::SecurityAttributes;
-pub use token::is_elevated;
+pub use session::{SessionEvent, spawn_session_window};
+pub use shell::{delete_at_reboot, program_files_dir, system_dir};
+pub use sync::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
+pub use token::{current_user_sid, is_elevated};
+pub use windows::Win32::System::Threading::{
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+};
 
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -63,6 +84,7 @@ mod tests {
     #[test]
     fn sddl_parses() {
         assert!(SecurityAttributes::from_sddl("D:(A;;GA;;;SY)").is_ok());
+        assert!(SecurityAttributes::from_sddl(ADMIN_ONLY_SDDL).is_ok());
         assert!(SecurityAttributes::from_sddl("not sddl").is_err());
     }
 }

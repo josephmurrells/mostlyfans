@@ -29,7 +29,7 @@ impl Tray {
     pub fn new(ctx: &egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
         let show = MenuItem::new("Open FanForge", true, None);
-        let exit = MenuItem::new("Exit window", true, None);
+        let exit = MenuItem::new("Quit FanForge", true, None);
         menu.append_items(&[&show, &PredefinedMenuItem::separator(), &exit])?;
 
         let (menu_tx, events) = mpsc::channel();
