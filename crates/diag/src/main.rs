@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use fanforge_core::Duty;
 use fanforge_hw::HwError;
-use fanforge_hw::board::{detect_identity, select_profile};
+use fanforge_hw::board::detect_identity;
 use fanforge_hw::ite::{FAN_CHANNELS, It8655e, RegisterDump};
 use fanforge_hw::mutex::{ISA_BUS, NamedMutex};
 use fanforge_hw::pawnio;
@@ -110,11 +110,7 @@ fn detect() -> DiagResult {
         "Super I/O: chip {:#06x} version {} at base {:#06x}",
         config.chip_id, config.version, config.base_address
     );
-    let profile = select_profile(&identity, config.chip_id);
-    println!(
-        "Profile: {} (verified: {}, read-only: {})",
-        profile.name, profile.verified, profile.read_only
-    );
+    println!("Fan headers: {FAN_CHANNELS}");
     Ok(())
 }
 

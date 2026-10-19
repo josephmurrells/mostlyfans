@@ -267,8 +267,13 @@ impl Engine {
         override_state: Option<FanState>,
         elapsed: Duration,
     ) -> (FanStatus, Action) {
-        let limits = self.limits.get(fan).copied().unwrap_or_default();
         let settings = self.config.settings(fan);
+        let limits = self
+            .limits
+            .get(fan)
+            .copied()
+            .unwrap_or_default()
+            .for_header(settings.case_fan);
         let failure_limit = self.config.safety.sensor_failure_ticks;
         let runtime = self.fans.entry(fan.clone()).or_default();
 
@@ -657,6 +662,35 @@ mod tests {
             Rig::status(&rig.tick(), "pwm1").output,
             Some(Duty::new(20.0))
         );
+    }
+
+    fn header_output(duty: f32, case_fan: bool, allow_stop: bool) -> Option<Duty> {
+        let mut config = config_with(&[(
+            "pwm1",
+            FanMode::Manual {
+                duty: Duty::new(duty),
+            },
+        )]);
+        config.fans.insert(
+            "pwm1".into(),
+            crate::config::FanSettings {
+                case_fan,
+                allow_stop,
+                ..Default::default()
+            },
+        );
+        let mut rig = Rig::new(config, FanLimits::default());
+        Rig::status(&rig.tick(), "pwm1").output
+    }
+
+    #[test]
+    fn case_fans_use_a_lower_floor_and_stop_only_when_allowed() {
+        assert_eq!(header_output(25.0, false, false), Some(Duty::new(30.0)));
+        assert_eq!(header_output(25.0, true, false), Some(Duty::new(25.0)));
+        assert_eq!(header_output(10.0, true, false), Some(Duty::new(20.0)));
+        assert_eq!(header_output(0.0, true, false), Some(Duty::new(20.0)));
+        assert_eq!(header_output(0.0, true, true), Some(Duty::OFF));
+        assert_eq!(header_output(0.0, false, true), Some(Duty::new(30.0)));
     }
 
     #[test]

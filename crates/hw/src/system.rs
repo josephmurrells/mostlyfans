@@ -3,14 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use fanforge_core::board::{BoardIdentity, BoardInfo, BoardProfile, FanLimits};
+use fanforge_core::board::{
+    BoardIdentity, BoardInfo, FanLimits, default_fan_name, fan_limits, temp_label, temp_sensor_id,
+};
 use fanforge_core::engine::{Action, Command};
 use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
 use fanforge_core::{Duty, FanId, SensorId};
 
 use crate::HwError;
 use crate::amd::AmdCpu;
-use crate::board::{detect_identity, select_profile};
+use crate::board::detect_identity;
 use crate::ite::{FAN_CHANNELS, It8655e};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
@@ -56,7 +58,6 @@ pub struct Hardware<P: PortIo = LpcIo> {
     chip: It8655e<P>,
     cpu: Result<AmdCpu, String>,
     identity: BoardIdentity,
-    profile: BoardProfile,
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
 }
@@ -65,12 +66,11 @@ impl Hardware<LpcIo> {
     pub fn open(snapshot_path: &Path) -> Result<Self, HwError> {
         let chip = open_chip()?;
         let identity = detect_identity();
-        let profile = select_profile(&identity, chip.config().chip_id);
         let cpu = AmdCpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
             tracing::warn!(%error, "CPU temperature sensors are unavailable");
         }
-        Self::from_parts(chip, cpu, identity, profile, snapshot_path)
+        Self::from_parts(chip, cpu, identity, snapshot_path)
     }
 }
 
@@ -79,7 +79,6 @@ impl<P: PortIo> Hardware<P> {
         chip: It8655e<P>,
         cpu: Result<AmdCpu, String>,
         identity: BoardIdentity,
-        profile: BoardProfile,
         snapshot_path: &Path,
     ) -> Result<Self, HwError> {
         let snapshot = BiosSnapshot::load(snapshot_path).unwrap_or_else(|error| {
@@ -90,7 +89,6 @@ impl<P: PortIo> Hardware<P> {
             chip,
             cpu,
             identity,
-            profile,
             snapshot,
             snapshot_path: snapshot_path.to_owned(),
         })
@@ -99,32 +97,20 @@ impl<P: PortIo> Hardware<P> {
     pub fn board_info(&self) -> BoardInfo {
         BoardInfo {
             identity: self.identity.clone(),
-            profile_name: self.profile.name.clone(),
             chip_id: self.chip.config().chip_id,
-            verified: self.profile.verified,
-            read_only: self.profile.read_only,
+            fan_headers: FAN_CHANNELS,
+            likely_cpu_fan: Some(FanId::for_channel(0)),
         }
     }
 
     pub fn fan_limits(&self) -> BTreeMap<FanId, FanLimits> {
-        self.profile.fan_limits()
+        fan_limits(FAN_CHANNELS)
     }
 
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         if let Err(error) = &self.cpu {
             warnings.push(format!("CPU temperatures unavailable: {error}"));
-        }
-        if self.profile.read_only {
-            warnings.push(format!(
-                "board `{}` has no profile; fans are monitored but not controlled",
-                self.identity.product
-            ));
-        } else if !self.profile.verified {
-            warnings.push(
-                "board profile is unverified: header names are provisional and every fan keeps a 30% floor"
-                    .to_owned(),
-            );
         }
         warnings
     }
@@ -168,27 +154,25 @@ impl<P: PortIo> Hardware<P> {
         let mut sensors = self.cpu_sensors();
         for (index, temp) in chip.temps.iter().enumerate() {
             sensors.push(SensorReading {
-                id: BoardProfile::temp_sensor_id(index),
-                label: self.profile.temp_label(index),
+                id: temp_sensor_id(index),
+                label: temp_label(index),
                 celsius: temp.map(f32::from),
             });
         }
-        let fans = self
-            .profile
-            .fans
+        let fans = chip
+            .channels
             .iter()
-            .filter(|channel| channel.index < FAN_CHANNELS)
-            .map(|channel| {
-                let state = chip.channels[channel.index];
+            .enumerate()
+            .map(|(index, state)| {
                 let mode = if state.is_auto() {
                     HardwareMode::Auto
                 } else {
                     HardwareMode::Manual
                 };
                 FanReading {
-                    id: FanId::for_channel(channel.index),
-                    label: channel.name.clone(),
-                    rpm: chip.rpm[channel.index],
+                    id: FanId::for_channel(index),
+                    label: default_fan_name(index),
+                    rpm: chip.rpm[index],
                     mode,
                     duty: (mode == HardwareMode::Manual).then(|| Duty::from_raw(state.duty)),
                 }
@@ -298,7 +282,6 @@ mod tests {
     use super::*;
 
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    use crate::board::embedded_profiles;
     use crate::ite::fake::{FakeIte, SharedFake};
 
     fn lock(tag: &str) -> NamedMutex {
@@ -315,10 +298,19 @@ mod tests {
             chip,
             Err("no CPU in tests".to_owned()),
             BoardIdentity::default(),
-            embedded_profiles().remove(0),
             path,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn header_one_is_the_likely_cpu_fan() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = SharedFake::new(FakeIte::new());
+        let hardware = hardware("cpu-guess", &fake, &dir.path().join("snapshot.toml"));
+        let info = hardware.board_info();
+        assert_eq!(info.fan_headers, FAN_CHANNELS);
+        assert_eq!(info.likely_cpu_fan, Some(FanId::from("pwm1")));
     }
 
     #[test]
