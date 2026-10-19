@@ -1,23 +1,34 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alerts;
 mod app;
 mod autostart;
-mod banner;
+mod changes;
 mod connection;
 mod curve_plot;
 mod curves;
 mod fans;
+#[cfg(test)]
+mod fixtures;
 mod format;
+mod glyph;
 mod guardian;
 mod guardian_link;
+mod history;
+mod icons;
 mod instance;
 mod logging;
 mod notices;
+mod overview;
 mod pawnio_setup;
-mod sensors;
+mod prefs;
 mod session;
 mod settings;
+mod shell;
+mod status;
+mod theme;
 mod tray;
+mod widgets;
 
 use std::env;
 use std::process::ExitCode;
@@ -39,8 +50,10 @@ use crate::autostart::AutostartState;
 use crate::guardian_link::GuardianLink;
 use crate::instance::Claim;
 use crate::notices::{Notices, Topic};
+use crate::prefs::Prefs;
 
 const TITLE: &str = "FanForge";
+const WINDOW_ICON_SIZE: u32 = 64;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "FanForge fan control")]
@@ -174,9 +187,16 @@ fn run_app(minimized: bool) -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
-            .with_inner_size([980.0, 680.0])
-            .with_min_inner_size([720.0, 480.0])
+            .with_app_id("FanForge")
+            .with_icon(Arc::new(egui::IconData {
+                rgba: glyph::fan_rgba(WINDOW_ICON_SIZE, glyph::BLUE),
+                width: WINDOW_ICON_SIZE,
+                height: WINDOW_ICON_SIZE,
+            }))
+            .with_inner_size([1080.0, 720.0])
+            .with_min_inner_size([720.0, 520.0])
             .with_visible(!minimized),
+        persistence_path: Some(paths::data_dir().join("window.ron")),
         ..Default::default()
     };
     let show_gate = instance.show_gate();
@@ -185,16 +205,19 @@ fn run_app(minimized: bool) -> ExitCode {
         options,
         Box::new(move |creation| {
             let ctx = &creation.egui_ctx;
+            theme::install(ctx);
+            let prefs = Prefs::load(creation.storage);
             if let Err(error) = show_gate.forward_to(ctx) {
                 tracing::warn!(%error, "a second launch cannot bring this window forward");
             }
             Ok(Box::new(app::FanForgeApp::new(
                 ctx,
-                controller,
+                Box::new(controller),
                 notices,
                 show_gate,
                 autostart,
                 on_driver_installed,
+                prefs,
             )))
         }),
     );

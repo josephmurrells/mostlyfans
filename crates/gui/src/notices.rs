@@ -26,8 +26,17 @@ impl Notices {
         self.entries().remove(&topic);
     }
 
-    pub fn list(&self) -> Vec<String> {
-        self.entries().values().cloned().collect()
+    pub fn list(&self) -> Vec<(Topic, String)> {
+        self.entries()
+            .iter()
+            .map(|(topic, text)| (*topic, text.clone()))
+            .collect()
+    }
+}
+
+impl Topic {
+    pub fn dismissable(self) -> bool {
+        matches!(self, Self::Autostart)
     }
 }
 
@@ -41,8 +50,21 @@ mod tests {
         notices.set(Topic::Guardian, "first");
         notices.set(Topic::Autostart, "path");
         notices.set(Topic::Guardian, "second");
-        assert_eq!(notices.list(), vec!["second", "path"]);
+        assert_eq!(
+            notices.list(),
+            vec![
+                (Topic::Guardian, "second".to_owned()),
+                (Topic::Autostart, "path".to_owned())
+            ]
+        );
         notices.clear(Topic::Guardian);
-        assert_eq!(notices.list(), vec!["path"]);
+        assert_eq!(notices.list(), vec![(Topic::Autostart, "path".to_owned())]);
+    }
+
+    #[test]
+    fn only_the_autostart_notice_can_be_dismissed() {
+        assert!(Topic::Autostart.dismissable());
+        assert!(!Topic::Guardian.dismissable());
+        assert!(!Topic::GuardianJob.dismissable());
     }
 }

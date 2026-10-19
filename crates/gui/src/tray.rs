@@ -6,7 +6,10 @@ use eframe::egui::{self, ViewportCommand};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::glyph;
+
 const ICON_SIZE: u32 = 32;
+const PROFILE_OFFSET: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
@@ -17,6 +20,8 @@ pub enum TrayAction {
 pub struct Tray {
     icon: TrayIcon,
     menu: Menu,
+    status: MenuItem,
+    tint: [u8; 3],
     show_id: MenuId,
     profiles: Vec<(MenuId, CheckMenuItem, String)>,
     profile_names: Vec<String>,
@@ -28,9 +33,16 @@ pub struct Tray {
 impl Tray {
     pub fn new(ctx: &egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
+        let status = MenuItem::new("Starting…", false, None);
         let show = MenuItem::new("Open FanForge", true, None);
         let exit = MenuItem::new("Quit FanForge", true, None);
-        menu.append_items(&[&show, &PredefinedMenuItem::separator(), &exit])?;
+        menu.append_items(&[
+            &status,
+            &PredefinedMenuItem::separator(),
+            &show,
+            &PredefinedMenuItem::separator(),
+            &exit,
+        ])?;
 
         let (menu_tx, events) = mpsc::channel();
         let menu_ctx = ctx.clone();
@@ -64,11 +76,13 @@ impl Tray {
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
             .with_tooltip("FanForge")
-            .with_icon(fan_icon()?)
+            .with_icon(fan_icon(glyph::BLUE)?)
             .build()?;
         Ok(Self {
             icon,
             menu,
+            status,
+            tint: glyph::BLUE,
             show_id,
             profiles: Vec::new(),
             profile_names: Vec::new(),
@@ -96,7 +110,14 @@ impl Tray {
         actions
     }
 
-    pub fn sync(&mut self, profiles: &[String], active: &str, tooltip: &str) {
+    pub fn sync(
+        &mut self,
+        profiles: &[String],
+        active: &str,
+        status: &str,
+        tooltip: &str,
+        tint: [u8; 3],
+    ) {
         if self.profile_names != profiles {
             for (_, item, _) in self.profiles.drain(..) {
                 if let Err(error) = self.menu.remove(&item) {
@@ -105,7 +126,7 @@ impl Tray {
             }
             for (position, name) in profiles.iter().enumerate() {
                 let item = CheckMenuItem::new(name, true, name == active, None);
-                if let Err(error) = self.menu.insert(&item, position + 1) {
+                if let Err(error) = self.menu.insert(&item, position + PROFILE_OFFSET) {
                     tracing::warn!(%error, "failed to add tray menu item");
                 }
                 self.profiles.push((item.id().clone(), item, name.clone()));
@@ -114,6 +135,20 @@ impl Tray {
         }
         for (_, item, name) in &self.profiles {
             item.set_checked(name == active);
+        }
+        if self.status.text() != status {
+            self.status.set_text(status);
+        }
+        if self.tint != tint {
+            match fan_icon(tint) {
+                Ok(icon) => {
+                    if let Err(error) = self.icon.set_icon(Some(icon)) {
+                        tracing::warn!(%error, "failed to update the tray icon");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "failed to draw the tray icon"),
+            }
+            self.tint = tint;
         }
         if self.tooltip != tooltip {
             if let Err(error) = self.icon.set_tooltip(Some(tooltip)) {
@@ -131,28 +166,6 @@ pub fn reveal(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
-fn fan_icon() -> Result<Icon, tray_icon::BadIcon> {
-    let size = ICON_SIZE as f32;
-    let center = size / 2.0;
-    let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            let radius = (dx * dx + dy * dy).sqrt();
-            let angle = dy.atan2(dx);
-            let blade = (angle * 3.0).sin() > 0.2;
-            let pixel = if radius < 3.5 {
-                [240, 240, 240, 255]
-            } else if radius < center - 1.0 && blade {
-                [64, 156, 255, 255]
-            } else if radius < center - 1.0 {
-                [30, 40, 56, 255]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba.extend_from_slice(&pixel);
-        }
-    }
-    Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE)
+fn fan_icon(tint: [u8; 3]) -> Result<Icon, tray_icon::BadIcon> {
+    Icon::from_rgba(glyph::fan_rgba(ICON_SIZE, tint), ICON_SIZE, ICON_SIZE)
 }

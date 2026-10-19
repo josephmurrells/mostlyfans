@@ -1,0 +1,15 @@
+pub const OVERVIEW: &str = "\u{E80F}";
+pub const FANS: &str = "\u{EC4A}";
+pub const CURVES: &str = "\u{E9D2}";
+pub const SETTINGS: &str = "\u{E713}";
+pub const WARNING: &str = "\u{E7BA}";
+pub const ERROR: &str = "\u{E783}";
+pub const INFO: &str = "\u{E946}";
+pub const CHECK: &str = "\u{E73E}";
+pub const CLOSE: &str = "\u{E711}";
+pub const ADD: &str = "\u{E710}";
+pub const DELETE: &str = "\u{E74D}";
+pub const RENAME: &str = "\u{E70F}";
+pub const DUPLICATE: &str = "\u{E8C8}";
+pub const IDENTIFY: &str = "\u{E7B3}";
+pub const FOLDER: &str = "\u{E838}";
