@@ -2,6 +2,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke,
     Vec2, pos2, vec2,
 };
+use fanforge_core::config::MAX_CURVE_POINTS;
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, sorted_points};
 
 use crate::theme::{self, CAPTION, Palette};
@@ -132,11 +133,11 @@ pub fn show(
                 points.remove(index);
                 changed = true;
             }
-            Some(_) => {}
-            None => {
+            None if points.len() < MAX_CURVE_POINTS => {
                 points.push(mapping.to_curve(cursor));
                 changed = true;
             }
+            Some(_) | None => {}
         }
     }
     if nearest.is_some() || dragging.is_some() {

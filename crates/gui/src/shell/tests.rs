@@ -281,6 +281,108 @@ fn opening_a_fan_card_shows_that_fan() {
     );
 }
 
+#[test]
+fn edits_are_locked_while_an_apply_is_in_flight() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    make_dirty(&mut harness);
+    link.0.borrow_mut().hold = true;
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+    assert!(harness.query_by_label("Applying…").is_some());
+    assert!(harness.get_by_label("Fixed").accesskit_node().is_disabled());
+    link.release();
+    settle(&mut harness);
+    assert_eq!(harness.state().toasts.texts(), vec!["Changes applied"]);
+    assert!(!harness.get_by_label("Fixed").accesskit_node().is_disabled());
+}
+
+#[test]
+fn a_profile_switch_during_an_apply_waits_for_it() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    make_dirty(&mut harness);
+    link.0.borrow_mut().hold = true;
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+    assert!(!harness.state_mut().request_profile("Silent".to_owned()));
+    settle(&mut harness);
+    assert!(harness.query_by_label("Discard and switch").is_none());
+    link.release();
+    settle(&mut harness);
+    assert_eq!(link.sent(), vec!["config:Balanced", "profile:Silent"]);
+    assert_eq!(link.live_config().active_profile, "Silent");
+}
+
+#[test]
+fn a_rejected_apply_keeps_the_edits() {
+    let link = FakeLink::new(fixtures::state());
+    link.0.borrow_mut().reject_config = Some("invalid safety settings".to_owned());
+    let mut harness = harness(&link, Page::Fans);
+    make_dirty(&mut harness);
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+    assert!(harness.query_by_label("Apply").is_some());
+    assert_eq!(
+        harness.state().toasts.texts(),
+        vec!["Your changes were rejected: invalid safety settings"]
+    );
+    assert_eq!(
+        active_mode(&link, 0),
+        fixtures::config().mode(&fixtures::fan(0))
+    );
+}
+
+#[test]
+fn the_status_dropdown_switches_profiles() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Overview);
+    harness.get_by_label("Active profile").click();
+    settle(&mut harness);
+    harness.get_by_label("Performance").click();
+    settle(&mut harness);
+    assert_eq!(link.sent(), vec!["profile:Performance"]);
+}
+
+#[test]
+fn choosing_the_active_profile_does_nothing() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    make_dirty(&mut harness);
+    assert!(!harness.state_mut().request_profile("Balanced".to_owned()));
+    settle(&mut harness);
+    assert!(harness.query_by_label("Discard and switch").is_none());
+    assert!(link.sent().is_empty());
+}
+
+#[test]
+fn opening_a_page_never_rounds_or_clamps_values() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| {
+        state.config.safety.release_c = 84.5;
+        let active = state.config.active_profile.clone();
+        state.config.profiles.get_mut(&active).unwrap().fans.insert(
+            fixtures::fan(0),
+            FanMode::Manual {
+                duty: fanforge_core::Duty::new(37.5),
+            },
+        );
+        state
+            .config
+            .fans
+            .entry(fixtures::fan(0))
+            .or_default()
+            .min_duty = fanforge_core::Duty::new(12.3);
+    });
+    for page in [Page::Fans, Page::Settings] {
+        let mut harness = harness(&link, page);
+        if page == Page::Fans {
+            click(&mut harness, "Advanced");
+        }
+        assert!(harness.query_by_label("Apply").is_none(), "{page:?}");
+    }
+}
+
 fn screenshot(harness: &mut Harness<'_, Shell>, dir: &std::path::Path, name: &str) {
     let image = harness.render().expect("render");
     image.save(dir.join(format!("{name}.png"))).expect("save");

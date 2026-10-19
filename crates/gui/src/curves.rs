@@ -297,6 +297,12 @@ impl CurveEditor {
                 );
             });
         });
+        if curve.name.trim().is_empty() {
+            ui.label(
+                RichText::new(format!("{}  A curve needs a name", icons::WARNING))
+                    .color(theme::of(ui).warn),
+            );
+        }
         if users.is_empty() {
             ui.label(widgets::muted("Not used by any fan yet."));
         } else {
@@ -307,7 +313,7 @@ impl CurveEditor {
         widgets::card(ui, |ui| {
             widgets::card_title(ui, "Shape", None);
             if let Some(sensor) = sensor_of(&mut curve.kind) {
-                changed |= sensor_picker(ui, state, sensor);
+                changed |= sensor_picker(ui, state, &id, sensor);
                 ui.add_space(SPACE_S);
             }
             let live = Live {
@@ -320,7 +326,7 @@ impl CurveEditor {
             match &mut curve.kind {
                 CurveKind::Graph { points, .. } => {
                     changed |= self.plot(ui, points, 1, &live, floor.as_ref());
-                    changed |= point_table(ui, points);
+                    changed |= point_table(ui, &id, points);
                 }
                 CurveKind::Linear { start, end, .. } => {
                     let mut points = vec![*start, *end];
@@ -340,7 +346,12 @@ impl CurveEditor {
                     ui.horizontal(|ui| {
                         let label = ui.label("Speed");
                         changed |= ui
-                            .add(egui::Slider::new(duty, 0.0..=100.0).suffix("%").integer())
+                            .add(
+                                egui::Slider::new(duty, 0.0..=100.0)
+                                    .suffix("%")
+                                    .fixed_decimals(0)
+                                    .clamping(egui::SliderClamping::Edits),
+                            )
                             .labelled_by(label.id)
                             .changed();
                     });
@@ -422,7 +433,12 @@ fn default_sensor(state: &ControlState) -> SensorId {
         .map_or_else(|| SensorId::new("cpu/tctl"), |sensor| sensor.id.clone())
 }
 
-fn sensor_picker(ui: &mut egui::Ui, state: &ControlState, sensor: &mut SensorId) -> bool {
+fn sensor_picker(
+    ui: &mut egui::Ui,
+    state: &ControlState,
+    curve: &CurveId,
+    sensor: &mut SensorId,
+) -> bool {
     let mut changed = false;
     let selected = state
         .readings
@@ -432,7 +448,7 @@ fn sensor_picker(ui: &mut egui::Ui, state: &ControlState, sensor: &mut SensorId)
         .map_or_else(|| sensor.to_string(), |candidate| candidate.label.clone());
     ui.horizontal(|ui| {
         let label = ui.label("Temperature from");
-        ComboBox::from_id_salt("curve-sensor")
+        ComboBox::from_id_salt(("curve-sensor", curve.as_str()))
             .selected_text(selected)
             .width(200.0)
             .show_ui(ui, |ui| {
@@ -495,12 +511,12 @@ fn point_editor(ui: &mut egui::Ui, point: &mut CurvePoint) -> bool {
     temp.changed() || duty.changed()
 }
 
-fn point_table(ui: &mut egui::Ui, points: &mut Vec<CurvePoint>) -> bool {
+fn point_table(ui: &mut egui::Ui, curve: &CurveId, points: &mut Vec<CurvePoint>) -> bool {
     let mut changed = false;
     let mut remove = None;
     ui.add_space(SPACE_S);
     let can_remove = points.len() > 1;
-    egui::Grid::new("curve-points")
+    egui::Grid::new(("curve-points", curve.as_str()))
         .num_columns(3)
         .spacing(vec2(SPACE_S, SPACE_S))
         .show(ui, |ui| {

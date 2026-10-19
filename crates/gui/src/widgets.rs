@@ -13,6 +13,7 @@ use crate::theme::{
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 const DOT_RADIUS: f32 = 4.0;
 const MIN_SPARK_SPAN: f32 = 0.05;
+const MAX_SPARK_POINTS: usize = 120;
 
 pub fn with_icon(icon: &str, text: &str) -> String {
     format!("{icon}  {text}")
@@ -246,8 +247,15 @@ pub fn sparkline(
     }
     let (low, high) = range;
     let span = (high - low).max(f32::EPSILON);
+    let stride = points.len().div_ceil(MAX_SPARK_POINTS).max(1);
     let line: Vec<Pos2> = points
         .iter()
+        .step_by(stride)
+        .chain(
+            points
+                .last()
+                .filter(|_| !(points.len() - 1).is_multiple_of(stride)),
+        )
         .map(|(x, y)| {
             pos2(
                 rect.left() + rect.width() * x.clamp(0.0, 1.0),
@@ -272,7 +280,10 @@ pub fn sparkline(
 
 pub fn confirm(ui: &mut egui::Ui, id: Id, label: &str, question: &str, enabled: bool) -> bool {
     let open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-    if !open {
+    if open && !enabled {
+        ui.data_mut(|data| data.remove::<bool>(id));
+    }
+    if !open || !enabled {
         if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
             ui.data_mut(|data| data.insert_temp(id, true));
         }

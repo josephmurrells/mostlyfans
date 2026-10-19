@@ -130,6 +130,9 @@ pub struct Inner {
     pub state: Arc<ControlState>,
     pub sent: Vec<Sent>,
     results: Vec<CommandResult>,
+    held: Vec<Request>,
+    pub hold: bool,
+    pub reject_config: Option<String>,
 }
 
 #[derive(Clone)]
@@ -142,6 +145,9 @@ impl FakeLink {
             state: Arc::new(state),
             sent: Vec::new(),
             results: Vec::new(),
+            held: Vec::new(),
+            hold: false,
+            reject_config: None,
         })))
     }
 
@@ -150,6 +156,17 @@ impl FakeLink {
         let mut state = (*inner.state).clone();
         change(&mut state);
         inner.state = Arc::new(state);
+    }
+
+    pub fn release(&self) {
+        let held = {
+            let mut inner = self.0.borrow_mut();
+            inner.hold = false;
+            std::mem::take(&mut inner.held)
+        };
+        for request in held {
+            self.send(request);
+        }
     }
 
     pub fn live_config(&self) -> Config {
@@ -177,7 +194,21 @@ impl ControlLink for FakeLink {
     }
 
     fn send(&self, request: Request) {
+        if self.0.borrow().hold {
+            self.0.borrow_mut().held.push(request);
+            return;
+        }
+        let rejection = self.0.borrow().reject_config.clone();
         let (sent, kind) = match request {
+            Request::ReplaceConfig(config) if rejection.is_some() => {
+                let mut inner = self.0.borrow_mut();
+                inner.sent.push(Sent::Config(config));
+                inner.results.push(CommandResult {
+                    kind: RequestKind::Config,
+                    outcome: Err(rejection.unwrap_or_default()),
+                });
+                return;
+            }
             Request::ReplaceConfig(config) => {
                 let applied = (*config).clone();
                 self.update(|state| state.config = applied);
