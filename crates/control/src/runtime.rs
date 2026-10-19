@@ -222,12 +222,8 @@ impl<B: Backend> Runtime<B> {
         }
 
         let findings = self.conflicts.poll().clone();
-        let read_only = self
-            .hardware
-            .as_ref()
-            .is_some_and(|hardware| hardware.board_info().read_only);
         self.engine
-            .set_monitor_only(read_only || !findings.controlling.is_empty());
+            .set_monitor_only(!findings.controlling.is_empty());
 
         self.beat();
         self.control(elapsed);
@@ -291,9 +287,7 @@ impl<B: Backend> Runtime<B> {
                 return;
             }
         };
-        let read_only = hardware.board_info().read_only;
-        let conflicting = !self.conflicts.poll().controlling.is_empty();
-        let take_control = !read_only && !conflicting;
+        let take_control = self.conflicts.poll().controlling.is_empty();
         match hardware.initialize_channels(take_control) {
             Ok(()) if take_control => self.unreleased = false,
             Ok(()) => {}
@@ -304,7 +298,7 @@ impl<B: Backend> Runtime<B> {
         let info = hardware.board_info();
         tracing::info!(
             board = %info.identity.product,
-            profile = %info.profile_name,
+            fan_headers = info.fan_headers,
             chip = format_args!("{:#06x}", info.chip_id),
             take_control,
             "hardware ready"
@@ -542,7 +536,6 @@ pub(crate) mod tests {
     use fanforge_core::Duty;
     use fanforge_core::board::BoardIdentity;
     use fanforge_core::config::FanMode;
-    use fanforge_hw::board::embedded_profiles;
     use fanforge_hw::ite::It8655e;
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
@@ -570,7 +563,6 @@ pub(crate) mod tests {
                 chip,
                 Err("no CPU in tests".to_owned()),
                 BoardIdentity::default(),
-                embedded_profiles().remove(0),
                 snapshot,
             )
         })

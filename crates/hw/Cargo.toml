@@ -14,7 +14,6 @@ fanforge-core.workspace = true
 fanforge-win.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-toml.workspace = true
 tracing.workspace = true
 windows.workspace = true
 
