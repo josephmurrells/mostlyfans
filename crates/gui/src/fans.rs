@@ -226,6 +226,7 @@ impl FansView {
             let mut name = edited.name.clone().unwrap_or_default();
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut name)
+                    .id(Id::unique(("fan-name", fan.as_str())))
                     .hint_text(&reading.label)
                     .font(theme::semibold(PAGE))
                     .char_limit(MAX_NAME_LEN)

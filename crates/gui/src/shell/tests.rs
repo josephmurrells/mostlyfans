@@ -554,3 +554,60 @@ fn a_calibration_landing_during_an_apply_still_confirms_it() {
     assert_eq!(harness.state().toasts.texts(), vec!["Changes applied"]);
     assert!(harness.query_by_label("Apply").is_none());
 }
+
+#[test]
+fn renaming_a_fan_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    settle(&mut harness);
+    for letter in ["C", "P", "U"] {
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text(letter);
+        settle(&mut harness);
+    }
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(
+        draft.settings(&fixtures::fan(0)).name.as_deref(),
+        Some("CPU coolerCPU")
+    );
+}
+
+#[test]
+fn renaming_a_curve_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Curves);
+    let before = harness
+        .state()
+        .draft
+        .clone()
+        .unwrap_or_else(|| link.live_config());
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    settle(&mut harness);
+    for letter in ["x", "y", "z"] {
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text(letter);
+        settle(&mut harness);
+    }
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(
+        draft.curves[0].name,
+        format!("{}xyz", before.curves[0].name)
+    );
+}

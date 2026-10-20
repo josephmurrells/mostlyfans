@@ -283,6 +283,7 @@ impl CurveEditor {
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut curve.name)
+                        .id(Id::unique(("curve-name", id.as_str())))
                         .font(theme::semibold(PAGE))
                         .char_limit(MAX_NAME_LEN)
                         .desired_width(320.0)
