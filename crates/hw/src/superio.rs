@@ -193,24 +193,28 @@ pub(crate) fn chip_matching(matches: impl Fn(&ChipSpec) -> bool) -> Option<&'sta
     CHIPS.iter().find(|chip| matches(chip))
 }
 
-fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
+fn read_config<P: PortIo>(io: &mut P, slot: Slot, unlock: bool) -> Result<ChipConfig, HwError> {
     if slot == Slot::Primary {
         match ite::read_config(io, true) {
             Err(HwError::ChipNotFound(_) | HwError::NotIte(_)) => {}
             result => return result,
         }
     }
-    nuvoton::read_config(io, slot)
+    nuvoton::read_config(io, slot, unlock)
 }
 
-fn reread_config<P: PortIo>(io: &mut P, current: &ChipConfig) -> Result<ChipConfig, HwError> {
+fn reread_config<P: PortIo>(
+    io: &mut P,
+    current: &ChipConfig,
+    unlock: bool,
+) -> Result<ChipConfig, HwError> {
     let changed = |found| HwError::ChipChanged {
         expected: current.chip_id,
         found,
     };
     let config = match current.chip.map {
         ChipMap::Ite(_) => ite::read_config(io, false),
-        ChipMap::Nuvoton(_) => nuvoton::read_config(io, current.slot),
+        ChipMap::Nuvoton(_) => nuvoton::read_config(io, current.slot, unlock),
     }
     .map_err(|error| match error {
         HwError::UnsupportedChip(found) => changed(found),
@@ -255,19 +259,29 @@ pub struct SuperIo<P: PortIo> {
     pub(crate) io: P,
     lock: NamedMutex,
     pub(crate) config: ChipConfig,
+    unlock: bool,
 }
 
 impl<P: PortIo> SuperIo<P> {
-    pub fn attach(mut io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
+    pub fn attach(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
+        Self::connect(io, slot, lock, false)
+    }
+
+    fn connect(mut io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
         let config = {
             let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-            read_config(&mut io, slot)?
+            read_config(&mut io, slot, unlock)?
         };
-        Ok(Self { io, lock, config })
+        Ok(Self {
+            io,
+            lock,
+            config,
+            unlock,
+        })
     }
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        let mut chip = Self::attach(io, slot, lock)?;
+        let mut chip = Self::connect(io, slot, lock, true)?;
         chip.transaction(|session| session.verify_vendor())?;
         Ok(chip)
     }
@@ -275,7 +289,7 @@ impl<P: PortIo> SuperIo<P> {
     pub fn reinitialize(&mut self) -> Result<(), HwError> {
         let config = {
             let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
-            reread_config(&mut self.io, &self.config)?
+            reread_config(&mut self.io, &self.config, self.unlock)?
         };
         self.config = config;
         self.transaction(|session| session.verify_vendor())
@@ -309,7 +323,7 @@ impl<P: PortIo> SuperIo<P> {
         let abandoned = guard.was_abandoned();
         if abandoned {
             tracing::warn!(mutex = %self.lock.name(), "bus mutex was abandoned; reinitialising the chip");
-            self.config = reread_config(&mut self.io, &self.config)?;
+            self.config = reread_config(&mut self.io, &self.config, self.unlock)?;
         }
         let base = self.config.base_address;
         match &self.config.chip.map {

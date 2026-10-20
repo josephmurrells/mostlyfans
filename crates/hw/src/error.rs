@@ -42,7 +42,9 @@ pub enum HwError {
         "environment controller configuration register reads {0:#04x}; the monitor is not running"
     )]
     UnexpectedConfiguration(u8),
-    #[error("the firmware has locked the Nuvoton hardware monitor I/O space")]
+    #[error(
+        "the firmware has locked the Nuvoton hardware monitor I/O space and it was not unlocked"
+    )]
     IoSpaceLocked,
     #[error("the Super I/O chip changed from {expected:#06x} to {found:#06x}")]
     ChipChanged { expected: u16, found: u16 },
