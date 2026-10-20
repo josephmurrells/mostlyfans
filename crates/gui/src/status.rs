@@ -25,7 +25,7 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
     let Some(state) = state else {
         return Overall::Starting;
     };
-    if state.critical {
+    if state.critical && !state.monitor_only {
         return Overall::Critical;
     }
     match state.hardware {
@@ -151,7 +151,12 @@ mod tests {
         state.hardware = HardwareStatus::DriverMissing;
         assert_eq!(overall(&running, Some(&state)), Overall::DriverMissing);
 
+        state.hardware = HardwareStatus::Ready;
         state.critical = true;
+        assert_eq!(overall(&running, Some(&state)), Overall::MonitorOnly);
+
+        state.monitor_only = false;
+        state.hardware = HardwareStatus::DriverMissing;
         assert_eq!(overall(&running, Some(&state)), Overall::Critical);
     }
 
