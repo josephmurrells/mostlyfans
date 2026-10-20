@@ -33,6 +33,7 @@ mod widgets;
 use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui;
@@ -42,6 +43,7 @@ use fanforge_control::legacy::{self, Removal};
 use fanforge_control::runtime::{Paths, Runtime};
 use fanforge_control::shared::Shared;
 use fanforge_control::{failsafe, watchdog};
+use fanforge_hw::sensors::{self, ExtraSensors};
 use fanforge_hw::system::Hardware;
 use fanforge_win::paths;
 use fanforge_win::{DialogKind, message_box};
@@ -54,6 +56,7 @@ use crate::prefs::Prefs;
 
 const TITLE: &str = "FanForge";
 const WINDOW_ICON_SIZE: u32 = 64;
+const FIRST_SENSOR_ROUND: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Parser)]
 #[command(version, about = "FanForge fan control")]
@@ -149,6 +152,10 @@ fn run_app(minimized: bool) -> ExitCode {
     let snapshot = paths::bios_snapshot_path();
     let shared = Arc::new(Shared::default());
     let sink = guardian.sink();
+    let extras = ExtraSensors::start(sensors::default_sources());
+    if !extras.wait_for_first_round(FIRST_SENSOR_ROUND) {
+        tracing::warn!("GPU and drive sensors are slow to report; starting without them");
+    }
     let factory = Box::new(move |shared, messages| {
         Runtime::new(
             Paths::default(),
@@ -158,6 +165,7 @@ fn run_app(minimized: bool) -> ExitCode {
             ConflictMonitor::default(),
         )
         .with_signals(Arc::clone(&sink))
+        .with_extra_sensors(extras.clone())
     });
     let release_snapshot = snapshot.clone();
     let direct_release =

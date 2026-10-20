@@ -35,11 +35,34 @@ pub enum HwError {
     )]
     InvalidBaseAddress { address: u16, verify: u16 },
     #[error("unexpected environment controller vendor id {0:#04x}")]
-    VendorMismatch(u8),
+    VendorMismatch(u16),
+    #[error("chip id {0:#06x} is not an ITE chip")]
+    NotIte(u16),
+    #[error(
+        "environment controller configuration register reads {0:#04x}; the monitor is not running"
+    )]
+    UnexpectedConfiguration(u8),
+    #[error("the firmware has locked the Nuvoton hardware monitor I/O space")]
+    IoSpaceLocked,
+    #[error("the Super I/O chip changed from {expected:#06x} to {found:#06x}")]
+    ChipChanged { expected: u16, found: u16 },
+    #[error(
+        "bios_snapshot.toml records fans driven on chip {owner:#06x}, but the attached chip is {found:#06x}; check that the fans are under BIOS control, then delete {}",
+        fanforge_win::paths::data_dir().join("bios_snapshot.toml").display()
+    )]
+    ForeignSnapshot { owner: u16, found: u16 },
+    #[error("fan control on the {0} is not verified yet; FanForge only monitors it")]
+    Unverified(&'static str),
+    #[error("fan channel {0} is in manual mode with no saved BIOS state to return to")]
+    UnknownBiosMode(usize),
     #[error("environment controller did not acknowledge register {0:#04x}")]
     ReadNotAcknowledged(u8),
     #[error("register {register:#04x} verification failed: wrote {written:#04x}, read {read:#04x}")]
-    VerifyFailed { register: u8, written: u8, read: u8 },
+    VerifyFailed {
+        register: u16,
+        written: u8,
+        read: u8,
+    },
     #[error("fan channel {0} does not exist")]
     InvalidChannel(usize),
     #[error("unsupported CPU: {0}")]

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::FanId;
 use crate::board::{BoardInfo, FanLimits};
+use crate::calibration::CalibrationView;
 use crate::config::Config;
 use crate::engine::FanStatus;
 use crate::telemetry::Readings;
@@ -27,7 +28,11 @@ pub struct ControlState {
     pub limits: BTreeMap<FanId, FanLimits>,
     pub config: Config,
     pub critical: bool,
+    #[serde(default)]
+    pub critical_reached: bool,
     pub monitor_only: bool,
     pub conflicts: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub calibration: CalibrationView,
 }

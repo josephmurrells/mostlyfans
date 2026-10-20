@@ -11,12 +11,11 @@ use clap::{Parser, Subcommand};
 use fanforge_core::Duty;
 use fanforge_hw::HwError;
 use fanforge_hw::board::detect_identity;
-use fanforge_hw::ite::{FAN_CHANNELS, It8655e, RegisterDump};
-use fanforge_hw::mutex::{ISA_BUS, NamedMutex};
 use fanforge_hw::pawnio;
-use fanforge_hw::port::LpcIo;
+use fanforge_hw::sensors;
 use fanforge_hw::snapshot::BiosSnapshot;
-use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, force_all_auto, open_chip};
+use fanforge_hw::superio::RegisterDump;
+use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, attach_chip, force_all_auto, open_chip};
 use fanforge_win::InstanceMutex;
 use fanforge_win::paths::{self, INSTANCE_MUTEX};
 
@@ -40,6 +39,8 @@ enum Command {
     Detect,
     #[command(about = "Print one round of fan and temperature readings")]
     Read,
+    #[command(about = "Print GPU and drive temperatures (no driver or elevation needed)")]
+    Temps,
     #[command(
         about = "Dump Super I/O config and every EC bank as JSON without changing chip state"
     )]
@@ -51,7 +52,7 @@ enum Command {
     Diff { before: PathBuf, after: PathBuf },
     #[command(about = "Temporarily set one fan channel to a fixed duty, then restore BIOS control")]
     SetPwm {
-        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=7))]
         channel: u8,
         #[arg(long, help = "Duty in percent (30-100)")]
         duty: f32,
@@ -72,6 +73,7 @@ fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Detect => detect(),
         Command::Read => read(),
+        Command::Temps => temps(),
         Command::Dump { out } => dump(out.as_deref()),
         Command::Diff { before, after } => diff(&before, &after),
         Command::SetPwm {
@@ -96,21 +98,50 @@ fn main() -> ExitCode {
     }
 }
 
-fn attach() -> Result<It8655e<LpcIo>, HwError> {
-    It8655e::attach(LpcIo::open_primary()?, NamedMutex::open(ISA_BUS)?)
-}
-
 fn detect() -> DiagResult {
     let version = pawnio::installed_version().unwrap_or_else(|| "not installed".to_owned());
     println!("PawnIO version: {version}");
     let identity = detect_identity();
     println!("Board: {} {}", identity.manufacturer, identity.product);
-    let config = attach()?.config();
+    let chip = attach_chip()?;
+    let config = chip.config();
     println!(
-        "Super I/O: chip {:#06x} version {} at base {:#06x}",
-        config.chip_id, config.version, config.base_address
+        "Super I/O: {} (chip {:#06x} version {}) on port {:#04x}, base {:#06x}",
+        config.chip.name,
+        config.chip_id,
+        config.version,
+        config.slot.config_port(),
+        config.base_address
     );
-    println!("Fan headers: {FAN_CHANNELS}");
+    println!(
+        "Fan headers: {}, temperatures: {}",
+        chip.fan_count(),
+        chip.temp_names().len()
+    );
+    let control = if chip.fan_control() {
+        "verified"
+    } else {
+        "monitor only (not verified on this chip yet)"
+    };
+    println!("Fan control: {control}");
+    Ok(())
+}
+
+fn temps() -> DiagResult {
+    for mut source in sensors::default_sources() {
+        match source.read() {
+            Ok(readings) if readings.is_empty() => println!("{}: no sensors", source.name()),
+            Ok(readings) => {
+                for sensor in readings {
+                    let celsius = sensor
+                        .celsius
+                        .map_or_else(|| "n/a".to_owned(), |celsius| format!("{celsius:.1} °C"));
+                    println!("{:<32} {celsius:>9}  {}", sensor.label, sensor.id);
+                }
+            }
+            Err(error) => println!("{}: {error}", source.name()),
+        }
+    }
     Ok(())
 }
 
@@ -139,7 +170,7 @@ fn read() -> DiagResult {
 }
 
 fn dump(out: Option<&Path>) -> DiagResult {
-    let json = serde_json::to_string_pretty(&attach()?.dump()?)?;
+    let json = serde_json::to_string_pretty(&attach_chip()?.dump()?)?;
     match out {
         Some(path) => {
             fs::write(path, json)?;
@@ -176,9 +207,21 @@ fn set_pwm(channel: usize, duty: f32, timeout: Duration, force: bool) -> DiagRes
     }
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
     let mut chip = open_chip()?;
+    if !chip.fan_control() {
+        return Err(HwError::Unverified(chip.chip().name).into());
+    }
+    if channel >= chip.fan_count() {
+        return Err(format!(
+            "the {} has {} fan channels",
+            chip.chip().name,
+            chip.fan_count()
+        )
+        .into());
+    }
     let current = chip.channel_states()?[channel];
     let saved = snapshot
         .channel(channel)
+        .filter(|_| snapshot.chip_id == chip.config().chip_id)
         .or_else(|| current.is_auto().then_some(current));
 
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -218,7 +261,15 @@ fn watch(
 
 fn restore() -> DiagResult {
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
-    force_all_auto(&mut open_chip()?, &snapshot, RELEASE_BUDGET * 3)?;
-    println!("all {FAN_CHANNELS} channels returned to BIOS control");
+    let mut chip = open_chip()?;
+    if !chip.fan_control() {
+        println!(
+            "the {} is monitor-only; FanForge never drives its fans, so there is nothing to restore",
+            chip.chip().name
+        );
+        return Ok(());
+    }
+    force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3)?;
+    println!("all {} channels returned to BIOS control", chip.fan_count());
     Ok(())
 }

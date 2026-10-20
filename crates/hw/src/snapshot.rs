@@ -5,19 +5,55 @@ use fanforge_core::FanId;
 use fanforge_core::store::{self, StoreError};
 use serde::{Deserialize, Serialize};
 
-use crate::ite::ChannelState;
+use crate::ite::IT8655E_ID;
+use crate::superio::ChannelState;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BiosSnapshot {
+    #[serde(
+        default = "default_chip_id",
+        skip_serializing_if = "is_default_chip_id"
+    )]
+    pub chip_id: u16,
     #[serde(default)]
     pub channels: BTreeMap<FanId, ChannelState>,
     #[serde(default)]
     pub owned: BTreeSet<FanId>,
 }
 
+fn default_chip_id() -> u16 {
+    IT8655E_ID
+}
+
+fn is_default_chip_id(chip_id: &u16) -> bool {
+    *chip_id == IT8655E_ID
+}
+
+impl Default for BiosSnapshot {
+    fn default() -> Self {
+        Self::for_chip(IT8655E_ID)
+    }
+}
+
 impl BiosSnapshot {
+    pub fn for_chip(chip_id: u16) -> Self {
+        Self {
+            chip_id,
+            channels: BTreeMap::new(),
+            owned: BTreeSet::new(),
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self, StoreError> {
         Ok(store::load_toml(path)?.unwrap_or_default())
+    }
+
+    pub fn load_for(path: &Path, chip_id: u16) -> Result<Self, StoreError> {
+        Ok(store::load_toml(path)?.unwrap_or_else(|| Self::for_chip(chip_id)))
+    }
+
+    pub fn belongs_to(&self, chip_id: u16) -> bool {
+        self.chip_id == chip_id || self.owned.is_empty()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), StoreError> {
@@ -67,6 +103,7 @@ mod tests {
             control,
             duty,
             main_enabled: true,
+            ..ChannelState::default()
         }
     }
 
@@ -110,5 +147,27 @@ mod tests {
         snapshot.claim(0, state(0x80, 0x30));
         snapshot.save(&path).unwrap();
         assert_eq!(BiosSnapshot::load(&path).unwrap(), snapshot);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("chip_id"));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("kind"));
+    }
+
+    #[test]
+    fn other_chips_record_their_id_and_control_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bios_snapshot.toml");
+        let mut snapshot = BiosSnapshot::for_chip(0xD42B);
+        let nuvoton = ChannelState {
+            control: 0x50,
+            duty: 0x80,
+            main_enabled: true,
+            kind: crate::superio::ControlKind::Nuvoton,
+        };
+        assert!(nuvoton.is_auto());
+        snapshot.refresh(&[nuvoton]);
+        snapshot.save(&path).unwrap();
+        let loaded = BiosSnapshot::load(&path).unwrap();
+        assert_eq!(loaded, snapshot);
+        assert_eq!(loaded.chip_id, 0xD42B);
+        assert_eq!(BiosSnapshot::default().chip_id, IT8655E_ID);
     }
 }

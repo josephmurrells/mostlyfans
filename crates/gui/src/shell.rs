@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Id, Key, KeyboardShortcut, Margin, Modifiers, RichText,
-    Role, Sense, Stroke, WidgetInfo, pos2, vec2,
+    Role, Sense, Stroke, UiBuilder, WidgetInfo, pos2, vec2,
 };
 use fanforge_core::config::Config;
 use fanforge_core::state::{ControlState, HardwareStatus};
@@ -187,7 +187,8 @@ impl Shell {
                     self.toasts
                         .error(format!("Your changes were rejected: {message}"));
                 }
-                (RequestKind::Profile | RequestKind::Identify, Ok(())) => {}
+                (RequestKind::Profile | RequestKind::Identify | RequestKind::Calibrate, Ok(())) => {
+                }
                 (RequestKind::Profile, Err(message)) => {
                     if let Some((name, _)) = self.profile_override.take()
                         && let (Some(draft), Some(state)) = (self.draft.as_mut(), state)
@@ -201,6 +202,10 @@ impl Shell {
                 (RequestKind::Identify, Err(message)) => {
                     self.toasts.error(format!("Identify failed: {message}"));
                 }
+                (RequestKind::Calibrate, Err(message)) => {
+                    self.toasts
+                        .error(format!("Calibration could not start: {message}"));
+                }
             }
         }
     }
@@ -212,7 +217,13 @@ impl Shell {
         let Some(accepted_at) = pending.accepted_at else {
             return;
         };
-        let visible = state.is_some_and(|state| state.config == pending.config);
+        let visible = state.is_some_and(|state| {
+            let expected = Config {
+                calibration: state.config.calibration.clone(),
+                ..pending.config.clone()
+            };
+            state.config == expected
+        });
         if visible || accepted_at.elapsed() >= APPLY_SETTLE_TIMEOUT {
             self.pending = None;
             self.dirty = false;
@@ -316,8 +327,10 @@ impl Shell {
                 ui.set_max_width(ui.available_width().min(CONTENT_MAX_WIDTH));
                 self.alert_area(ui, &status, state.as_deref());
                 let editable = self.pending.is_none();
-                ui.add_enabled_ui(editable, |ui| {
-                    self.page(ui, &status, state.as_deref(), overall.is_live());
+                ui.scope_builder(UiBuilder::new().scope_id(Id::unique("page")), |ui| {
+                    ui.add_enabled_ui(editable, |ui| {
+                        self.page(ui, &status, state.as_deref(), overall.is_live());
+                    });
                 });
             });
         self.profile_prompt(&ctx, state.as_deref());
@@ -368,8 +381,15 @@ impl Shell {
                             board.identity.manufacturer, board.identity.product
                         ));
                         ui.label(widgets::muted(format!(
-                            "Super I/O {:#06x} · {} fan headers",
-                            board.chip_id, board.fan_headers
+                            "{} ({:#06x}) · {} fan headers{}",
+                            board.chip_name,
+                            board.chip_id,
+                            board.fan_headers,
+                            if board.fan_control {
+                                ""
+                            } else {
+                                " · monitor only"
+                            }
                         )));
                     }
                 });

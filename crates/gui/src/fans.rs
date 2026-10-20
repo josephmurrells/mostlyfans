@@ -1,4 +1,7 @@
 use eframe::egui::{self, ComboBox, Id, Margin, RichText, Slider, SliderClamping, Stroke};
+use fanforge_core::calibration::{
+    CalibrationOutcome, CalibrationProgress, FanCalibration, MARGIN, Phase,
+};
 use fanforge_core::config::{Config, FanMode, FanSettings, MAX_NAME_LEN};
 use fanforge_core::engine::FanState;
 use fanforge_core::state::ControlState;
@@ -223,6 +226,7 @@ impl FansView {
             let mut name = edited.name.clone().unwrap_or_default();
             let edit = ui.add(
                 egui::TextEdit::singleline(&mut name)
+                    .id(Id::unique(("fan-name", fan.as_str())))
                     .hint_text(&reading.label)
                     .font(theme::semibold(PAGE))
                     .char_limit(MAX_NAME_LEN)
@@ -275,7 +279,16 @@ impl FansView {
         }
         ui.add_space(SPACE_M);
 
-        touched |= self.header_card(ui, fan, likely_cpu, hardware_limits, &mut edited);
+        touched |= self.header_card(
+            ui,
+            fan,
+            likely_cpu,
+            hardware_limits,
+            state.config.calibration_for(fan),
+            &mut edited,
+        );
+        ui.add_space(SPACE_M);
+        calibration_card(ui, page, fan, reading);
         ui.add_space(SPACE_M);
         touched |= advanced_card(ui, fan, hardware_limits, &mut edited);
         if touched {
@@ -290,6 +303,7 @@ impl FansView {
         fan: &FanId,
         likely_cpu: bool,
         limits: fanforge_core::board::FanLimits,
+        calibration: Option<&FanCalibration>,
         settings: &mut FanSettings,
     ) -> bool {
         let mut changed = false;
@@ -370,7 +384,7 @@ impl FansView {
             }
             ui.label(widgets::caption(
                 ui,
-                format::effective_floor(limits, settings).describe(),
+                format::describe_floor(format::effective_floor(limits, settings, calibration)),
             ));
         });
         changed
@@ -385,22 +399,191 @@ struct Detail {
     mode: Option<FanMode>,
 }
 
+fn calibrating<'a>(page: &'a FanPage<'_>, fan: &FanId) -> Option<&'a CalibrationProgress> {
+    page.state
+        .calibration
+        .active
+        .as_ref()
+        .filter(|progress| &progress.fan == fan)
+}
+
 fn identify(ui: &mut egui::Ui, page: &FanPage<'_>, fan: &FanId, state: Option<&FanState>) {
     if matches!(state, Some(FanState::Identifying)) {
         widgets::spinner_label(ui, "Spinning…");
         return;
     }
+    let block = page
+        .identify_block
+        .or_else(|| calibrating(page, fan).map(|_| "This fan is being calibrated"));
     let button = ui.add_enabled(
-        page.identify_block.is_none(),
+        block.is_none(),
         egui::Button::new(widgets::with_icon(icons::IDENTIFY, "Identify")),
     );
-    let button = match page.identify_block {
+    let button = match block {
         Some(reason) => button.on_disabled_hover_text(reason),
         None => button.on_hover_text("Spin this fan at 100% for 3 seconds"),
     };
     if button.clicked() {
         page.link.send(Request::Identify(fan.clone()));
     }
+}
+
+fn phase_text(phase: Phase) -> &'static str {
+    match phase {
+        Phase::StepDown => "Stepping down",
+        Phase::Rest => "Letting it stop",
+        Phase::FindStart => "Finding the start duty",
+    }
+}
+
+fn calibration_card(ui: &mut egui::Ui, page: &FanPage<'_>, fan: &FanId, reading: &FanReading) {
+    let state = page.state;
+    widgets::card(ui, |ui| {
+        widgets::card_title(
+            ui,
+            "Calibration",
+            Some(
+                "Finds where this fan stops and starts, and raises its floor to match. It never lowers a floor.",
+            ),
+        );
+        if let Some(progress) = calibrating(page, fan) {
+            ui.horizontal(|ui| {
+                widgets::spinner_label(
+                    ui,
+                    &format!(
+                        "{} · {} · {}",
+                        phase_text(progress.phase),
+                        progress.duty,
+                        progress
+                            .rpm
+                            .map_or_else(|| "no signal".to_owned(), |rpm| format!("{rpm} rpm"))
+                    ),
+                );
+                if ui.button("Cancel calibration").clicked() {
+                    page.link.send(Request::CancelCalibration);
+                }
+            });
+            ui.label(widgets::caption(
+                ui,
+                format!(
+                    "{} steps measured · {:.0} s",
+                    progress.points.len(),
+                    progress.elapsed.as_secs_f32()
+                ),
+            ));
+        } else {
+            let other = state.calibration.active.as_ref().map(|progress| {
+                format!(
+                    "{} is being calibrated",
+                    format::fan_name(&state.config, state, &progress.fan)
+                )
+            });
+            let block = page
+                .identify_block
+                .map(str::to_owned)
+                .or(other)
+                .or_else(|| {
+                    reading
+                        .rpm
+                        .is_none()
+                        .then(|| "This header has no RPM signal".to_owned())
+                });
+            let button = ui.add_enabled(block.is_none(), egui::Button::new("Calibrate"));
+            let button = match &block {
+                Some(reason) => button.on_disabled_hover_text(reason),
+                None => button.on_hover_text("Measure where this fan stops and starts"),
+            };
+            if button.clicked() {
+                page.link.send(Request::Calibrate(fan.clone()));
+            }
+            if let Some(reason) = &block {
+                ui.label(widgets::caption(
+                    ui,
+                    format!("Calibration is unavailable: {reason}."),
+                ));
+            }
+            ui.label(widgets::caption(
+                ui,
+                "Steps down from 100% in 5% steps of at least 3 s each. It stays at or above the header floor, and only goes lower, down to 0%, on a case fan allowed to stop. It stops early if a temperature reaches 75 °C.",
+            ));
+        }
+        if let Some(report) = state
+            .calibration
+            .last
+            .as_ref()
+            .filter(|report| &report.fan == fan)
+        {
+            let palette = theme::of(ui);
+            let (text, color) = match &report.outcome {
+                CalibrationOutcome::Completed(_) => ("Calibration finished".to_owned(), palette.ok),
+                CalibrationOutcome::Aborted(reason) => {
+                    (format!("Calibration stopped: {reason}"), palette.warn)
+                }
+                CalibrationOutcome::NotRestarting => (
+                    "The fan did not restart, even at 100%. Check that it is connected and working."
+                        .to_owned(),
+                    palette.danger,
+                ),
+                CalibrationOutcome::Cancelled => {
+                    ("Calibration cancelled".to_owned(), palette.text_muted)
+                }
+            };
+            ui.add_space(SPACE_S);
+            ui.label(RichText::new(text).color(color));
+        }
+        if let Some(result) = state.config.calibration_for(fan) {
+            ui.add_space(SPACE_S);
+            calibration_result(ui, fan, result);
+        }
+    });
+}
+
+fn calibration_result(ui: &mut egui::Ui, fan: &FanId, result: &FanCalibration) {
+    let stop = result.stop_duty.map_or_else(
+        || format!("Keeps spinning down to {}", result.lowest_tested),
+        |duty| format!("Stops at {duty}"),
+    );
+    let start = result
+        .start_duty
+        .map(|duty| format!(" · starts at {duty}"))
+        .unwrap_or_default();
+    ui.label(RichText::new(format!("{stop}{start}")).strong());
+    let raise = match result.floor() {
+        Some(floor) => {
+            format!("Floor raised to at least {floor} ({MARGIN:.0} points above the stop duty).")
+        }
+        None => "The header floor is unchanged.".to_owned(),
+    };
+    ui.label(widgets::muted(raise));
+    if result.not_restarting {
+        ui.label(
+            RichText::new(format!(
+                "{}  It did not restart, even at 100%. Check that it is connected and working, then calibrate again.",
+                icons::WARNING
+            ))
+            .color(theme::of(ui).danger),
+        );
+    }
+    if result.points.is_empty() {
+        return;
+    }
+    egui::CollapsingHeader::new("Measured speeds")
+        .id_salt(("calibration-points", fan.as_str()))
+        .show(ui, |ui| {
+            egui::Grid::new(("calibration-grid", fan.as_str()))
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(widgets::muted("Duty"));
+                    ui.label(widgets::muted("Speed"));
+                    ui.end_row();
+                    for point in &result.points {
+                        ui.label(point.duty.to_string());
+                        ui.label(format!("{} rpm", point.rpm));
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 fn setup_strip(ui: &mut egui::Ui, fan: &FanId, unnamed: &[FanId], detail: &mut Detail) {
@@ -510,7 +693,7 @@ fn control_card(
         }
         ui.add_space(SPACE_S);
         let limits = state.limits.get(fan).copied().unwrap_or_default();
-        let floor = format::effective_floor(limits, settings);
+        let floor = format::effective_floor(limits, settings, state.config.calibration_for(fan));
         match &mut mode {
             FanMode::Auto => {
                 ui.label(widgets::muted(
@@ -540,7 +723,7 @@ fn control_card(
                         .color(theme::of(ui).warn),
                     );
                 } else {
-                    ui.label(widgets::caption(ui, floor.describe()));
+                    ui.label(widgets::caption(ui, format::describe_floor(floor)));
                 }
             }
             FanMode::Curve { curve } => {
@@ -587,7 +770,7 @@ fn control_card(
                     };
                     curve_plot::preview(ui, definition, &live, Some(floor.percent));
                 }
-                ui.label(widgets::caption(ui, floor.describe()));
+                ui.label(widgets::caption(ui, format::describe_floor(floor)));
             }
             FanMode::Sync { fan: leader } => {
                 let selected = others
@@ -613,7 +796,7 @@ fn control_card(
                     ui,
                     format!(
                         "Runs at the same duty as the fan it follows. {}",
-                        floor.describe()
+                        format::describe_floor(floor)
                     ),
                 ));
             }
