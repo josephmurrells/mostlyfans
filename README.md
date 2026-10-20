@@ -1,6 +1,6 @@
 # FanForge
 
-Rust fan control for Windows. Lists every fan header the Super I/O chip exposes, sets fixed speeds, and drives fans from temperature curves. There are no per-motherboard profiles: headers show up as Fan 1, Fan 2, … and you rename them in the Fans tab once you know which is which. (Earlier builds named the PRIME B350-PLUS headers CPU_FAN, CHA_FAN1 and CHA_FAN2; those are now Fan 1–3.) Fan control is supported on the ITE IT8655E (developed on an ASUS PRIME B350-PLUS), and it works from a cold boot without HWiNFO. Other ITE and Nuvoton chips are detected and monitored only; see [Supported chips](#supported-chips).
+Rust fan control for Windows. Lists every fan header the Super I/O chip exposes, sets fixed speeds, and drives fans from temperature curves. There are no per-motherboard profiles: headers show up as Fan 1, Fan 2, … and you rename them in the Fans tab once you know which is which. (Earlier builds named the PRIME B350-PLUS headers CPU_FAN, CHA_FAN1 and CHA_FAN2; those are now Fan 1–3.) Fan control is supported on the ITE IT8655E (developed on an ASUS PRIME B350-PLUS), where it works from a cold boot without HWiNFO, and on the ITE IT8689E. Other ITE and Nuvoton chips are detected and monitored only; see [Supported chips](#supported-chips).
 
 The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: the firmware leaves the IT8655E on the wrong EC bank, and FanForge selects bank 0 before every access.
 
@@ -10,7 +10,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 |---|---|---|
 | `fanforge-core` | – | Curves, control engine, safety rules, config, published state. Platform independent. |
 | `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts, System32 DLL loading, drive property queries). |
-| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe IT8655E), Ryzen SMN temperatures, GPU and drive temperature sources. |
+| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe IT8655E, IT8665E and IT8689E), Ryzen SMN temperatures, GPU and drive temperature sources. |
 | `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
 | `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
 | `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, dump, diff, guarded set-pwm, restore. |
@@ -20,7 +20,8 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 | Chip | Fan control | Notes |
 |---|---|---|
 | ITE IT8655E | **Yes** (verified) | 3 headers, 6 temperatures |
-| ITE IT8620E, IT8625E, IT8628E, IT8665E, IT8686E, IT8688E, IT8689E, IT8721F, IT8728F, IT8772E | Monitor only | config port 0x2E |
+| ITE IT8689E | **Yes** | 6 headers, 6 temperatures. Monitoring is tested on hardware; the control registers come from LibreHardwareMonitor and the Linux `it87` driver and haven't been tested with FanForge yet |
+| ITE IT8620E, IT8625E, IT8628E, IT8665E, IT8686E, IT8688E, IT8721F, IT8728F, IT8772E | Monitor only | config port 0x2E |
 | Nuvoton NCT6771F (NCT6775F), NCT6776F, NCT6779D, NCT6791D, NCT6792D, NCT6792D-A, NCT6793D, NCT6795D, NCT6796D, NCT6796D-R, NCT6797D, NCT6798D, NCT6799D | Monitor only | config port 0x2E or 0x4E |
 
 **Why monitor only:** FanForge's rule is that a guess never relaxes safety. The register maps for these chips come from LibreHardwareMonitor and have never been tested with FanForge on real hardware. On these chips FanForge reads temperatures, fan speeds and fan modes, and never writes a fan register. That includes quit, crash and sleep, because the BIOS keeps the fans throughout. It doesn't touch `bios_snapshot.toml` either. The app shows a monitor-only notice that names the chip. A chip gets fan control once it is marked verified in `crates/hw/src/chips.rs` after testing on hardware.
@@ -101,8 +102,8 @@ fanforge-diag diff cold.json after-hwinfo.json
 
 ## Safety model
 
-- **Bus access:** every hardware access holds `Global\Access_ISABUS.HTP.Method`. On the IT8655E (and IT8665E) it selects EC bank 0 first. On Nuvoton chips the hardware-monitor bank register is put back as it was found after every access. An abandoned mutex triggers a full chip re-initialisation, and that is refused if a different chip answers. Releases retry for up to 2 s when another tool holds the bus.
-- **BIOS snapshot:** before FanForge first drives a channel, it saves that channel's BIOS settings and marks it "owned" in `bios_snapshot.toml`. It refuses manual control if that file can't be written. After a crash, owned channels are restored from the saved values; channels it doesn't own are re-captured on every start, so BIOS changes are picked up.
+- **Bus access:** every hardware access holds `Global\Access_ISABUS.HTP.Method`. On the IT8655E, IT8665E and IT8689E it selects EC bank 0 first. On Nuvoton chips the hardware-monitor bank register is put back as it was found after every access. An abandoned mutex triggers a full chip re-initialisation, and that is refused if a different chip answers. Releases retry for up to 2 s when another tool holds the bus.
+- **BIOS snapshot:** before FanForge first drives a channel, it saves that channel's BIOS settings and marks it "owned" in `bios_snapshot.toml`. It refuses manual control if that file can't be written. After a crash, owned channels are restored from the saved values; channels it doesn't own are re-captured on every start, so BIOS changes are picked up. On chips where FanForge can't rebuild the BIOS mode from the register itself (Nuvoton and the IT8689E), it refuses to drive a header the BIOS left in manual mode, and a header in manual mode with no saved settings is set to 100% instead of being switched to auto.
 - **Fail-safe returns to BIOS control:**
   - **Quit, crash, sleep:** fans go back to BIOS control when you quit from the tray, the session ends (sign-out, restart, shutdown, Restart Manager), the system sleeps, or the control thread panics. A panic leaves a **Restart control** button.
   - **Stalled loop:** the in-process watchdog fires when the control loop stalls (3× the interval, at least 3 s). It releases the fans from the on-disk snapshot and exits.
@@ -129,7 +130,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 ## Not yet implemented
 
 - Testing the AMD GPU (ADL) path on real hardware
-- Fan control on chips other than the IT8655E (they are monitor-only until verified on hardware)
+- Fan control on chips other than the IT8655E and IT8689E (they are monitor-only until verified)
 - Fan headers that have a tachometer but no PWM output (e.g. the IT8686E's 6th tach) are not shown
 - ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips, Nuvoton NCT610xD/NCT668xD/NCT6701D, Winbond and Fintek chips
 - A default critical sensor for systems without `cpu/tctl` (Intel, AMD Zen 5)
