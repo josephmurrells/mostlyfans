@@ -4,7 +4,7 @@ use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
 use fanforge_core::state::ControlState;
 use fanforge_core::{CurveId, SensorId};
 
-use crate::curve_plot::{self, FloorMark, Live};
+use crate::curve_plot::{self, FloorMark, Interaction, Live, PointLimits, Refusal};
 use crate::format;
 use crate::icons;
 use crate::theme::{self, PAGE, SPACE_M, SPACE_S};
@@ -60,7 +60,7 @@ impl Smoothing {
 #[derive(Debug, Default)]
 pub struct CurveEditor {
     selected: Option<CurveId>,
-    dragging: Option<usize>,
+    plot: Interaction,
 }
 
 impl CurveEditor {
@@ -72,6 +72,7 @@ impl CurveEditor {
             .is_none_or(|id| !draft.curves.iter().any(|curve| &curve.id == id))
         {
             self.selected = draft.curves.first().map(|curve| curve.id.clone());
+            self.plot = Interaction::default();
         }
         egui::Panel::left("curve-list")
             .resizable(false)
@@ -104,7 +105,10 @@ impl CurveEditor {
                     return;
                 };
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    changed |= self.editor(ui, state, draft, index);
+                    if self.editor(ui, state, draft, index) {
+                        self.plot.refused = None;
+                        changed = true;
+                    }
                 });
             });
         changed
@@ -145,7 +149,7 @@ impl CurveEditor {
                 );
                 if response.clicked() {
                     self.selected = Some(curve.id.clone());
-                    self.dragging = None;
+                    self.plot = Interaction::default();
                 }
             }
         });
@@ -252,7 +256,7 @@ impl CurveEditor {
             tuning: Tuning::default(),
         });
         self.selected = Some(id);
-        self.dragging = None;
+        self.plot = Interaction::default();
     }
 
     fn editor(
@@ -325,12 +329,14 @@ impl CurveEditor {
             };
             match &mut curve.kind {
                 CurveKind::Graph { points, .. } => {
-                    changed |= self.plot(ui, points, 1, &live, floor.as_ref());
+                    changed |= self.plot(ui, points, PointSet::Graph, &live, floor.as_ref());
                     changed |= point_table(ui, &id, points);
                 }
                 CurveKind::Linear { start, end, .. } => {
                     let mut points = vec![*start, *end];
-                    if self.plot(ui, &mut points, 2, &live, floor.as_ref()) && points.len() == 2 {
+                    if self.plot(ui, &mut points, PointSet::Line, &live, floor.as_ref())
+                        && points.len() == 2
+                    {
                         *start = points[0];
                         *end = points[1];
                         changed = true;
@@ -375,16 +381,61 @@ impl CurveEditor {
         &mut self,
         ui: &mut egui::Ui,
         points: &mut Vec<CurvePoint>,
-        min_points: usize,
+        set: PointSet,
         live: &Live,
         floor: Option<&FloorMark>,
     ) -> bool {
-        let changed = curve_plot::show(ui, points, &mut self.dragging, min_points, live, floor);
-        ui.label(widgets::caption(
-            ui,
-            "Drag a point to move it. Double-click empty space to add a point, or a point to remove it.",
-        ));
+        let limits = set.limits();
+        let changed = curve_plot::show(ui, points, &mut self.plot, limits, live, floor);
+        let refusal = self.plot.refused.filter(|refusal| match refusal {
+            Refusal::Remove => points.len() <= limits.min,
+            Refusal::Add => points.len() >= limits.max,
+        });
+        if let Some(refusal) = refusal {
+            ui.label(
+                RichText::new(format!("{}  {}", icons::WARNING, set.refusal(refusal)))
+                    .color(theme::of(ui).warn),
+            );
+        }
+        ui.label(widgets::caption(ui, set.caption()));
         changed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointSet {
+    Graph,
+    Line,
+}
+
+impl PointSet {
+    fn limits(self) -> PointLimits {
+        match self {
+            Self::Graph => PointLimits {
+                min: 1,
+                max: MAX_CURVE_POINTS,
+            },
+            Self::Line => PointLimits { min: 2, max: 2 },
+        }
+    }
+
+    fn caption(self) -> &'static str {
+        match self {
+            Self::Graph => {
+                "Drag a point to move it; hold Shift to snap to 5° and 5% steps. Double-click empty space to add a point. Right-click or double-click a point to remove it."
+            }
+            Self::Line => "Drag a point to move it; hold Shift to snap to 5° and 5% steps.",
+        }
+    }
+
+    fn refusal(self, refusal: Refusal) -> String {
+        match (self, refusal) {
+            (Self::Graph, Refusal::Remove) => "A curve needs at least one point".to_owned(),
+            (Self::Graph, Refusal::Add) => {
+                format!("A curve can have at most {MAX_CURVE_POINTS} points")
+            }
+            (Self::Line, _) => "A straight line always has two points".to_owned(),
+        }
     }
 }
 
@@ -757,5 +808,22 @@ mod tests {
         let state = fixtures::state();
         let users = curve_users(&state.config, &state, &CurveId::new("curve-1"));
         assert_eq!(users, vec!["CPU cooler in Balanced"]);
+    }
+
+    #[test]
+    fn point_sets_match_the_config_limits_and_explain_refusals() {
+        let graph = PointSet::Graph.limits();
+        assert_eq!((graph.min, graph.max), (1, MAX_CURVE_POINTS));
+        let line = PointSet::Line.limits();
+        assert_eq!((line.min, line.max), (2, 2));
+        assert_eq!(
+            PointSet::Graph.refusal(Refusal::Add),
+            format!("A curve can have at most {MAX_CURVE_POINTS} points")
+        );
+        assert_eq!(
+            PointSet::Line.refusal(Refusal::Remove),
+            "A straight line always has two points"
+        );
+        assert!(!PointSet::Line.caption().contains("Double-click"));
     }
 }
