@@ -1,8 +1,7 @@
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke,
-    Vec2, pos2, vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect, Sense,
+    Shape, Stroke, Vec2, pos2, vec2,
 };
-use fanforge_core::config::MAX_CURVE_POINTS;
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, sorted_points};
 
 use crate::theme::{self, CAPTION, Palette};
@@ -17,6 +16,47 @@ const MAX_TEMP: f32 = 125.0;
 const MAX_DUTY: f32 = 100.0;
 const GRAB_RADIUS: f32 = 14.0;
 const POINT_RADIUS: f32 = 6.0;
+const FINE_STEP: f32 = 1.0;
+const COARSE_STEP: f32 = 5.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    Remove,
+    Add,
+}
+
+#[derive(Debug, Default)]
+pub struct Interaction {
+    dragging: Option<Drag>,
+    pub refused: Option<Refusal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Drag {
+    index: usize,
+    low: f32,
+    high: f32,
+}
+
+impl Drag {
+    fn start(points: &[CurvePoint], index: usize) -> Self {
+        let (low, high) = neighbour_bounds(points, index);
+        Self { index, low, high }
+    }
+
+    fn target(self, cursor: CurvePoint, step: f32) -> CurvePoint {
+        CurvePoint::new(
+            snap_between(cursor.temp, step, self.low, self.high),
+            snap(cursor.duty, step, MAX_DUTY),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PointLimits {
+    pub min: usize,
+    pub max: usize,
+}
 
 pub struct Live {
     pub temp: Option<f32>,
@@ -61,8 +101,74 @@ impl Mapping {
             self.area.bottom()..=self.area.top(),
             0.0..=MAX_DUTY,
         );
-        CurvePoint::new(temp.round(), duty.round())
+        CurvePoint::new(temp, duty)
     }
+}
+
+fn snap(value: f32, step: f32, max: f32) -> f32 {
+    ((value / step).round() * step).clamp(0.0, max)
+}
+
+fn snapped(point: CurvePoint, step: f32) -> CurvePoint {
+    CurvePoint::new(
+        snap(point.temp, step, MAX_TEMP),
+        snap(point.duty, step, MAX_DUTY),
+    )
+}
+
+fn neighbour_bounds(points: &[CurvePoint], index: usize) -> (f32, f32) {
+    let temp = points[index].temp;
+    let low = index
+        .checked_sub(1)
+        .and_then(|before| points.get(before))
+        .map_or(0.0, |point| point.temp);
+    let high = points.get(index + 1).map_or(MAX_TEMP, |point| point.temp);
+    (low.min(high).min(temp), low.max(high).max(temp))
+}
+
+fn stacked_pick(points: &[CurvePoint], index: usize, rightward: bool) -> usize {
+    let target = points[index];
+    let mut stacked = points
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| **point == target)
+        .map(|(stacked, _)| stacked);
+    let picked = if rightward {
+        stacked.next_back()
+    } else {
+        stacked.next()
+    };
+    picked.unwrap_or(index)
+}
+
+fn snap_between(value: f32, step: f32, low: f32, high: f32) -> f32 {
+    let clamped = value.max(low).min(high);
+    let within = |candidate: f32| (low..=high).contains(&candidate);
+    let snapped = snap(clamped, step, MAX_TEMP);
+    if within(snapped) {
+        return snapped;
+    }
+    let inward = if snapped > high {
+        snapped - step
+    } else {
+        snapped + step
+    };
+    if within(inward) { inward } else { clamped }
+}
+
+fn point_at(mapping: &Mapping, points: &[CurvePoint], cursor: Pos2) -> Option<usize> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            (
+                index,
+                mapping.to_screen(point.temp, point.duty).distance(cursor),
+            )
+        })
+        .filter(|(_, distance)| *distance <= GRAB_RADIUS)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index)
 }
 
 pub fn shape(curve: &CurveDef) -> Option<Vec<CurvePoint>> {
@@ -80,8 +186,8 @@ pub fn shape(curve: &CurveDef) -> Option<Vec<CurvePoint>> {
 pub fn show(
     ui: &mut egui::Ui,
     points: &mut Vec<CurvePoint>,
-    dragging: &mut Option<usize>,
-    min_points: usize,
+    interaction: &mut Interaction,
+    limits: PointLimits,
     live: &Live,
     floor: Option<&FloorMark>,
 ) -> bool {
@@ -89,57 +195,76 @@ pub fn show(
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
     let mapping = Mapping::new(response.rect, false);
     let palette = theme::of(ui);
+    let step = if ui.input(|input| input.modifiers.shift) {
+        COARSE_STEP
+    } else {
+        FINE_STEP
+    };
 
     let pointer = response
         .interact_pointer_pos()
         .or_else(|| response.hover_pos());
-    let nearest = pointer.and_then(|cursor| {
-        points
-            .iter()
-            .enumerate()
-            .map(|(index, point)| {
-                (
-                    index,
-                    mapping.to_screen(point.temp, point.duty).distance(cursor),
-                )
-            })
-            .filter(|(_, distance)| *distance <= GRAB_RADIUS)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(index, _)| index)
-    });
+    let nearest = pointer.and_then(|cursor| point_at(&mapping, points, cursor));
 
     let mut changed = false;
-    if response.drag_started() {
-        *dragging = nearest;
+    let mut refused = None;
+    if response.drag_started_by(PointerButton::Primary) {
+        let origin = ui.input(|input| input.pointer.press_origin()).or(pointer);
+        let rightward = origin
+            .zip(pointer)
+            .is_some_and(|(origin, cursor)| cursor.x > origin.x);
+        interaction.dragging = origin
+            .and_then(|cursor| point_at(&mapping, points, cursor))
+            .map(|index| Drag::start(points, stacked_pick(points, index, rightward)));
     }
-    if response.dragged()
-        && let (Some(index), Some(cursor)) = (*dragging, pointer)
-        && let Some(point) = points.get_mut(index)
+    if response.dragged_by(PointerButton::Primary)
+        && let (Some(drag), Some(cursor)) = (interaction.dragging, pointer)
+        && let Some(point) = points.get_mut(drag.index)
     {
-        let moved = mapping.to_curve(cursor);
+        let moved = drag.target(mapping.to_curve(cursor), step);
         if moved != *point {
             *point = moved;
             changed = true;
         }
     }
-    if response.drag_stopped() {
-        *dragging = None;
+    if !response.dragged_by(PointerButton::Primary) {
+        interaction.dragging = None;
     }
-    if response.double_clicked()
-        && let Some(cursor) = pointer
-    {
-        match nearest {
-            Some(index) if points.len() > min_points => {
-                points.remove(index);
+    let idle = interaction.dragging.is_none() && !ui.input(|input| input.pointer.primary_down());
+    let removing = if response.double_clicked() && idle {
+        match (nearest, pointer) {
+            (None, Some(cursor)) if points.len() < limits.max => {
+                let point = snapped(mapping.to_curve(cursor), FINE_STEP);
+                let at = points.partition_point(|existing| existing.temp <= point.temp);
+                points.insert(at, point);
                 changed = true;
+                None
             }
-            None if points.len() < MAX_CURVE_POINTS => {
-                points.push(mapping.to_curve(cursor));
-                changed = true;
+            (None, Some(_)) => {
+                refused = Some(Refusal::Add);
+                None
             }
-            Some(_) | None => {}
+            (nearest, _) => nearest,
+        }
+    } else if response.secondary_clicked() && idle {
+        nearest
+    } else {
+        None
+    };
+    if let Some(index) = removing {
+        if points.len() > limits.min {
+            points.remove(index);
+            changed = true;
+        } else {
+            refused = Some(Refusal::Remove);
         }
     }
+    if changed {
+        interaction.refused = None;
+    } else if refused.is_some() {
+        interaction.refused = refused;
+    }
+    let dragging = interaction.dragging.map(|drag| drag.index);
     if nearest.is_some() || dragging.is_some() {
         ui.ctx().set_cursor_icon(if dragging.is_some() {
             CursorIcon::Grabbing
@@ -160,7 +285,7 @@ pub fn show(
     }
     draw_curve(&painter, &mapping, palette, points);
     for (index, point) in points.iter().enumerate() {
-        let active = Some(index) == *dragging || Some(index) == nearest;
+        let active = Some(index) == dragging || Some(index) == nearest;
         let center = mapping.to_screen(point.temp, point.duty);
         if active {
             painter.circle_filled(center, POINT_RADIUS + 1.5, palette.accent);
@@ -389,4 +514,361 @@ fn draw_live(painter: &egui::Painter, mapping: &Mapping, palette: &Palette, live
         &format!("{temp:.0} °C → {duty:.0}%"),
         palette.warn,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{Event, Modifiers};
+    use egui_kittest::Harness;
+
+    use super::*;
+
+    const GRAPH: PointLimits = PointLimits { min: 1, max: 4 };
+    const LINE: PointLimits = PointLimits { min: 2, max: 2 };
+
+    struct Plot {
+        points: Vec<CurvePoint>,
+        interaction: Interaction,
+        limits: PointLimits,
+        frame: Rect,
+    }
+
+    fn harness(points: Vec<CurvePoint>, limits: PointLimits) -> Harness<'static, Plot> {
+        let plot = Plot {
+            points,
+            interaction: Interaction::default(),
+            limits,
+            frame: Rect::NOTHING,
+        };
+        let mut harness = Harness::builder()
+            .with_size(vec2(640.0, 400.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_context_setup(theme::install)
+            .build_ui_state(
+                |ui, plot: &mut Plot| {
+                    plot.frame =
+                        Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), HEIGHT));
+                    let live = Live {
+                        temp: None,
+                        output: None,
+                    };
+                    show(
+                        ui,
+                        &mut plot.points,
+                        &mut plot.interaction,
+                        plot.limits,
+                        &live,
+                        None,
+                    );
+                },
+                plot,
+            );
+        harness.run_steps(2);
+        harness
+    }
+
+    fn screen(harness: &Harness<'_, Plot>, temp: f32, duty: f32) -> Pos2 {
+        Mapping::new(harness.state().frame, false).to_screen(temp, duty)
+    }
+
+    fn button(harness: &mut Harness<'_, Plot>, pos: Pos2, button: PointerButton, pressed: bool) {
+        harness.event(Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run_steps(1);
+    }
+
+    fn move_to(harness: &mut Harness<'_, Plot>, pos: Pos2) {
+        harness.hover_at(pos);
+        harness.run_steps(1);
+    }
+
+    fn click_with(harness: &mut Harness<'_, Plot>, pos: Pos2, pointer: PointerButton) {
+        move_to(harness, pos);
+        button(harness, pos, pointer, true);
+        button(harness, pos, pointer, false);
+        harness.run_steps(2);
+    }
+
+    fn double_click(harness: &mut Harness<'_, Plot>, pos: Pos2) {
+        move_to(harness, pos);
+        for _ in 0..2 {
+            button(harness, pos, PointerButton::Primary, true);
+            button(harness, pos, PointerButton::Primary, false);
+        }
+        harness.run_steps(2);
+    }
+
+    fn drag_with(harness: &mut Harness<'_, Plot>, path: &[Pos2], pointer: PointerButton) {
+        let (Some(&from), Some(&to)) = (path.first(), path.last()) else {
+            return;
+        };
+        move_to(harness, from);
+        button(harness, from, pointer, true);
+        for pair in path.windows(2) {
+            for fraction in [0.5, 1.0] {
+                move_to(harness, pair[0].lerp(pair[1], fraction));
+            }
+        }
+        button(harness, to, pointer, false);
+        harness.run_steps(2);
+    }
+
+    fn three_points() -> Vec<CurvePoint> {
+        vec![
+            CurvePoint::new(30.0, 30.0),
+            CurvePoint::new(60.0, 50.0),
+            CurvePoint::new(85.0, 100.0),
+        ]
+    }
+
+    #[test]
+    fn snapping_rounds_to_the_step_and_stays_in_range() {
+        assert_eq!(snap(42.4, FINE_STEP, MAX_TEMP), 42.0);
+        assert_eq!(snap(42.6, FINE_STEP, MAX_TEMP), 43.0);
+        assert_eq!(snap(42.4, COARSE_STEP, MAX_TEMP), 40.0);
+        assert_eq!(snap(42.6, COARSE_STEP, MAX_TEMP), 45.0);
+        assert_eq!(snap(-3.0, COARSE_STEP, MAX_DUTY), 0.0);
+        assert_eq!(snap(124.0, COARSE_STEP, MAX_TEMP), MAX_TEMP);
+        assert_eq!(snap(99.0, COARSE_STEP, MAX_DUTY), MAX_DUTY);
+        assert_eq!(snap(130.0, FINE_STEP, MAX_TEMP), MAX_TEMP);
+    }
+
+    #[test]
+    fn snapping_between_bounds_stays_on_the_grid_when_it_can() {
+        assert_eq!(snap_between(70.0, COARSE_STEP, 30.0, 62.5), 60.0);
+        assert_eq!(snap_between(10.0, COARSE_STEP, 32.5, 60.0), 35.0);
+        assert_eq!(snap_between(44.0, COARSE_STEP, 30.0, 60.0), 45.0);
+        assert_eq!(snap_between(70.0, COARSE_STEP, 61.0, 63.0), 63.0);
+        assert_eq!(snap_between(31.0, FINE_STEP, 30.4, 30.6), 30.6);
+        assert_eq!(snap_between(50.0, FINE_STEP, 50.0, 50.0), 50.0);
+    }
+
+    #[test]
+    fn neighbour_bounds_follow_index_order() {
+        let points = three_points();
+        assert_eq!(neighbour_bounds(&points, 0), (0.0, 60.0));
+        assert_eq!(neighbour_bounds(&points, 1), (30.0, 85.0));
+        assert_eq!(neighbour_bounds(&points, 2), (60.0, MAX_TEMP));
+        assert_eq!(
+            neighbour_bounds(&[CurvePoint::new(40.0, 40.0)], 0),
+            (0.0, MAX_TEMP)
+        );
+    }
+
+    #[test]
+    fn neighbour_bounds_stay_ordered_for_an_unsorted_list() {
+        let points = vec![
+            CurvePoint::new(70.0, 70.0),
+            CurvePoint::new(30.0, 30.0),
+            CurvePoint::new(50.0, 40.0),
+        ];
+        assert_eq!(neighbour_bounds(&points, 0), (0.0, 70.0));
+        assert_eq!(neighbour_bounds(&points, 1), (30.0, 70.0));
+        assert_eq!(neighbour_bounds(&points, 2), (30.0, MAX_TEMP));
+    }
+
+    #[test]
+    fn stacked_points_are_picked_by_drag_direction() {
+        let stacked = vec![
+            CurvePoint::new(20.0, 10.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(90.0, 90.0),
+        ];
+        assert_eq!(stacked_pick(&stacked, 1, false), 1);
+        assert_eq!(stacked_pick(&stacked, 1, true), 2);
+        assert_eq!(stacked_pick(&stacked, 3, true), 3);
+    }
+
+    #[test]
+    fn a_stacked_point_can_be_dragged_out_either_way() {
+        let stacked = vec![
+            CurvePoint::new(20.0, 10.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(90.0, 90.0),
+        ];
+        let mut harness = harness(stacked, GRAPH);
+        let from = screen(&harness, 50.0, 40.0);
+        let to = screen(&harness, 70.0, 40.0);
+        drag_with(&mut harness, &[from, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(50.0, 40.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(70.0, 40.0));
+    }
+
+    #[test]
+    fn a_point_added_in_the_middle_is_kept_in_order_and_drags_in_place() {
+        let mut harness = harness(three_points(), GRAPH);
+        let pos = screen(&harness, 45.0, 20.0);
+        double_click(&mut harness, pos);
+        assert_eq!(harness.state().points[1], CurvePoint::new(45.0, 20.0));
+        assert_eq!(harness.state().points.len(), 4);
+        let to = screen(&harness, 47.0, 25.0);
+        drag_with(&mut harness, &[pos, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(47.0, 25.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(60.0, 50.0));
+    }
+
+    #[test]
+    fn tied_points_separate_by_index() {
+        let stacked = vec![
+            CurvePoint::new(20.0, 10.0),
+            CurvePoint::new(50.0, 40.0),
+            CurvePoint::new(50.0, 60.0),
+            CurvePoint::new(90.0, 90.0),
+        ];
+        assert_eq!(neighbour_bounds(&stacked, 1), (20.0, 50.0));
+        assert_eq!(neighbour_bounds(&stacked, 2), (50.0, 90.0));
+    }
+
+    #[test]
+    fn a_line_start_never_passes_its_end() {
+        let line = [CurvePoint::new(40.0, 30.0), CurvePoint::new(80.0, 100.0)];
+        assert_eq!(neighbour_bounds(&line, 0), (0.0, 80.0));
+        assert_eq!(neighbour_bounds(&line, 1), (40.0, MAX_TEMP));
+        let reversed = [CurvePoint::new(80.0, 30.0), CurvePoint::new(40.0, 100.0)];
+        assert_eq!(neighbour_bounds(&reversed, 0), (0.0, 80.0));
+        assert_eq!(neighbour_bounds(&reversed, 1), (40.0, MAX_TEMP));
+    }
+
+    #[test]
+    fn a_point_dragged_onto_its_neighbour_cannot_pass_it_on_a_later_drag() {
+        let mut harness = harness(three_points(), GRAPH);
+        let first = [
+            screen(&harness, 60.0, 50.0),
+            screen(&harness, 85.0, 60.0),
+            screen(&harness, 100.0, 60.0),
+        ];
+        drag_with(&mut harness, &first, PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(85.0, 60.0));
+        let second = [
+            screen(&harness, 85.0, 60.0),
+            screen(&harness, 100.0, 60.0),
+            screen(&harness, 115.0, 60.0),
+        ];
+        drag_with(&mut harness, &second, PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(85.0, 60.0));
+        assert_eq!(harness.state().points[2], CurvePoint::new(85.0, 100.0));
+    }
+
+    #[test]
+    fn right_clicking_a_point_removes_it() {
+        let mut harness = harness(three_points(), GRAPH);
+        let pos = screen(&harness, 60.0, 50.0);
+        click_with(&mut harness, pos, PointerButton::Secondary);
+        let plot = harness.state();
+        assert_eq!(
+            plot.points,
+            vec![CurvePoint::new(30.0, 30.0), CurvePoint::new(85.0, 100.0)]
+        );
+        assert_eq!(plot.interaction.refused, None);
+    }
+
+    #[test]
+    fn right_clicking_empty_space_changes_nothing() {
+        let mut harness = harness(three_points(), GRAPH);
+        let pos = screen(&harness, 110.0, 10.0);
+        click_with(&mut harness, pos, PointerButton::Secondary);
+        assert_eq!(harness.state().points, three_points());
+        assert_eq!(harness.state().interaction.refused, None);
+    }
+
+    #[test]
+    fn the_minimum_point_count_is_kept_and_flagged_until_the_next_change() {
+        let line = vec![CurvePoint::new(40.0, 30.0), CurvePoint::new(80.0, 100.0)];
+        let mut harness = harness(line.clone(), LINE);
+        let pos = screen(&harness, 40.0, 30.0);
+        click_with(&mut harness, pos, PointerButton::Secondary);
+        assert_eq!(harness.state().points, line);
+        assert_eq!(harness.state().interaction.refused, Some(Refusal::Remove));
+        let from = screen(&harness, 80.0, 100.0);
+        let to = screen(&harness, 90.0, 90.0);
+        drag_with(&mut harness, &[from, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(90.0, 90.0));
+        assert_eq!(harness.state().interaction.refused, None);
+    }
+
+    #[test]
+    fn adding_past_the_maximum_is_refused() {
+        let mut points = three_points();
+        points.push(CurvePoint::new(100.0, 100.0));
+        let mut harness = harness(points.clone(), GRAPH);
+        let pos = screen(&harness, 110.0, 20.0);
+        double_click(&mut harness, pos);
+        assert_eq!(harness.state().points, points);
+        assert_eq!(harness.state().interaction.refused, Some(Refusal::Add));
+    }
+
+    #[test]
+    fn double_clicking_empty_space_adds_a_point() {
+        let mut harness = harness(three_points(), GRAPH);
+        let pos = screen(&harness, 110.0, 20.0);
+        double_click(&mut harness, pos);
+        assert_eq!(harness.state().points.len(), 4);
+        assert_eq!(harness.state().points[3], CurvePoint::new(110.0, 20.0));
+    }
+
+    #[test]
+    fn dragging_snaps_and_stops_at_the_neighbour() {
+        let mut harness = harness(three_points(), GRAPH);
+        let path = [
+            screen(&harness, 60.0, 50.0),
+            screen(&harness, 85.0, 40.0),
+            screen(&harness, 100.0, 30.0),
+            screen(&harness, 120.0, 20.3),
+        ];
+        drag_with(&mut harness, &path, PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(85.0, 20.0));
+        assert_eq!(harness.state().interaction.dragging, None);
+    }
+
+    #[test]
+    fn holding_shift_snaps_to_coarse_steps() {
+        let mut harness = harness(three_points(), GRAPH);
+        harness.event(Event::ModifiersChanged(Modifiers::SHIFT));
+        let from = screen(&harness, 60.0, 50.0);
+        let to = screen(&harness, 67.4, 42.6);
+        drag_with(&mut harness, &[from, to], PointerButton::Primary);
+        assert_eq!(harness.state().points[1], CurvePoint::new(65.0, 45.0));
+    }
+
+    #[test]
+    fn right_dragging_never_moves_a_point() {
+        let mut harness = harness(three_points(), GRAPH);
+        let from = screen(&harness, 60.0, 50.0);
+        let to = screen(&harness, 70.0, 70.0);
+        drag_with(&mut harness, &[from, to], PointerButton::Secondary);
+        assert_eq!(harness.state().points, three_points());
+    }
+
+    #[test]
+    fn a_drag_whose_release_was_missed_does_not_block_removal() {
+        let mut harness = harness(three_points(), GRAPH);
+        harness.state_mut().interaction.dragging = Some(Drag::start(&three_points(), 1));
+        let pos = screen(&harness, 60.0, 50.0);
+        click_with(&mut harness, pos, PointerButton::Secondary);
+        assert_eq!(harness.state().points.len(), 2);
+        assert_eq!(harness.state().interaction.dragging, None);
+    }
+
+    #[test]
+    fn right_clicking_during_a_drag_removes_nothing() {
+        let mut harness = harness(three_points(), GRAPH);
+        let from = screen(&harness, 60.0, 50.0);
+        let to = screen(&harness, 70.0, 70.0);
+        move_to(&mut harness, from);
+        button(&mut harness, from, PointerButton::Primary, true);
+        move_to(&mut harness, from.lerp(to, 0.5));
+        move_to(&mut harness, to);
+        button(&mut harness, to, PointerButton::Secondary, true);
+        button(&mut harness, to, PointerButton::Secondary, false);
+        button(&mut harness, to, PointerButton::Primary, false);
+        harness.run_steps(2);
+        assert_eq!(harness.state().points.len(), 3);
+        assert_eq!(harness.state().points[1], CurvePoint::new(70.0, 70.0));
+    }
 }
