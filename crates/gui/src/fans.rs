@@ -503,7 +503,7 @@ fn calibration_card(ui: &mut egui::Ui, page: &FanPage<'_>, fan: &FanId, reading:
             }
             ui.label(widgets::caption(
                 ui,
-                "Steps down from 100% in 5% steps of at least 3 s each. It stays at or above the header floor, and only goes lower, down to 0%, on a case fan allowed to stop. It stops early if a temperature rises by 5 °C or reaches 75 °C.",
+                "Steps down from 100% in 5% steps of at least 3 s each. It stays at or above the header floor, and only goes lower, down to 0%, on a case fan allowed to stop. It stops early if a temperature reaches 75 °C.",
             ));
         }
         if let Some(report) = state
