@@ -256,9 +256,12 @@ mod tests {
         let extras = ExtraSensors::start(vec![source]);
         assert!(extras.wait_for_first_round(Duration::from_secs(5)));
         assert_eq!(extras.readings(Instant::now()).len(), 1);
-        wait_until(|| calls.load(Ordering::SeqCst) >= 3);
-        let celsius = extras.readings(Instant::now())[0].celsius.unwrap();
-        assert!(celsius >= 41.0);
+        wait_until(|| {
+            extras.readings(Instant::now())[0]
+                .celsius
+                .is_some_and(|celsius| celsius >= 42.0)
+        });
+        assert!(calls.load(Ordering::SeqCst) >= 3);
     }
 
     #[test]
@@ -307,7 +310,7 @@ mod tests {
     fn a_poisoned_cache_still_yields_readings() {
         let extras = ExtraSensors::from_cache(SensorCache::default());
         extras.with_cache(|cache| {
-            let index = cache.register(FAST);
+            let index = cache.register(Duration::from_secs(60));
             cache.record(index, &Ok(gpu(45.0)), Instant::now());
         });
         let poisoner = extras.clone();

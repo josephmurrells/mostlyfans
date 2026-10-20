@@ -8,6 +8,8 @@ use super::SensorSource;
 
 const CADENCE: Duration = Duration::from_secs(5);
 const REDISCOVER_EVERY: Duration = Duration::from_secs(300);
+const REDISCOVER_DETACHED_EVERY: Duration = Duration::from_secs(30);
+const FAILURES_BEFORE_DETACH: u32 = 3;
 
 #[derive(Debug)]
 struct Tracked {
@@ -15,6 +17,7 @@ struct Tracked {
     id: SensorId,
     label: String,
     drive: Option<Drive>,
+    failures: u32,
 }
 
 #[derive(Debug, Default)]
@@ -46,15 +49,30 @@ pub fn is_rotational(seek_penalty: Option<bool>, bus_type: u32) -> bool {
     }
 }
 
-fn placement(tracked: &[Tracked], serial: &str) -> Placement {
-    match tracked.iter().position(|entry| entry.serial == serial) {
-        Some(index) if tracked[index].drive.is_none() => Placement::Reattach(index),
+pub fn placement<'a>(
+    tracked: impl IntoIterator<Item = (&'a str, bool)>,
+    serial: &str,
+) -> Placement {
+    match tracked
+        .into_iter()
+        .enumerate()
+        .find(|(_, (known, _))| *known == serial)
+    {
+        Some((index, (_, false))) => Placement::Reattach(index),
         Some(_) => Placement::Ignore,
         None => Placement::Add,
     }
 }
 
 impl DriveSource {
+    fn rediscover_every(&self) -> Duration {
+        if self.tracked.iter().any(|entry| entry.drive.is_none()) {
+            REDISCOVER_DETACHED_EVERY
+        } else {
+            REDISCOVER_EVERY
+        }
+    }
+
     fn discover(&mut self) {
         for index in 0..MAX_PHYSICAL_DRIVES {
             let Ok(drive) = Drive::open(index) else {
@@ -71,7 +89,12 @@ impl DriveSource {
             let Some(id) = sensor_id(&serial) else {
                 continue;
             };
-            let target = placement(&self.tracked, &serial);
+            let target = placement(
+                self.tracked
+                    .iter()
+                    .map(|entry| (entry.serial.as_str(), entry.drive.is_some())),
+                &serial,
+            );
             if target == Placement::Ignore
                 || is_rotational(drive.incurs_seek_penalty().ok(), bus_type)
                 || drive.temperature().is_err()
@@ -79,7 +102,11 @@ impl DriveSource {
                 continue;
             }
             match target {
-                Placement::Reattach(slot) => self.tracked[slot].drive = Some(drive),
+                Placement::Reattach(slot) => {
+                    tracing::info!(%id, "drive reattached");
+                    self.tracked[slot].drive = Some(drive);
+                    self.tracked[slot].failures = 0;
+                }
                 Placement::Add => {
                     tracing::info!(%id, model, "drive temperature sensor found");
                     let label = if model.is_empty() {
@@ -92,6 +119,7 @@ impl DriveSource {
                         id,
                         label,
                         drive: Some(drive),
+                        failures: 0,
                     });
                 }
                 Placement::Ignore => {}
@@ -113,7 +141,7 @@ impl SensorSource for DriveSource {
         let now = Instant::now();
         if self
             .discovered
-            .is_none_or(|last| now.duration_since(last) >= REDISCOVER_EVERY)
+            .is_none_or(|last| now.duration_since(last) >= self.rediscover_every())
         {
             self.discover();
             self.discovered = Some(now);
@@ -124,14 +152,26 @@ impl SensorSource for DriveSource {
                 continue;
             };
             match drive.temperature() {
-                Ok(celsius) => readings.push(SensorReading {
-                    id: entry.id.clone(),
-                    label: entry.label.clone(),
-                    celsius: Some(f32::from(celsius)),
-                }),
+                Ok(celsius) => {
+                    if entry.failures > 0 {
+                        tracing::info!(id = %entry.id, "drive temperature recovered");
+                    }
+                    entry.failures = 0;
+                    readings.push(SensorReading {
+                        id: entry.id.clone(),
+                        label: entry.label.clone(),
+                        celsius: Some(f32::from(celsius)),
+                    });
+                }
                 Err(error) => {
-                    tracing::warn!(id = %entry.id, %error, "drive temperature read failed");
-                    entry.drive = None;
+                    entry.failures += 1;
+                    if entry.failures == 1 {
+                        tracing::warn!(id = %entry.id, %error, "drive temperature read failed");
+                    }
+                    if entry.failures >= FAILURES_BEFORE_DETACH {
+                        tracing::warn!(id = %entry.id, "drive keeps failing; reopening it later");
+                        entry.drive = None;
+                    }
                 }
             }
         }
@@ -142,15 +182,6 @@ impl SensorSource for DriveSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tracked(serial: &str, attached: bool) -> Tracked {
-        Tracked {
-            serial: serial.to_owned(),
-            id: sensor_id(serial).unwrap(),
-            label: serial.to_owned(),
-            drive: attached.then(|| Drive::open(0)).and_then(Result::ok),
-        }
-    }
 
     #[test]
     fn serials_become_stable_ids() {
@@ -176,17 +207,15 @@ mod tests {
 
     #[test]
     fn a_reused_index_never_attaches_to_another_drives_id() {
-        let list = vec![tracked("SERIAL-A", false)];
-        assert_eq!(placement(&list, "SERIAL-B"), Placement::Add);
-        assert_eq!(placement(&list, "SERIAL-A"), Placement::Reattach(0));
+        let detached = [("SERIAL-A", false)];
+        assert_eq!(placement(detached, "SERIAL-B"), Placement::Add);
+        assert_eq!(placement(detached, "SERIAL-A"), Placement::Reattach(0));
     }
 
     #[test]
     fn attached_drives_are_not_attached_twice() {
-        let mut list = vec![tracked("SERIAL-A", false)];
-        list[0].drive = Drive::open(0).ok();
-        if list[0].drive.is_some() {
-            assert_eq!(placement(&list, "SERIAL-A"), Placement::Ignore);
-        }
+        let list = [("SERIAL-A", false), ("SERIAL-B", true)];
+        assert_eq!(placement(list, "SERIAL-B"), Placement::Ignore);
+        assert_eq!(placement(list, "SERIAL-A"), Placement::Reattach(0));
     }
 }

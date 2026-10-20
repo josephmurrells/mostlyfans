@@ -19,6 +19,7 @@ const PMLOG_LEN: usize = 4 + PMLOG_SENSORS * 8;
 const PMLOG_TEMPERATURE_EDGE: usize = 8;
 const ODN_TEMPERATURE_EDGE: i32 = 1;
 const MAX_ADAPTERS: i32 = 256;
+const ASIC_INTEGRATED: i32 = 1 << 1;
 
 type Context = *mut c_void;
 type MallocCallback = unsafe extern "system" fn(i32) -> *mut c_void;
@@ -28,6 +29,7 @@ type AdapterCount = unsafe extern "C" fn(Context, *mut i32) -> i32;
 type AdapterInfoGet = unsafe extern "C" fn(Context, *mut u8, i32) -> i32;
 type PmLogGet = unsafe extern "C" fn(Context, i32, *mut u8) -> i32;
 type OverdriveTemperature = unsafe extern "C" fn(Context, i32, i32, *mut i32) -> i32;
+type AsicFamily = unsafe extern "C" fn(Context, i32, *mut i32, *mut i32) -> i32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdapterInfo {
@@ -109,7 +111,11 @@ pub fn edge_temperature(pmlog: &[u8]) -> Option<f32> {
     let offset = 4 + PMLOG_TEMPERATURE_EDGE * 8;
     let supported = i32_at(pmlog, offset)?;
     let value = i32_at(pmlog, offset + 4)?;
-    (supported != 0).then_some(value as f32)
+    (supported != 0 && value > 0).then_some(value as f32)
+}
+
+pub fn is_integrated(asic_types: i32, valid: i32) -> bool {
+    asic_types & valid & ASIC_INTEGRATED != 0
 }
 
 pub fn physical_gpus(adapters: Vec<AdapterInfo>) -> Vec<AdapterInfo> {
@@ -151,6 +157,9 @@ fn open() -> Result<Adl, String> {
     let overdrive: Option<OverdriveTemperature> = library
         .symbol(c"ADL2_OverdriveN_Temperature_Get")
         .map(|raw| unsafe { std::mem::transmute::<RawSymbol, OverdriveTemperature>(raw) });
+    let asic_family: Option<AsicFamily> = library
+        .symbol(c"ADL2_Adapter_ASICFamilyType_Get")
+        .map(|raw| unsafe { std::mem::transmute::<RawSymbol, AsicFamily>(raw) });
 
     let mut context: Context = std::ptr::null_mut();
     let status = unsafe { create(allocate, 1, &raw mut context) };
@@ -179,14 +188,25 @@ fn open() -> Result<Adl, String> {
             return Err(format!("ADL adapter list failed (status {status})"));
         }
     }
-    let gpus = physical_gpus(
+    let integrated = |adapter: i32| {
+        let Some(asic_family) = asic_family else {
+            return false;
+        };
+        let (mut types, mut valid) = (0, 0);
+        let status = unsafe { asic_family(adl.context, adapter, &raw mut types, &raw mut valid) };
+        status == ADL_OK && is_integrated(types, valid)
+    };
+    let gpus: Vec<AdapterInfo> = physical_gpus(
         buffer
             .as_chunks::<ADAPTER_INFO_LEN>()
             .0
             .iter()
             .filter_map(|chunk| parse_adapter_info(chunk))
             .collect(),
-    );
+    )
+    .into_iter()
+    .filter(|gpu| !integrated(gpu.index))
+    .collect();
     let labels = unique_labels(gpus.iter().map(|gpu| gpu.name.clone()).collect());
     adl.gpus = gpus
         .iter()
@@ -221,7 +241,7 @@ impl Adl {
                 &raw mut millidegrees,
             )
         };
-        (status == ADL_OK).then(|| millidegrees as f32 / 1000.0)
+        (status == ADL_OK && millidegrees > 0).then(|| millidegrees as f32 / 1000.0)
     }
 
     fn read(&self) -> Result<Vec<SensorReading>, String> {
@@ -340,6 +360,23 @@ mod tests {
         buffer[offset..offset + 4].copy_from_slice(&1i32.to_le_bytes());
         assert_eq!(edge_temperature(&buffer), Some(61.0));
         assert_eq!(edge_temperature(&buffer[..offset]), None);
+    }
+
+    #[test]
+    fn a_zero_edge_temperature_is_a_failure() {
+        let mut buffer = vec![0u8; PMLOG_LEN];
+        let offset = 4 + PMLOG_TEMPERATURE_EDGE * 8;
+        buffer[offset..offset + 4].copy_from_slice(&1i32.to_le_bytes());
+        assert_eq!(edge_temperature(&buffer), None);
+        buffer[offset + 4..offset + 8].copy_from_slice(&(-3i32).to_le_bytes());
+        assert_eq!(edge_temperature(&buffer), None);
+    }
+
+    #[test]
+    fn integrated_gpus_are_recognised_only_when_flagged_valid() {
+        assert!(is_integrated(ASIC_INTEGRATED, ASIC_INTEGRATED));
+        assert!(!is_integrated(ASIC_INTEGRATED, 1));
+        assert!(!is_integrated(1, ASIC_INTEGRATED | 1));
     }
 
     #[test]
