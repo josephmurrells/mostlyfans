@@ -403,6 +403,10 @@ impl<P: PortIo> SuperIo<P> {
         self.transaction(|session| session.restore(channel, saved))
     }
 
+    pub fn io_space_locked(&mut self) -> Result<bool, HwError> {
+        nuvoton::io_space_locked(&mut self.io, &self.lock, &self.config)
+    }
+
     pub fn dump(&mut self) -> Result<RegisterDump, HwError> {
         match &self.config.chip.map {
             ChipMap::Ite(map) => ite::dump(&mut self.io, &self.lock, &self.config, map),

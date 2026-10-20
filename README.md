@@ -27,7 +27,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 **Why monitor only:** fan control is turned on chip by chip, once its register map has been checked against the available sources (LibreHardwareMonitor, the Linux drivers and, for Nuvoton, the datasheets) or tested on hardware. Until then, FanForge reads temperatures, fan speeds and fan modes on these chips, and never writes a fan register. That includes quit, crash and sleep, because the BIOS keeps the fans throughout. It doesn't touch `bios_snapshot.toml` either. The app shows a monitor-only notice that names the chip. A chip gets fan control once it is marked verified in `crates/hw/src/chips.rs`.
 
 - NCT6796D-R shares its ID with NCT5585D, and NCT6799D with NCT6796D-S. FanForge can't tell them apart, so temperature labels may be off on the second chip of each pair.
-- On NCT679x boards where the firmware locks the hardware-monitor I/O space, FanForge clears the lock whenever it sets up the chip (startup, resume and recovery after a failed read or an abandoned bus mutex), as the Linux `nct6775` driver does. It's a single config-space write and happens on monitor-only chips too. If the lock doesn't clear, FanForge reports it. `fanforge-diag read` and `set-pwm` clear it the same way; `detect` and `dump` never do, and the dump's LDN section shows register `0x28` as the firmware left it (bit 4 set means locked).
+- On NCT679x boards where the firmware locks the hardware-monitor I/O space, FanForge clears the lock whenever it sets up the chip (startup, resume and recovery after a failed read or an abandoned bus mutex), as the Linux `nct6775` driver does. It's a single config-space write and happens on monitor-only chips too. If the lock doesn't clear, FanForge reports it. `fanforge-diag read` and `set-pwm` clear it the same way; `detect` and `dump` never do, and the dump's LDN section shows register `0x28` as it was at that moment (bit 4 set means locked; anything that cleared it since boot, including FanForge itself, shows as unlocked).
 
 ## Building
 
@@ -96,7 +96,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 4. Start HWiNFO, then close it.
 5. Run the second `dump` (`after-hwinfo.json`), then `diff`.
 
-`dump` only reads; it puts the bank register back exactly as it found it. If the diff shows `bank_register` changing (bits 5–6 of EC register `0x06`), that confirms the bank-select cause. `detect`, `read`, `dump` and `diff` work on every supported chip. `detect` prints the chip and whether its fan control is verified.
+`dump` only reads; it puts the bank register back exactly as it found it. If the diff shows `bank_register` changing (bits 5–6 of EC register `0x06` on ITE chips), that confirms the bank-select cause. On a Nuvoton NCT679x that the firmware has locked, `detect` says so and `dump` records the lock (register `0x28`) but skips the hardware-monitor registers, because they all read `0xFF` until the lock is cleared. `detect`, `read`, `dump` and `diff` work on every supported chip. `detect` prints the chip and whether its fan control is verified.
 
 `fanforge-diag set-pwm --channel 2 --duty 40` sets one fan to a fixed speed. It returns that fan to the BIOS after the timeout, on Ctrl+C, or when the console is closed, and refuses anything below 30%. It also refuses on monitor-only chips.
 
