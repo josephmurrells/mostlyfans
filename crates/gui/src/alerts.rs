@@ -118,11 +118,14 @@ pub fn collect(
     alerts.extend(driver);
     let live = matches!(status, ControlStatus::Running);
     if let Some(state) = state.filter(|_| live) {
+        let unverified = state.board.as_ref().filter(|board| !board.fan_control);
         if state.critical {
-            alerts.push(Alert::new(
-                Severity::Critical,
-                "Critical temperature: every fan is at 100%",
-            ));
+            let text = if state.monitor_only && unverified.is_some() {
+                "Critical temperature: the fans are under BIOS control"
+            } else {
+                "Critical temperature: every fan is at 100%"
+            };
+            alerts.push(Alert::new(Severity::Critical, text));
         }
         if let HardwareStatus::Unavailable(reason) = &state.hardware {
             alerts.push(Alert::new(
@@ -131,7 +134,12 @@ pub fn collect(
             ));
         }
         if state.monitor_only {
-            let text = if state.conflicts.is_empty() {
+            let text = if let Some(board) = unverified {
+                format!(
+                    "Monitor-only mode: fan control on the {} hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                    board.chip_name
+                )
+            } else if state.conflicts.is_empty() {
                 "Monitor-only mode: the fans are left to the BIOS.".to_owned()
             } else {
                 format!(
@@ -358,5 +366,29 @@ mod tests {
         };
         assert!(area.visible(notice("old text")).is_empty());
         assert_eq!(area.visible(notice("new text")).len(), 1);
+    }
+
+    #[test]
+    fn unverified_chips_explain_why_fans_are_left_alone() {
+        let mut state = fixtures::state();
+        state.monitor_only = true;
+        state.critical = true;
+        if let Some(board) = state.board.as_mut() {
+            board.chip_name = "Nuvoton NCT6798D".to_owned();
+            board.fan_control = false;
+        }
+        let alerts = collect(&ControlStatus::Running, Some(&state), &[], None);
+        let texts: Vec<&str> = alerts.iter().map(|alert| alert.text.as_str()).collect();
+        assert!(texts.contains(&"Critical temperature: the fans are under BIOS control"));
+        assert!(texts.contains(
+            &"Monitor-only mode: fan control on the Nuvoton NCT6798D hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
+        ));
+        assert!(!texts.iter().any(|text| text.contains("100%")));
+
+        let mut conflict = fixtures::state();
+        conflict.monitor_only = true;
+        conflict.critical = true;
+        let alerts = collect(&ControlStatus::Running, Some(&conflict), &[], None);
+        assert_eq!(alerts[0].text, "Critical temperature: every fan is at 100%");
     }
 }

@@ -19,6 +19,7 @@ pub trait Backend {
     fn fan_limits(&self) -> BTreeMap<FanId, FanLimits>;
     fn warnings(&self) -> Vec<String>;
     fn owns_any(&self) -> bool;
+    fn fan_control(&self) -> bool;
 }
 
 impl<P: PortIo> Backend for Hardware<P> {
@@ -56,5 +57,9 @@ impl<P: PortIo> Backend for Hardware<P> {
 
     fn owns_any(&self) -> bool {
         Hardware::owns_any(self)
+    }
+
+    fn fan_control(&self) -> bool {
+        Hardware::fan_control(self)
     }
 }

@@ -45,6 +45,10 @@ pub struct BoardIdentity {
 pub struct BoardInfo {
     pub identity: BoardIdentity,
     pub chip_id: u16,
+    #[serde(default)]
+    pub chip_name: String,
+    #[serde(default)]
+    pub fan_control: bool,
     pub fan_headers: usize,
     pub likely_cpu_fan: Option<FanId>,
 }
