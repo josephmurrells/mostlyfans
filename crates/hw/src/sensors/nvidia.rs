@@ -42,13 +42,22 @@ fn open() -> Result<Session, String> {
         .map_err(|error| format!("NVML could not start: {error}"))?;
     let count = nvml.device_count().map_err(|error| error.to_string())?;
     let mut found = Vec::new();
+    let mut last_error = None;
     for index in 0..count {
-        let device = nvml
-            .device_by_index(index)
-            .map_err(|error| error.to_string())?;
-        let uuid = device.uuid().map_err(|error| error.to_string())?;
-        let name = device.name().unwrap_or_else(|_| "NVIDIA GPU".to_owned());
-        found.push((uuid, name));
+        let identity = nvml.device_by_index(index).and_then(|device| {
+            let name = device.name().unwrap_or_else(|_| "NVIDIA GPU".to_owned());
+            device.uuid().map(|uuid| (uuid, name))
+        });
+        match identity {
+            Ok(identity) => found.push(identity),
+            Err(error) => {
+                tracing::warn!(index, %error, "skipping an NVIDIA GPU that NVML cannot identify");
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+    if let Some(error) = last_error.filter(|_| found.is_empty()) {
+        return Err(error);
     }
     let (uuids, names): (Vec<String>, Vec<String>) = found.into_iter().unzip();
     let gpus = uuids
