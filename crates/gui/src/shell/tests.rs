@@ -658,18 +658,27 @@ fn the_safety_toggles_default_on_and_disable_their_controls_when_off() {
             .accesskit_node()
             .is_disabled()
     );
-    assert!(
+    let disabled = |harness: &Harness<'_, Shell>, role: Role, label: &str| {
         harness
-            .get_by_role_and_label(Role::SpinButton, "for at least")
+            .get_by_role_and_label(role, label)
             .accesskit_node()
             .is_disabled()
-    );
-    assert!(
-        !harness
-            .get_by_role_and_label(Role::SpinButton, "Missing sensor readings")
-            .accesskit_node()
-            .is_disabled()
-    );
+    };
+    assert!(!disabled(&harness, Role::Slider, "Back to normal below"));
+    assert!(!disabled(&harness, Role::SpinButton, "for at least"));
+    assert!(!disabled(
+        &harness,
+        Role::SpinButton,
+        "Missing sensor readings"
+    ));
+    click(&mut harness, fallback_label);
+    assert!(disabled(&harness, Role::Slider, "Back to normal below"));
+    assert!(disabled(&harness, Role::SpinButton, "for at least"));
+    assert!(!disabled(
+        &harness,
+        Role::SpinButton,
+        "Missing sensor readings"
+    ));
 }
 
 #[test]
