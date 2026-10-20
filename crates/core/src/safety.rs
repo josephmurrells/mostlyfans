@@ -193,6 +193,26 @@ mod tests {
     }
 
     #[test]
+    fn after_a_dropout_the_fallback_waits_for_the_normal_temperature_with_the_override_off() {
+        let config = SafetyConfig {
+            critical_enabled: false,
+            ..SafetyConfig::default()
+        };
+        let mut guard = CriticalGuard::default();
+        for _ in 0..3 {
+            guard.update(None, &config, SECOND);
+        }
+        for _ in 0..20 {
+            assert_eq!(guard.active_cause(&config), Some(Cause::SensorFallback));
+            guard.update(Some(82.0), &config, SECOND);
+        }
+        for _ in 0..9 {
+            assert!(guard.update(Some(75.0), &config, SECOND));
+        }
+        assert!(!guard.update(Some(75.0), &config, SECOND));
+    }
+
+    #[test]
     fn with_the_fallback_off_a_brief_dropout_keeps_a_hot_override() {
         let config = SafetyConfig {
             sensor_fallback_enabled: false,

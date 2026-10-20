@@ -1015,6 +1015,36 @@ mod tests {
     }
 
     #[test]
+    fn flipping_the_fallback_moves_a_degraded_fan_between_full_speed_and_the_bios() {
+        let mut rig = Rig::new(curve_fan(), open_limits());
+        rig.tick();
+        rig.set_curve_temp(None);
+        for _ in 0..3 {
+            rig.tick();
+        }
+        assert!(matches!(
+            Rig::status(&rig.tick(), "pwm1").state,
+            FanState::SensorFallback(_)
+        ));
+
+        rig.engine.set_config(safety_off(curve_fan(), true, false));
+        for _ in 0..2 {
+            rig.tick();
+        }
+        let released = Rig::status(&rig.tick(), "pwm1");
+        assert!(matches!(released.state, FanState::SensorReleased(_)));
+        assert_eq!(released.output, None);
+
+        rig.engine.set_config(curve_fan());
+        for _ in 0..2 {
+            rig.tick();
+        }
+        let full = Rig::status(&rig.tick(), "pwm1");
+        assert!(matches!(full.state, FanState::SensorFallback(_)));
+        assert_eq!(full.output, Some(Duty::FULL));
+    }
+
+    #[test]
     fn a_config_apply_never_brings_back_a_released_fans_old_duty() {
         let config = safety_off(curve_fan(), true, false);
         let mut rig = Rig::new(config.clone(), open_limits());

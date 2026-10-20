@@ -468,6 +468,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
             ui.end_row();
 
             let critical = safety.critical_enabled;
+            let releasing = critical || safety.sensor_fallback_enabled;
             let label = ui.label("Full speed at");
             changed |= ui
                 .add_enabled(
@@ -485,7 +486,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
             let max_release = safety.critical_c - 1.0;
             changed |= ui
                 .add_enabled(
-                    critical,
+                    releasing,
                     Slider::new(&mut safety.release_c, 0.0..=max_release)
                         .suffix(" °C")
                         .fixed_decimals(1)
@@ -498,7 +499,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
             let label = ui.label("for at least");
             changed |= ui
                 .add_enabled(
-                    critical,
+                    releasing,
                     DragValue::new(&mut safety.release_hold_secs)
                         .range(0.0..=600.0)
                         .speed(0.5)
@@ -518,9 +519,9 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
             ui.end_row();
 
             let consequence = if safety.sensor_fallback_enabled {
-                "then the fan goes to 100% (every fan, for the safety sensor)"
+                "then the fan goes to 100% (every fan, for the safety sensor), until it reads below the normal temperature again for the hold time"
             } else {
-                "then the fan goes back to BIOS control"
+                "then the fan goes back to BIOS control; a lost safety sensor only raises a warning"
             };
             let label = ui.label("Missing sensor readings");
             ui.horizontal(|ui| {
