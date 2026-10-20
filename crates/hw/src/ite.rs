@@ -254,7 +254,7 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         let Some(state) = saved else {
             return match self.map.manual_control {
                 None => self.ec.write_verified(register, current | AUTO_MODE_BIT),
-                Some(_) if current & AUTO_MODE_BIT == 0 => {
+                Some(manual) if current == manual => {
                     self.ec.write_verified(PWM_DUTY_REGS[channel], FULL_SPEED)
                 }
                 Some(_) => Ok(()),
@@ -1120,17 +1120,37 @@ mod tests {
     }
 
     #[test]
-    fn the_it8689e_without_a_snapshot_runs_manual_channels_at_full_speed() {
+    fn the_it8689e_without_a_snapshot_only_runs_its_own_manual_headers_at_full_speed() {
         let mut chip = probe(FakeIte::chip(0x8689), "8689-unsaved");
-        chip.set_duty(4, 0x66).unwrap();
-        chip.restore(4, None).unwrap();
-        assert_eq!(chip.io.reg(0xA7), 0x7F);
-        assert_eq!(chip.io.reg(0xA3), FULL_SPEED);
+        for channel in 0..6 {
+            let control = PWM_CONTROL_8689[channel];
+            if channel % 2 == 0 {
+                chip.set_duty(channel, 0x66).unwrap();
+            } else {
+                chip.io.banks[0][usize::from(control)] = 0x05;
+            }
+            chip.io.bank_register = 0x40;
+            let writes = data_writes(&chip.io).len();
+            chip.restore(channel, None).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            let fan_writes = data_writes(&chip.io)[writes..]
+                .iter()
+                .filter(|&&(index, _)| index != BANK_REG)
+                .count();
+            if channel % 2 == 0 {
+                assert_eq!(fan_writes, 1);
+                assert_eq!(chip.io.reg(control), 0x7F);
+                assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), FULL_SPEED);
+            } else {
+                assert_eq!(fan_writes, 0);
+                assert_eq!(chip.io.reg(control), 0x05);
+                assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+            }
+        }
 
         let writes = data_writes(&chip.io).len();
+        chip.io.banks[0][0xAF] = AUTO_MODE_BIT | 0x05;
         chip.restore(5, None).unwrap();
         assert_eq!(data_writes(&chip.io).len(), writes);
-        assert_eq!(chip.io.reg(0xAF), AUTO_MODE_BIT | 0x05);
-        assert_eq!(chip.io.reg(0xAB), 0x40);
     }
 }

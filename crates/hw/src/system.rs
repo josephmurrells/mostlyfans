@@ -514,6 +514,21 @@ mod tests {
     }
 
     #[test]
+    fn the_it8655e_still_claims_a_manual_header_without_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::new();
+        ite.banks[0][0x16] = 0x01;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8655-manual", &fake, &path);
+        hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
+        assert!(hardware.owns_any());
+        assert_eq!(hardware.snapshot.channel(1), None);
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        assert_eq!(fake.with(|chip| chip.reg(0x16)), 0x81);
+    }
+
+    #[test]
     fn the_it8689e_restores_all_six_headers_after_a_crash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
@@ -539,7 +554,7 @@ mod tests {
             for (channel, register) in [0x15, 0x16, 0x17, 0x7F, 0xA7].into_iter().enumerate() {
                 assert_eq!(chip.reg(register), 0x80 | channel as u8);
             }
-            assert_eq!((chip.reg(0xAF), chip.reg(0xAB)), (0x05, 0xFF));
+            assert_eq!((chip.reg(0xAF), chip.reg(0xAB)), (0x05, 0x40));
         });
         assert!(!restarted.owns_any());
     }
