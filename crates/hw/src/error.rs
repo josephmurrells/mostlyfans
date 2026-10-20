@@ -47,7 +47,8 @@ pub enum HwError {
     #[error("the Super I/O chip changed from {expected:#06x} to {found:#06x}")]
     ChipChanged { expected: u16, found: u16 },
     #[error(
-        "bios_snapshot.toml records fans driven on chip {owner:#06x}, but the attached chip is {found:#06x}; check that the fans are under BIOS control, then delete C:\\ProgramData\\FanForge\\bios_snapshot.toml"
+        "bios_snapshot.toml records fans driven on chip {owner:#06x}, but the attached chip is {found:#06x}; check that the fans are under BIOS control, then delete {}",
+        fanforge_win::paths::data_dir().join("bios_snapshot.toml").display()
     )]
     ForeignSnapshot { owner: u16, found: u16 },
     #[error("fan control on the {0} is not verified yet; FanForge only monitors it")]
