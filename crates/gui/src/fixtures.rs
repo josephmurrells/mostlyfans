@@ -89,6 +89,8 @@ pub fn state() -> ControlState {
                 product: "PRIME B350-PLUS".to_owned(),
             },
             chip_id: 0x8655,
+            chip_name: "ITE IT8655E".to_owned(),
+            fan_control: true,
             fan_headers: 3,
             likely_cpu_fan: Some(fan(0)),
         }),
