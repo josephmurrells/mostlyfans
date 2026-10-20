@@ -9,11 +9,11 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 | Crate | Binary | Purpose |
 |---|---|---|
 | `fanforge-core` | – | Curves, control engine, safety rules, config, published state. Platform independent. |
-| `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts). |
-| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, bank-safe IT8655E driver, Ryzen SMN temperatures. |
+| `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts, System32 DLL loading, drive property queries). |
+| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, bank-safe IT8655E driver, Ryzen SMN temperatures, GPU and drive temperature sources. |
 | `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
 | `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
-| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, dump, diff, guarded set-pwm, restore. |
+| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, dump, diff, guarded set-pwm, restore. |
 
 ## Building
 
@@ -52,6 +52,18 @@ To remove FanForge:
 4. Optionally, delete `C:\ProgramData\FanForge` to remove your settings.
 
 Debug builds don't request elevation. Run them from an elevated terminal.
+
+## GPU and drive temperatures
+
+Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures. They show on the Overview and any curve can use them.
+
+- **NVIDIA:** through NVML (`nvml.dll`, installed with the driver). Each GPU is identified by its NVML UUID, so a curve stays bound to the same card across reboots and slot moves.
+- **AMD:** through ADL (`atiadlxx.dll`, installed with Adrenalin), edge temperature of discrete cards (the Radeon graphics built into Ryzen CPUs is skipped; its temperature tracks the CPU). This path has not been tested on real AMD hardware yet. Each GPU is identified by its PCI bus/device/function. That number can change when you add or remove a PCIe device or change BIOS PCIe settings; a curve bound to the old id then sees a missing sensor and its fan goes to 100% until you pick the sensor again.
+- **Drives:** NVMe drives through Windows' storage temperature query, SATA drives through their SMART table (attribute 194, else 190). Each drive is identified by its serial number. Drives without a serial, spinning hard disks (polling would keep them from spinning down) and drives that report no temperature are not listed.
+- **Loading:** both GPU libraries are loaded from System32 only, with their dependencies, never from the folder FanForge runs from.
+- **Polling:** GPUs are read every second and drives every 5 s, each on its own thread. They never touch the Super I/O bus, and a slow or hung driver call can't delay the control loop. A missing driver is retried every 30 s.
+- **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual fallback to 100%. The critical sensor stays CPU Tctl unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
+- `fanforge-diag temps` prints these temperatures without PawnIO or administrator rights.
 
 ## Confirm the root cause on your PC
 
@@ -95,7 +107,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 ## Not yet implemented
 
 - Calibration
-- GPU temperature sensors (NVML)
+- Testing the AMD GPU (ADL) path on real hardware
 - Nuvoton and other ITE chips
 - Code signing
 - Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes

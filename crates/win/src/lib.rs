@@ -4,6 +4,7 @@ mod dialog;
 mod directory;
 mod handle;
 mod integrity;
+mod library;
 pub mod paths;
 mod pipe;
 mod power;
@@ -12,12 +13,14 @@ mod registry;
 mod security;
 mod session;
 mod shell;
+pub mod storage;
 mod sync;
 mod token;
 
 pub use dialog::{DialogKind, message_box};
 pub use directory::{PRIVATE_DATA_SDDL, secure_directory};
 pub use handle::{borrow_handle, own_handle};
+pub use library::{RawSymbol, SystemLibrary};
 pub use pipe::{AnonymousPipe, nonblocking_writer};
 pub use power::{PowerEvent, PowerSubscription, subscribe_power, unbiased_time};
 pub use process::{
