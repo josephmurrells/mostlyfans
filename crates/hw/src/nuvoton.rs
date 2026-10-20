@@ -379,7 +379,7 @@ pub(crate) fn dump<P: PortIo>(
         global_config,
         ldn: HWM_LDN,
         ec_ldn_config,
-        bank_register: bank_register.unwrap_or_default(),
+        bank_register,
         banks: banks
             .into_iter()
             .map(|(bank, registers)| BankDump { bank, registers })
@@ -785,6 +785,20 @@ mod tests {
         let dump = chip.dump().unwrap();
         assert_eq!(dump.ec_ldn_config["0x28"], IO_LOCK_BIT);
         assert!(dump.banks.is_empty());
+        assert_eq!(dump.bank_register, None);
+        let mut unlocked = dump.clone();
+        unlocked.bank_register = Some(0x00);
+        unlocked.banks.push(BankDump {
+            bank: 0,
+            registers: vec![Some(0); 256],
+        });
+        assert_eq!(
+            dump.diff(&unlocked),
+            [
+                "bank_register: not read (I/O space locked) -> 0x00",
+                "monitor_registers: not read (I/O space locked) -> read"
+            ]
+        );
         assert!(
             chip.io
                 .writes
@@ -896,7 +910,7 @@ mod tests {
         let dump = chip.dump().unwrap();
         assert_eq!(dump.chip, "Nuvoton NCT6798D");
         assert_eq!(dump.ldn, HWM_LDN);
-        assert_eq!(dump.bank_register, 0x05);
+        assert_eq!(dump.bank_register, Some(0x05));
         assert_eq!(chip.io.bank_register, 0x05);
         assert_eq!(dump.ec_ldn_config["0x61"], 0x90);
         let bank = |number: u8| dump.banks.iter().find(|bank| bank.bank == number).unwrap();

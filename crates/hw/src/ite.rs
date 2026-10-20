@@ -333,7 +333,7 @@ pub(crate) fn dump<P: PortIo>(
         global_config,
         ldn: EC_LDN,
         ec_ldn_config,
-        bank_register,
+        bank_register: Some(bank_register),
         banks,
     })
 }
@@ -748,7 +748,7 @@ mod tests {
         let mut chip = SuperIo::attach(fake, Slot::Primary, lock("dump")).unwrap();
         let dump = chip.dump().unwrap();
         assert_eq!(dump.chip, "ITE IT8655E");
-        assert_eq!(dump.bank_register, 0x40);
+        assert_eq!(dump.bank_register, Some(0x40));
         assert_eq!(dump.banks.len(), FAKE_BANKS);
         assert_eq!(
             dump.banks[0].registers[usize::from(VENDOR_ID_REG)],
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(dump.ec_ldn_config["0x60"], 0x02);
 
         let mut changed = dump.clone();
-        changed.bank_register = 0x00;
+        changed.bank_register = Some(0x00);
         changed.banks[0].registers[0x15] = Some(0x01);
         changed.ec_ldn_config.insert("0x70".to_owned(), 0x09);
         let diff = dump.diff(&changed);

@@ -103,7 +103,8 @@ pub struct RegisterDump {
     #[serde(default = "default_dump_ldn")]
     pub ldn: u8,
     pub ec_ldn_config: BTreeMap<String, u8>,
-    pub bank_register: u8,
+    #[serde(default)]
+    pub bank_register: Option<u8>,
     pub banks: Vec<BankDump>,
 }
 
@@ -449,8 +450,13 @@ impl RegisterDump {
         );
         field(
             "bank_register",
-            hex(self.bank_register),
-            hex(other.bank_register),
+            self.bank_register.map_or_else(not_read, hex),
+            other.bank_register.map_or_else(not_read, hex),
+        );
+        field(
+            "monitor_registers",
+            dumped(&self.banks),
+            dumped(&other.banks),
         );
         diff_maps(
             &mut lines,
@@ -499,6 +505,18 @@ fn diff_maps(
     }
     for (register, right) in b.iter().filter(|(register, _)| !a.contains_key(*register)) {
         lines.push(format!("{section} {register}: missing -> {}", hex(*right)));
+    }
+}
+
+fn not_read() -> String {
+    "not read (I/O space locked)".to_owned()
+}
+
+fn dumped(banks: &[BankDump]) -> String {
+    if banks.is_empty() {
+        not_read()
+    } else {
+        "read".to_owned()
     }
 }
 
