@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Id, Key, KeyboardShortcut, Margin, Modifiers, RichText,
-    Role, Sense, Stroke, WidgetInfo, pos2, vec2,
+    Role, Sense, Stroke, UiBuilder, WidgetInfo, pos2, vec2,
 };
 use fanforge_core::config::Config;
 use fanforge_core::state::{ControlState, HardwareStatus};
@@ -327,8 +327,10 @@ impl Shell {
                 ui.set_max_width(ui.available_width().min(CONTENT_MAX_WIDTH));
                 self.alert_area(ui, &status, state.as_deref());
                 let editable = self.pending.is_none();
-                ui.add_enabled_ui(editable, |ui| {
-                    self.page(ui, &status, state.as_deref(), overall.is_live());
+                ui.scope_builder(UiBuilder::new().scope_id(Id::unique("page")), |ui| {
+                    ui.add_enabled_ui(editable, |ui| {
+                        self.page(ui, &status, state.as_deref(), overall.is_live());
+                    });
                 });
             });
         self.profile_prompt(&ctx, state.as_deref());

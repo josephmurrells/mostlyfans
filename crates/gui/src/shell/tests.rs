@@ -611,3 +611,24 @@ fn renaming_a_curve_keeps_focus_when_the_unsaved_bar_appears() {
         format!("{}xyz", before.curves[0].name)
     );
 }
+
+#[test]
+fn typing_in_a_number_field_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Settings);
+    harness.get_by_label("for at least").scroll_to_me();
+    settle(&mut harness);
+    harness.get_by_label("for at least").click();
+    settle(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut harness);
+    for digit in ["2", "5"] {
+        harness.get_by_label("for at least").type_text(digit);
+        settle(&mut harness);
+    }
+    harness.key_press(Key::Enter);
+    settle(&mut harness);
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(draft.safety.release_hold_secs, 25.0);
+}
