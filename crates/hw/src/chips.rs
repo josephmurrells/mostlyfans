@@ -86,6 +86,13 @@ impl ChipSpec {
         matches!(&self.map, ChipMap::Ite(map) if map.manual_control.is_none())
     }
 
+    pub fn manual_control(&self) -> Option<u8> {
+        match &self.map {
+            ChipMap::Ite(map) => map.manual_control,
+            ChipMap::Nuvoton(_) => None,
+        }
+    }
+
     pub fn matches_ite(&self, chip_id: u16) -> bool {
         self.ident == Ident::Ite(chip_id)
     }

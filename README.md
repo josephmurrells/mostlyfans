@@ -20,7 +20,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 | Chip | Fan control | Notes |
 |---|---|---|
 | ITE IT8655E | **Yes** (verified) | 3 headers, 6 temperatures |
-| ITE IT8689E | **Yes** | 6 headers, 6 temperatures. Monitoring is tested on hardware; fan control isn't yet. The register addresses match LibreHardwareMonitor and the Linux `it87` drivers. Manual mode writes `0x7F` to the control register as LibreHardwareMonitor does; the out-of-tree `it87` driver does it differently |
+| ITE IT8689E | **Yes** | 6 headers, 6 temperatures. Monitoring is tested on hardware; fan control isn't yet. The register addresses match LibreHardwareMonitor and the Linux `it87` drivers. Manual mode writes `0x7F` to the control register as LibreHardwareMonitor does; the Linux `it87` drivers do it differently |
 | ITE IT8620E, IT8625E, IT8628E, IT8665E, IT8686E, IT8688E, IT8721F, IT8728F, IT8772E | Monitor only | config port 0x2E |
 | Nuvoton NCT6771F (NCT6775F), NCT6776F, NCT6779D, NCT6791D, NCT6792D, NCT6792D-A, NCT6793D, NCT6795D, NCT6796D, NCT6796D-R, NCT6797D, NCT6798D, NCT6799D | Monitor only | config port 0x2E or 0x4E |
 
@@ -103,7 +103,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 ## Safety model
 
 - **Bus access:** every hardware access holds `Global\Access_ISABUS.HTP.Method`. On the IT8655E, IT8665E and IT8689E it selects EC bank 0 first. On Nuvoton chips the hardware-monitor bank register is put back as it was found after every access. An abandoned mutex triggers a full chip re-initialisation, and that is refused if a different chip answers. Releases retry for up to 2 s when another tool holds the bus.
-- **BIOS snapshot:** before FanForge first drives a channel, it saves that channel's BIOS settings and marks it "owned" in `bios_snapshot.toml`. It refuses manual control if that file can't be written. After a crash, owned channels are restored from the saved values; channels it doesn't own are re-captured on every start, so BIOS changes are picked up. On the IT8689E, manual mode overwrites the BIOS mode, so FanForge refuses to drive a header the BIOS left in manual mode, leaves such headers alone on release, and sets a header it left in manual mode with no saved settings to 100% instead of guessing an auto mode.
+- **BIOS snapshot:** before FanForge first drives a channel, it saves that channel's BIOS settings and marks it "owned" in `bios_snapshot.toml`. It refuses manual control if that file can't be written. After a crash, owned channels are restored from the saved values; channels it doesn't own are re-captured on every start, so BIOS changes are picked up. On the IT8689E, manual mode overwrites the BIOS mode, so FanForge refuses to drive a header the BIOS left in manual mode, leaves such headers alone on release, and sets a header still at the manual value `0x7F` (FanForge's and LibreHardwareMonitor's) with no saved settings to 100% instead of guessing an auto mode. Such a header can still be driven.
 - **Fail-safe returns to BIOS control:**
   - **Quit, crash, sleep:** fans go back to BIOS control when you quit from the tray, the session ends (sign-out, restart, shutdown, Restart Manager), the system sleeps, or the control thread panics. A panic leaves a **Restart control** button.
   - **Stalled loop:** the in-process watchdog fires when the control loop stalls (3× the interval, at least 3 s). It releases the fans from the on-disk snapshot and exits.
