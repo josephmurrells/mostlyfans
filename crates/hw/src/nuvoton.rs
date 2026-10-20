@@ -78,13 +78,10 @@ fn exit_config<P: PortIo, T>(
     space.write_index(EXIT_KEY)
 }
 
-fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>, unlock: bool) -> Result<(), HwError> {
+fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>) -> Result<(), HwError> {
     let lock = space.read(IO_LOCK_REG)?;
     if lock & IO_LOCK_BIT == 0 {
         return Ok(());
-    }
-    if !unlock {
-        return Err(HwError::IoSpaceLocked);
     }
     tracing::info!("unlocking the Nuvoton hardware monitor I/O space");
     space.write(IO_LOCK_REG, lock & !IO_LOCK_BIT)?;
@@ -116,8 +113,8 @@ pub(crate) fn read_config<P: PortIo>(
             space.io.find_bars()?;
             space.select(HWM_LDN)?;
             let base_address = space.read_base_address()?;
-            if io_lock {
-                unlock_io_space(space, unlock)?;
+            if io_lock && unlock {
+                unlock_io_space(space)?;
             }
             Ok(ChipConfig {
                 chip,
@@ -753,23 +750,26 @@ mod tests {
     }
 
     #[test]
-    fn attaching_read_only_reports_the_lock_without_clearing_it() {
+    fn attaching_read_only_dumps_a_locked_chip_without_clearing_the_lock() {
         let mut fake = nct6798d();
         fake.lock_register = IO_LOCK_BIT;
-        assert!(matches!(
-            read_config(&mut fake, Slot::Primary, false),
-            Err(HwError::IoSpaceLocked)
-        ));
-        assert_eq!(fake.lock_register, IO_LOCK_BIT);
-        assert!(!fake.config_mode);
-        assert!(matches!(
-            SuperIo::attach(fake, Slot::Primary, lock("attach-locked")),
-            Err(HwError::IoSpaceLocked)
-        ));
+        fake.locked = true;
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("attach-locked")).unwrap();
+        let dump = chip.dump().unwrap();
+        assert_eq!(dump.ec_ldn_config["0x28"], IO_LOCK_BIT);
+        chip.reinitialize().unwrap_err();
+        assert_eq!(chip.io.lock_register, IO_LOCK_BIT);
+        assert!(!chip.io.config_mode);
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, _, index)| port != chip.io.port + 1 || index != IO_LOCK_REG)
+        );
     }
 
     #[test]
-    fn a_lock_set_after_attach_fails_reads_and_is_cleared_on_reinitialisation() {
+    fn a_lock_set_after_probing_fails_reads_and_is_cleared_on_reinitialisation() {
         let mut chip = probe(nct6798d(), "relock");
         chip.io.locked = true;
         chip.io.lock_register = IO_LOCK_BIT;
