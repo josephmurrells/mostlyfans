@@ -632,3 +632,74 @@ fn typing_in_a_number_field_keeps_focus_when_the_unsaved_bar_appears() {
     let draft = harness.state().draft.as_ref().unwrap();
     assert_eq!(draft.safety.release_hold_secs, 25.0);
 }
+
+#[test]
+fn the_safety_toggles_default_on_and_disable_their_controls_when_off() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Settings);
+    let override_label = "Critical temperature override: all fans to 100% when it gets too hot";
+    let fallback_label =
+        "Missing-sensor fallback: fans go to 100% when their sensor stops reporting";
+    assert!(harness.query_by_label(fallback_label).is_some());
+    assert!(
+        !harness
+            .get_by_role_and_label(Role::Slider, "Full speed at")
+            .accesskit_node()
+            .is_disabled()
+    );
+    click(&mut harness, override_label);
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert!(!draft.safety.critical_enabled);
+    assert!(draft.safety.sensor_fallback_enabled);
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Slider, "Full speed at")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        harness
+            .get_by_role_and_label(Role::SpinButton, "for at least")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        !harness
+            .get_by_role_and_label(Role::SpinButton, "Missing sensor readings")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn turned_off_safety_shows_warnings_and_heat_still_raises_a_danger_alert() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| {
+        state.config.safety.critical_enabled = false;
+        state.config.safety.sensor_fallback_enabled = false;
+        state.critical_reached = true;
+        state.readings.sensors[0].celsius = Some(92.0);
+    });
+    let harness = harness(&link, Page::Overview);
+    assert!(
+        harness
+            .query_all_by_label_contains("The critical temperature override is off")
+            .next()
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("The missing-sensor fallback is off")
+            .next()
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("reached the critical temperature (92 °C now)")
+            .next()
+            .is_some()
+    );
+    assert!(harness.query_by_label("Critical (override off)").is_some());
+    assert!(harness.query_by_label(icons::CLOSE).is_none());
+}

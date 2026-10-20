@@ -127,6 +127,40 @@ pub fn collect(
             };
             alerts.push(Alert::new(Severity::Critical, text));
         }
+        let safety = &state.config.safety;
+        if !state.critical && state.critical_reached && !safety.critical_enabled {
+            let sensor = state
+                .readings
+                .sensors
+                .iter()
+                .find(|sensor| sensor.id == safety.critical_sensor);
+            let name = sensor.map_or_else(
+                || safety.critical_sensor.to_string(),
+                |sensor| sensor.label.clone(),
+            );
+            let reading = sensor
+                .and_then(|sensor| sensor.celsius)
+                .map_or_else(String::new, |celsius| format!(" ({celsius:.0} °C now)"));
+            alerts.push(
+                Alert::new(
+                    Severity::Critical,
+                    format!("{name} reached the critical temperature{reading}"),
+                )
+                .detail("The critical temperature override is off, so the fans were not forced to 100%."),
+            );
+        }
+        if !safety.critical_enabled {
+            alerts.push(Alert::new(
+                Severity::Warning,
+                "The critical temperature override is off: fans are not forced to 100% when it gets hot.",
+            ));
+        }
+        if !safety.sensor_fallback_enabled {
+            alerts.push(Alert::new(
+                Severity::Warning,
+                "The missing-sensor fallback is off: a fan whose sensor fails goes back to BIOS control instead of 100%.",
+            ));
+        }
         if let HardwareStatus::Unavailable(reason) = &state.hardware {
             alerts.push(Alert::new(
                 Severity::Hardware,

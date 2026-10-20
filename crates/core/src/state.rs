@@ -28,6 +28,8 @@ pub struct ControlState {
     pub limits: BTreeMap<FanId, FanLimits>,
     pub config: Config,
     pub critical: bool,
+    #[serde(default)]
+    pub critical_reached: bool,
     pub monitor_only: bool,
     pub conflicts: Vec<String>,
     pub warnings: Vec<String>,

@@ -67,9 +67,11 @@ pub struct Profile {
 #[serde(default)]
 pub struct SafetyConfig {
     pub critical_sensor: SensorId,
+    pub critical_enabled: bool,
     pub critical_c: f32,
     pub release_c: f32,
     pub release_hold_secs: f32,
+    pub sensor_fallback_enabled: bool,
     pub sensor_failure_ticks: u32,
 }
 
@@ -77,9 +79,11 @@ impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
             critical_sensor: SensorId::new("cpu/tctl"),
+            critical_enabled: true,
             critical_c: 85.0,
             release_c: 80.0,
             release_hold_secs: 10.0,
+            sensor_fallback_enabled: true,
             sensor_failure_ticks: 3,
         }
     }
@@ -573,6 +577,28 @@ mod tests {
         .unwrap();
         assert!(old.calibration.is_empty());
         old.validate().unwrap();
+    }
+
+    #[test]
+    fn safety_toggles_default_on_round_trip_and_load_on_from_old_files() {
+        let defaults = SafetyConfig::default();
+        assert!(defaults.critical_enabled);
+        assert!(defaults.sensor_fallback_enabled);
+
+        let mut config = Config::default();
+        config.safety.critical_enabled = false;
+        config.safety.sensor_fallback_enabled = false;
+        config.validate().unwrap();
+        let parsed: Config = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        assert_eq!(parsed, config);
+
+        let old: Config = toml::from_str(
+            "version = 1\nactive_profile = \"Balanced\"\n[profiles.Balanced]\n[safety]\ncritical_sensor = \"cpu/tctl\"\ncritical_c = 90.0\n",
+        )
+        .unwrap();
+        assert!(old.safety.critical_enabled);
+        assert!(old.safety.sensor_fallback_enabled);
+        assert_eq!(old.safety.critical_c, 90.0);
     }
 
     #[test]
