@@ -20,6 +20,7 @@ const PMLOG_TEMPERATURE_EDGE: usize = 8;
 const ODN_TEMPERATURE_EDGE: i32 = 1;
 const MAX_ADAPTERS: i32 = 256;
 const ASIC_INTEGRATED: i32 = 1 << 1;
+const ASIC_FUSION: i32 = 1 << 5;
 
 type Context = *mut c_void;
 type MallocCallback = unsafe extern "system" fn(i32) -> *mut c_void;
@@ -115,7 +116,7 @@ pub fn edge_temperature(pmlog: &[u8]) -> Option<f32> {
 }
 
 pub fn is_integrated(asic_types: i32, valid: i32) -> bool {
-    asic_types & valid & ASIC_INTEGRATED != 0
+    asic_types & valid & (ASIC_INTEGRATED | ASIC_FUSION) != 0
 }
 
 pub fn physical_gpus(adapters: Vec<AdapterInfo>) -> Vec<AdapterInfo> {
@@ -377,6 +378,8 @@ mod tests {
         assert!(is_integrated(ASIC_INTEGRATED, ASIC_INTEGRATED));
         assert!(!is_integrated(ASIC_INTEGRATED, 1));
         assert!(!is_integrated(1, ASIC_INTEGRATED | 1));
+        assert!(is_integrated(ASIC_FUSION | 1, ASIC_FUSION | 1));
+        assert!(!is_integrated(ASIC_FUSION, 1));
     }
 
     #[test]
