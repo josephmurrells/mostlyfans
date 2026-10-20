@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn only_tested_chips_are_verified_and_ambiguous_rows_never_are() {
+    fn fan_control_is_on_only_for_listed_chips_and_never_for_ambiguous_rows() {
         let verified: Vec<&str> = CHIPS
             .iter()
             .filter(|chip| chip.verified)
