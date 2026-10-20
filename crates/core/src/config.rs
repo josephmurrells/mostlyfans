@@ -547,6 +547,7 @@ mod tests {
                     rpm: 65_535,
                 })
                 .collect(),
+            not_restarting: true,
         }
     }
 

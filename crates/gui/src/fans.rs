@@ -503,7 +503,7 @@ fn calibration_card(ui: &mut egui::Ui, page: &FanPage<'_>, fan: &FanId, reading:
             }
             ui.label(widgets::caption(
                 ui,
-                "Steps down from 100% in 5% steps of at least 3 s each, never below the header floor. It stops early if a temperature rises by 5 °C or reaches 75 °C.",
+                "Steps down from 100% in 5% steps of at least 3 s each. It stays at or above the header floor, and only goes lower, down to 0%, on a case fan allowed to stop. It stops early if a temperature rises by 5 °C or reaches 75 °C.",
             ));
         }
         if let Some(report) = state
@@ -554,6 +554,15 @@ fn calibration_result(ui: &mut egui::Ui, fan: &FanId, result: &FanCalibration) {
         None => "The header floor is unchanged.".to_owned(),
     };
     ui.label(widgets::muted(raise));
+    if result.not_restarting {
+        ui.label(
+            RichText::new(format!(
+                "{}  It did not restart, even at 100%. Check that it is connected and working, then calibrate again.",
+                icons::WARNING
+            ))
+            .color(theme::of(ui).danger),
+        );
+    }
     if result.points.is_empty() {
         return;
     }
