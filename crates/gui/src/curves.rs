@@ -406,7 +406,11 @@ fn floor_mark(config: &Config, state: &ControlState, curve: &CurveId) -> Option<
         .filter(|(_, mode)| matches!(mode, FanMode::Curve { curve: used } if used == curve))
         .map(|(fan, _)| {
             let limits = state.limits.get(fan).copied().unwrap_or_default();
-            let floor = format::effective_floor(limits, &config.settings(fan));
+            let floor = format::effective_floor(
+                limits,
+                &config.settings(fan),
+                state.config.calibration_for(fan),
+            );
             (format::fan_name(config, state, fan), floor.percent)
         })
         .max_by(|a, b| a.1.total_cmp(&b.1))

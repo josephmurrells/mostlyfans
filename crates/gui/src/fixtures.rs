@@ -5,6 +5,9 @@ use std::sync::Arc;
 
 use fanforge_control::controller::CommandResult;
 use fanforge_core::board::{BoardIdentity, BoardInfo, fan_limits};
+use fanforge_core::calibration::{
+    CalibrationOutcome, CalibrationProgress, CalibrationReport, CalibrationView, Phase,
+};
 use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
 use fanforge_core::engine::{FanState, FanStatus};
@@ -115,6 +118,7 @@ pub fn state() -> ControlState {
         monitor_only: false,
         conflicts: Vec::new(),
         warnings: Vec::new(),
+        calibration: CalibrationView::default(),
     }
 }
 
@@ -123,6 +127,8 @@ pub enum Sent {
     Config(Box<Config>),
     Profile(String),
     Identify(FanId),
+    Calibrate(FanId),
+    CancelCalibration,
 }
 
 pub struct Inner {
@@ -182,6 +188,8 @@ impl FakeLink {
                 Sent::Config(config) => format!("config:{}", config.active_profile),
                 Sent::Profile(name) => format!("profile:{name}"),
                 Sent::Identify(fan) => format!("identify:{fan}"),
+                Sent::Calibrate(fan) => format!("calibrate:{fan}"),
+                Sent::CancelCalibration => "cancel-calibration".to_owned(),
             })
             .collect()
     }
@@ -229,6 +237,36 @@ impl ControlLink for FakeLink {
                     }
                 });
                 (Sent::Identify(fan), RequestKind::Identify)
+            }
+            Request::Calibrate(fan) => {
+                let target = fan.clone();
+                self.update(|state| {
+                    state.calibration.active = Some(CalibrationProgress {
+                        fan: target.clone(),
+                        phase: Phase::StepDown,
+                        duty: Duty::FULL,
+                        rpm: Some(1500),
+                        points: Vec::new(),
+                        elapsed: std::time::Duration::ZERO,
+                    });
+                    for status in &mut state.fans {
+                        if status.id == target {
+                            status.state = FanState::Calibrating;
+                        }
+                    }
+                });
+                (Sent::Calibrate(fan), RequestKind::Calibrate)
+            }
+            Request::CancelCalibration => {
+                self.update(|state| {
+                    if let Some(progress) = state.calibration.active.take() {
+                        state.calibration.last = Some(CalibrationReport {
+                            fan: progress.fan,
+                            outcome: CalibrationOutcome::Cancelled,
+                        });
+                    }
+                });
+                (Sent::CancelCalibration, RequestKind::Calibrate)
             }
         };
         let mut inner = self.0.borrow_mut();
