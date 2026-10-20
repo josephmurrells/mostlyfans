@@ -96,7 +96,6 @@ fanforge-diag diff cold.json after-hwinfo.json
 
 - Calibration
 - GPU temperature sensors (NVML)
-- MSI installer
 - Nuvoton and other ITE chips
 - Code signing
 - Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes
