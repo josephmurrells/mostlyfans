@@ -212,7 +212,7 @@ fn fan_card(
     let status = state.fans.iter().find(|status| status.id == fan.id);
     let settings = state.config.settings(&fan.id);
     let limits = state.limits.get(&fan.id).copied().unwrap_or_default();
-    let floor = format::effective_floor(limits, &settings);
+    let floor = format::effective_floor(limits, &settings, state.config.calibration_for(&fan.id));
     let mode = state.config.mode(&fan.id);
     widgets::clickable_card(ui, Id::unique(("fan-card", fan.id.as_str())), &name, |ui| {
         let palette = theme::of(ui);

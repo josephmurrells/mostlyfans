@@ -187,7 +187,8 @@ impl Shell {
                     self.toasts
                         .error(format!("Your changes were rejected: {message}"));
                 }
-                (RequestKind::Profile | RequestKind::Identify, Ok(())) => {}
+                (RequestKind::Profile | RequestKind::Identify | RequestKind::Calibrate, Ok(())) => {
+                }
                 (RequestKind::Profile, Err(message)) => {
                     if let Some((name, _)) = self.profile_override.take()
                         && let (Some(draft), Some(state)) = (self.draft.as_mut(), state)
@@ -201,6 +202,10 @@ impl Shell {
                 (RequestKind::Identify, Err(message)) => {
                     self.toasts.error(format!("Identify failed: {message}"));
                 }
+                (RequestKind::Calibrate, Err(message)) => {
+                    self.toasts
+                        .error(format!("Calibration could not start: {message}"));
+                }
             }
         }
     }
@@ -212,7 +217,13 @@ impl Shell {
         let Some(accepted_at) = pending.accepted_at else {
             return;
         };
-        let visible = state.is_some_and(|state| state.config == pending.config);
+        let visible = state.is_some_and(|state| {
+            let expected = Config {
+                calibration: state.config.calibration.clone(),
+                ..pending.config.clone()
+            };
+            state.config == expected
+        });
         if visible || accepted_at.elapsed() >= APPLY_SETTLE_TIMEOUT {
             self.pending = None;
             self.dirty = false;
