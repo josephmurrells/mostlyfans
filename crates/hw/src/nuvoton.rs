@@ -78,6 +78,19 @@ fn exit_config<P: PortIo, T>(
     space.write_index(EXIT_KEY)
 }
 
+fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>) -> Result<(), HwError> {
+    let lock = space.read(IO_LOCK_REG)?;
+    if lock & IO_LOCK_BIT == 0 {
+        return Ok(());
+    }
+    tracing::info!("unlocking the Nuvoton hardware monitor I/O space");
+    space.write(IO_LOCK_REG, lock & !IO_LOCK_BIT)?;
+    if space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0 {
+        return Err(HwError::IoSpaceLocked);
+    }
+    Ok(())
+}
+
 pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
     with_config_space(
         io,
@@ -96,8 +109,8 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfi
             space.io.find_bars()?;
             space.select(HWM_LDN)?;
             let base_address = space.read_base_address()?;
-            if io_lock && space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0 {
-                return Err(HwError::IoSpaceLocked);
+            if io_lock {
+                unlock_io_space(space)?;
             }
             Ok(ChipConfig {
                 chip,
@@ -370,6 +383,7 @@ pub mod fake {
         pub bank_register: u8,
         pub banks: BTreeMap<u8, [u8; 256]>,
         pub locked: bool,
+        pub lock_stuck: bool,
         pub stuck: Vec<u16>,
         pub exits: usize,
         pub writes: Vec<(u16, u8, u8)>,
@@ -392,6 +406,7 @@ pub mod fake {
                 bank_register: 0,
                 banks: BTreeMap::new(),
                 locked: false,
+                lock_stuck: false,
                 stuck: Vec::new(),
                 exits: 0,
                 writes: Vec::new(),
@@ -505,6 +520,15 @@ pub mod fake {
                 }
                 p if p == self.port + 1 && self.config_mode && self.config_index == 0x07 => {
                     self.ldn = value;
+                }
+                p if p == self.port + 1
+                    && self.config_mode
+                    && self.config_index == IO_LOCK_REG
+                    && self.ldn == HWM_LDN
+                    && !self.lock_stuck =>
+                {
+                    self.lock_register = value;
+                    self.locked = value & IO_LOCK_BIT != 0;
                 }
                 p if p == self.base + ADDRESS_PORT_OFFSET => self.hwm_index = value,
                 p if p == self.base + DATA_PORT_OFFSET && !self.locked => {
@@ -681,29 +705,41 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_monitor_fails_detection_on_679x_chips_only() {
+    fn a_locked_monitor_is_unlocked_on_679x_chips_only() {
         let mut fake = nct6798d();
-        fake.lock_register = IO_LOCK_BIT;
-        assert!(matches!(
-            SuperIo::probe(fake, Slot::Primary, lock("locked")),
-            Err(HwError::IoSpaceLocked)
-        ));
+        fake.lock_register = IO_LOCK_BIT | 0x01;
+        fake.locked = true;
+        let mut chip = probe(fake, "locked");
+        assert_eq!(chip.io.lock_register, 0x01);
+        assert!(chip.read().is_ok());
+        assert_eq!(chip.io.exits, 1);
 
         let mut fake = FakeNct::new(0xC5, 0x62);
         fake.lock_register = IO_LOCK_BIT;
         let chip = probe(fake, "6779-cr28");
         assert_eq!(chip.chip().name, "Nuvoton NCT6779D");
+        assert_eq!(chip.io.lock_register, IO_LOCK_BIT);
     }
 
     #[test]
-    fn a_lock_set_after_attach_fails_reads_instead_of_returning_junk() {
+    fn a_lock_that_does_not_clear_is_reported() {
+        let mut fake = nct6798d();
+        fake.lock_register = IO_LOCK_BIT;
+        fake.lock_stuck = true;
+        assert!(matches!(
+            SuperIo::probe(fake, Slot::Primary, lock("stuck-lock")),
+            Err(HwError::IoSpaceLocked)
+        ));
+    }
+
+    #[test]
+    fn a_lock_set_after_attach_fails_reads_and_is_cleared_on_reinitialisation() {
         let mut chip = probe(nct6798d(), "relock");
         chip.io.locked = true;
         chip.io.lock_register = IO_LOCK_BIT;
         assert!(matches!(chip.read(), Err(HwError::VendorMismatch(0xFFFF))));
-        assert!(matches!(chip.reinitialize(), Err(HwError::IoSpaceLocked)));
-        chip.io.locked = false;
-        chip.io.lock_register = 0;
+        chip.reinitialize().unwrap();
+        assert_eq!(chip.io.lock_register, 0);
         assert!(chip.read().is_ok());
     }
 
