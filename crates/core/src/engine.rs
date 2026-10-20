@@ -102,7 +102,6 @@ pub struct Engine {
     calibration: Option<Calibration>,
     calibration_request: Option<FanId>,
     calibration_clamped: bool,
-    not_restarting: Vec<FanId>,
     calibration_report: Option<CalibrationReport>,
     calibration_result: Option<(FanId, FanCalibration)>,
 }
@@ -120,7 +119,6 @@ impl Engine {
             calibration: None,
             calibration_request: None,
             calibration_clamped: false,
-            not_restarting: Vec::new(),
             calibration_report: None,
             calibration_result: None,
         }
@@ -197,7 +195,13 @@ impl Engine {
         CalibrationView {
             active: self.calibration.as_ref().map(Calibration::progress),
             last: self.calibration_report.clone(),
-            not_restarting: self.not_restarting.clone(),
+            not_restarting: self
+                .config
+                .calibration
+                .iter()
+                .filter(|(_, calibration)| calibration.not_restarting)
+                .map(|(fan, _)| fan.clone())
+                .collect(),
         }
     }
 
@@ -211,6 +215,7 @@ impl Engine {
 
     fn finish_calibration(&mut self, calibration: &Calibration, outcome: CalibrationOutcome) {
         let fan = calibration.fan().clone();
+        self.calibration_clamped = false;
         self.fans.entry(fan.clone()).or_default().recover_left = RECOVER_TIME;
         let result = match &outcome {
             CalibrationOutcome::Completed(result) => Some(result.clone()),
@@ -227,14 +232,8 @@ impl Engine {
                     None => partial,
                 }),
         };
-        match &outcome {
-            CalibrationOutcome::Completed(_) => self.not_restarting.retain(|stuck| stuck != &fan),
-            CalibrationOutcome::NotRestarting if !self.not_restarting.contains(&fan) => {
-                self.not_restarting.push(fan.clone());
-            }
-            _ => {}
-        }
-        if let Some(result) = result {
+        if let Some(mut result) = result {
+            result.not_restarting |= outcome == CalibrationOutcome::NotRestarting;
             self.calibration_result = Some((fan.clone(), result));
         }
         self.calibration_report = Some(CalibrationReport { fan, outcome });
@@ -244,16 +243,17 @@ impl Engine {
         let Some(fan) = self.calibration_request.take() else {
             return;
         };
-        let fault = self
-            .fans
-            .get(&fan)
-            .and_then(|runtime| runtime.fault.clone());
+        let runtime = self.fans.get(&fan);
+        let fault = runtime.and_then(|runtime| runtime.fault.clone());
+        let failing = runtime.is_some_and(|runtime| runtime.failures > 0);
         let started = if self.monitor_only {
             Err("FanForge is in monitor-only mode".to_owned())
         } else if critical {
             Err("the critical temperature override is active".to_owned())
         } else if let Some(reason) = fault {
             Err(format!("the fan is faulted: {reason}"))
+        } else if failing {
+            Err("the sensor controlling this fan is failing".to_owned())
         } else {
             Calibration::start(
                 fan.clone(),
@@ -264,7 +264,10 @@ impl Engine {
             )
         };
         match started {
-            Ok(calibration) => self.calibration = Some(calibration),
+            Ok(calibration) => {
+                self.calibration_clamped = false;
+                self.calibration = Some(calibration);
+            }
             Err(reason) => {
                 self.calibration_report = Some(CalibrationReport {
                     fan,
@@ -1479,6 +1482,35 @@ mod tests {
     }
 
     #[test]
+    fn a_curve_fan_ramps_down_from_full_speed_after_recovery() {
+        let mut config = calibration_config(
+            &[(
+                "pwm1",
+                FanMode::Curve {
+                    curve: "cpu".into(),
+                },
+            )],
+            false,
+            false,
+        );
+        config.curves[0].tuning.step_down_per_sec = 10.0;
+        let mut rig = Rig::new(config, FanLimits::default());
+        assert_eq!(output_of(&rig.tick(), "pwm1"), 40.0);
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        for _ in 0..4 {
+            rig.tick();
+        }
+        rig.engine.cancel_calibration(None);
+        for _ in 0..3 {
+            assert_eq!(output_of(&rig.tick(), "pwm1"), 100.0);
+        }
+        let status = Rig::status(&rig.tick(), "pwm1");
+        assert_eq!(status.state, FanState::Controlled);
+        assert_eq!(status.output, Some(Duty::new(90.0)));
+        assert_eq!(output_of(&rig.tick(), "pwm1"), 80.0);
+    }
+
+    #[test]
     fn a_bios_fan_is_released_after_recovery() {
         let mut rig = calibration_rig(&[], false, false);
         rig.engine.request_calibration("pwm1".into()).unwrap();
@@ -1612,16 +1644,79 @@ mod tests {
             rig.spin(23.0, false);
         }
         assert_eq!(rig.report(), CalibrationOutcome::NotRestarting);
-        assert_eq!(
-            rig.engine.calibration_view().not_restarting,
-            vec![FanId::from("pwm1")]
-        );
+        let (fan, flagged) = rig.engine.take_calibration_result().unwrap();
+        assert!(flagged.not_restarting);
+        assert_eq!(flagged.stop_duty, Some(Duty::new(20.0)));
+        rig.engine.set_calibration(fan.clone(), flagged);
+        assert_eq!(rig.engine.calibration_view().not_restarting, vec![fan]);
         rig.readings.fans[0].rpm = Some(1500);
         rig.engine.request_calibration("pwm1".into()).unwrap();
         rig.tick();
         rig.spin_until(23.0, finished);
         completed(rig.report());
+        let (fan, good) = rig.engine.take_calibration_result().unwrap();
+        assert!(!good.not_restarting);
+        rig.engine.set_calibration(fan, good);
         assert!(rig.engine.calibration_view().not_restarting.is_empty());
+    }
+
+    #[test]
+    fn a_fan_on_a_failing_sensor_is_not_calibrated() {
+        let mut rig = calibration_rig(
+            &[(
+                "pwm1",
+                FanMode::Curve {
+                    curve: "cpu".into(),
+                },
+            )],
+            false,
+            false,
+        );
+        rig.tick();
+        rig.set_curve_temp(None);
+        rig.tick();
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        let status = Rig::status(&rig.tick(), "pwm1");
+        assert!(matches!(status.state, FanState::Holding(_)));
+        aborted(rig.report(), "sensor controlling this fan is failing");
+    }
+
+    #[test]
+    fn an_abort_never_leaves_a_stale_clamp_for_the_next_run() {
+        let mut rig = calibration_rig(&[("pwm1", manual(40.0))], false, false);
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        rig.spin_until(0.0, |_, outcome| output_of(outcome, "pwm1") == 85.0);
+        let raised = FanLimits {
+            floor: Duty::new(80.0),
+            stop_permitted: false,
+        };
+        rig.engine
+            .set_limits([("pwm1".into(), raised), ("pwm2".into(), raised)].into());
+        let outcome = rig.spin_until(0.0, |engine, _| {
+            engine
+                .calibration_view()
+                .active
+                .is_some_and(|progress| progress.duty == Duty::new(75.0))
+        });
+        assert_eq!(output_of(&outcome, "pwm1"), 80.0);
+        rig.engine.set_monitor_only(true);
+        rig.tick();
+        aborted(rig.report(), "monitor-only");
+        rig.engine.set_monitor_only(false);
+        rig.engine.set_limits(
+            [
+                ("pwm1".into(), FanLimits::default()),
+                ("pwm2".into(), FanLimits::default()),
+            ]
+            .into(),
+        );
+        for _ in 0..4 {
+            rig.tick();
+        }
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        rig.tick();
+        rig.tick();
+        assert!(rig.engine.is_calibrating());
     }
 
     #[test]

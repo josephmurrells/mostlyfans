@@ -1151,31 +1151,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_config_change_during_the_start_search_keeps_the_stop_duty() {
-        let mut rig = started("cal-partial", &[("pwm2", manual(60.0))]);
-        let mut settings = rig.runtime.engine.config().clone();
-        settings.fans.insert(
-            "pwm2".into(),
-            fanforge_core::config::FanSettings {
-                case_fan: true,
-                allow_stop: true,
-                ..Default::default()
-            },
-        );
-        rig.runtime.replace_config(settings.clone()).unwrap();
-        rig.runtime.start_calibration("pwm2".into()).unwrap();
-        for _ in 0..1000 {
-            let in_search = rig
-                .runtime
-                .engine
-                .calibration_view()
-                .active
-                .is_some_and(|progress| progress.phase == Phase::FindStart);
-            if in_search {
-                break;
-            }
-            step(&mut rig, 23.0);
-        }
-        rig.runtime.replace_config(settings).unwrap();
+        let mut rig = in_find_start("cal-partial");
+        let mut stale = rig.runtime.engine.config().clone();
+        stale.calibration.clear();
+        rig.runtime.replace_config(stale).unwrap();
         assert_aborted(&rig, "configuration changed");
         let stored = saved(&rig).calibration[&FanId::from("pwm2")].clone();
         assert_eq!(stored.stop_duty, Some(Duty::new(20.0)));
@@ -1216,6 +1195,57 @@ pub(crate) mod tests {
                 .calibration_for(&"pwm2".into())
                 .is_none()
         );
+        let change = config_with(&[("pwm2", manual(70.0))]);
+        rig.runtime.replace_config(change).unwrap();
+        assert_eq!(saved(&rig).mode(&"pwm2".into()), manual(70.0));
+        assert_eq!(saved(&rig).calibration.len(), MAX_FAN_ENTRIES);
+    }
+
+    fn in_find_start(tag: &str) -> Rig {
+        let mut rig = started(tag, &[("pwm2", manual(60.0))]);
+        let mut settings = rig.runtime.engine.config().clone();
+        settings.fans.insert(
+            "pwm2".into(),
+            fanforge_core::config::FanSettings {
+                case_fan: true,
+                allow_stop: true,
+                ..Default::default()
+            },
+        );
+        rig.runtime.replace_config(settings).unwrap();
+        rig.runtime.start_calibration("pwm2".into()).unwrap();
+        for _ in 0..1000 {
+            let in_search = rig
+                .runtime
+                .engine
+                .calibration_view()
+                .active
+                .is_some_and(|progress| progress.phase == Phase::FindStart);
+            if in_search {
+                return rig;
+            }
+            step(&mut rig, 23.0);
+        }
+        panic!("never reached the start search");
+    }
+
+    #[test]
+    fn a_partial_result_from_a_suspend_is_stored_after_resume() {
+        let mut rig = in_find_start("cal-partial-suspend");
+        rig.runtime.suspend();
+        assert_aborted(&rig, "suspending");
+        assert!(saved(&rig).calibration.is_empty());
+        assert!(matches!(rig.runtime.resume(), Flow::Continue));
+        step(&mut rig, 0.0);
+        let stored = saved(&rig).calibration[&FanId::from("pwm2")].clone();
+        assert_eq!(stored.stop_duty, Some(Duty::new(20.0)));
+    }
+
+    #[test]
+    fn a_partial_result_from_a_stop_is_dropped() {
+        let mut rig = in_find_start("cal-partial-stop");
+        assert!(rig.runtime.shutdown());
+        assert!(saved(&rig).calibration.is_empty());
     }
 
     #[test]

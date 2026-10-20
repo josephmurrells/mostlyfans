@@ -34,6 +34,7 @@ pub struct FanCalibration {
     pub start_duty: Option<Duty>,
     pub lowest_tested: Duty,
     pub points: Vec<CalibrationPoint>,
+    pub not_restarting: bool,
 }
 
 impl FanCalibration {
@@ -194,7 +195,7 @@ impl Calibration {
             return Err("no temperature sensor besides the critical one is reporting".to_owned());
         }
         if let Some(hot) = watched.iter().find(|sensor| sensor.start >= MAX_TEMP) {
-            return Err(format!("{} is already at {:.0} Â°C", hot.label, hot.start));
+            return Err(format!("{} is already at {:.0} °C", hot.label, hot.start));
         }
         let floor = header_floor(limits, settings);
         Ok(Self {
@@ -234,6 +235,7 @@ impl Calibration {
             start_duty: None,
             lowest_tested: Duty::new(self.lowest_tested),
             points: self.points.clone(),
+            not_restarting: false,
         })
     }
 
@@ -303,11 +305,11 @@ impl Calibration {
                 return Err(format!("{} stopped reporting", sensor.label));
             };
             if now >= MAX_TEMP {
-                return Err(format!("{} reached {now:.0} Â°C", sensor.label));
+                return Err(format!("{} reached {now:.0} °C", sensor.label));
             }
             if now - sensor.start > MAX_TEMP_RISE {
                 return Err(format!(
-                    "{} rose by {:.1} Â°C",
+                    "{} rose by {:.1} °C",
                     sensor.label,
                     now - sensor.start
                 ));
@@ -404,6 +406,7 @@ impl Calibration {
             start_duty: start_duty.map(Duty::new),
             lowest_tested: Duty::new(self.lowest_tested),
             points: self.points.clone(),
+            not_restarting: false,
         }))
     }
 }
@@ -681,11 +684,11 @@ mod tests {
     fn every_watched_condition_aborts() {
         aborted_with(
             abort_after(|readings| readings.sensors[1].celsius = Some(45.5)),
-            "rose by 5.5",
+            "Board rose by 5.5 °C",
         );
         aborted_with(
             abort_after(|readings| readings.sensors[0].celsius = Some(75.0)),
-            "reached 75",
+            "Tctl reached 75 °C",
         );
         aborted_with(
             abort_after(|readings| readings.sensors[1].celsius = None),

@@ -452,6 +452,7 @@ fn calibrated(stop: f32) -> FanCalibration {
             duty: Duty::FULL,
             rpm: 1800,
         }],
+        not_restarting: false,
     }
 }
 
