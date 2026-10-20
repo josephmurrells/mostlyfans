@@ -103,7 +103,7 @@ fn detect() -> DiagResult {
     println!("PawnIO version: {version}");
     let identity = detect_identity();
     println!("Board: {} {}", identity.manufacturer, identity.product);
-    let chip = attach_chip()?;
+    let mut chip = attach_chip()?;
     let config = chip.config();
     println!(
         "Super I/O: {} (chip {:#06x} version {}) on port {:#04x}, base {:#06x}",
@@ -124,6 +124,11 @@ fn detect() -> DiagResult {
         "monitor only (not verified on this chip yet)"
     };
     println!("Fan control: {control}");
+    if chip.io_space_locked()? {
+        println!(
+            "Hardware monitor I/O space: locked by the firmware (FanForge, `read` and `set-pwm` clear it; `dump` skips the monitor registers until then)"
+        );
+    }
     Ok(())
 }
 

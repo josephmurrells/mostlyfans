@@ -311,6 +311,27 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
     }
 }
 
+pub(crate) fn io_space_locked<P: PortIo>(
+    io: &mut P,
+    lock: &NamedMutex,
+    config: &ChipConfig,
+) -> Result<bool, HwError> {
+    if !matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock) {
+        return Ok(false);
+    }
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_config_space(
+        io,
+        config.slot.config_port(),
+        &ENTER_KEY,
+        |space| {
+            space.select(HWM_LDN)?;
+            Ok(space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0)
+        },
+        exit_config,
+    )
+}
+
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
     lock: &NamedMutex,
@@ -327,9 +348,14 @@ pub(crate) fn dump<P: PortIo>(
         )?
     };
 
+    let locked = matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock)
+        && ec_ldn_config
+            .get(&format!("{IO_LOCK_REG:#04x}"))
+            .is_some_and(|value| value & IO_LOCK_BIT != 0);
+    let rows = if locked { &[][..] } else { DUMP_ROWS };
     let mut banks: BTreeMap<u8, Vec<Option<u8>>> = BTreeMap::new();
     let mut bank_register = None;
-    for &row in DUMP_ROWS {
+    for &row in rows {
         let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
         let mut hwm = Hwm::open(&mut *io, config.base_address)?;
         let original = hwm.bank;
@@ -755,9 +781,21 @@ mod tests {
         fake.lock_register = IO_LOCK_BIT;
         fake.locked = true;
         let mut chip = SuperIo::attach(fake, Slot::Primary, lock("attach-locked")).unwrap();
+        assert!(chip.io_space_locked().unwrap());
         let dump = chip.dump().unwrap();
         assert_eq!(dump.ec_ldn_config["0x28"], IO_LOCK_BIT);
-        chip.reinitialize().unwrap_err();
+        assert!(dump.banks.is_empty());
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, ..)| port != chip.io.base + ADDRESS_PORT_OFFSET
+                    && port != chip.io.base + DATA_PORT_OFFSET)
+        );
+        assert!(matches!(
+            chip.reinitialize(),
+            Err(HwError::VendorMismatch(0xFFFF))
+        ));
         assert_eq!(chip.io.lock_register, IO_LOCK_BIT);
         assert!(!chip.io.config_mode);
         assert!(
