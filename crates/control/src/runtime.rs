@@ -10,6 +10,7 @@ use fanforge_core::state::{ControlState, HardwareStatus};
 use fanforge_core::store::{self, CONFIG_BACKUPS};
 use fanforge_core::telemetry::Readings;
 use fanforge_hw::HwError;
+use fanforge_hw::sensors::ExtraSensors;
 use fanforge_win::paths;
 
 use crate::backend::Backend;
@@ -63,6 +64,7 @@ pub struct Runtime<B: Backend> {
     read_failures: u32,
     lock_skips: u32,
     conflicts: ConflictMonitor,
+    extras: ExtraSensors,
     config_warning: Option<String>,
     last_outcome: TickOutcome,
     last_readings: Readings,
@@ -96,6 +98,7 @@ impl<B: Backend> Runtime<B> {
             read_failures: 0,
             lock_skips: 0,
             conflicts,
+            extras: ExtraSensors::none(),
             config_warning,
             last_outcome: TickOutcome::default(),
             last_readings: Readings::default(),
@@ -106,6 +109,18 @@ impl<B: Backend> Runtime<B> {
     pub fn with_signals(mut self, signals: SignalSink) -> Self {
         self.signals = Some(signals);
         self
+    }
+
+    pub fn with_extra_sensors(mut self, extras: ExtraSensors) -> Self {
+        self.extras = extras;
+        self
+    }
+
+    fn with_extras(&self, mut readings: Readings) -> Readings {
+        readings
+            .sensors
+            .extend(self.extras.readings(Instant::now()));
+        readings
     }
 
     pub fn run(mut self) -> bool {
@@ -190,13 +205,10 @@ impl<B: Backend> Runtime<B> {
     fn replace_config(&mut self, config: Config) -> Result<(), String> {
         config.validate().map_err(|error| error.to_string())?;
         let sensor = &config.safety.critical_sensor;
+        let readings = self.with_extras(self.last_readings.clone());
         if self.hardware.is_some()
             && !self.last_readings.sensors.is_empty()
-            && !self
-                .last_readings
-                .sensors
-                .iter()
-                .any(|reading| &reading.id == sensor)
+            && !readings.sensors.iter().any(|reading| &reading.id == sensor)
         {
             return Err(format!("critical sensor `{sensor}` does not exist"));
         }
@@ -258,7 +270,9 @@ impl<B: Backend> Runtime<B> {
             }
         };
 
-        let outcome = self.engine.tick(&readings, elapsed);
+        let mut inputs = readings.clone();
+        inputs.sensors.extend(self.extras.readings(Instant::now()));
+        let outcome = self.engine.tick(&inputs, elapsed);
         for command in &outcome.commands {
             match hardware.apply(command, self.shared.halt_flag()) {
                 Ok(()) | Err(HwError::Halted) => {}
@@ -476,7 +490,7 @@ impl<B: Backend> Runtime<B> {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             hardware: hardware_status,
             board,
-            readings: self.last_readings.clone(),
+            readings: self.with_extras(self.last_readings.clone()),
             fans: self.last_outcome.fans.clone(),
             limits: self.engine.limits().clone(),
             config: self.engine.config().clone(),
@@ -536,9 +550,13 @@ pub(crate) mod tests {
     use fanforge_core::Duty;
     use fanforge_core::board::BoardIdentity;
     use fanforge_core::config::FanMode;
+    use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
+    use fanforge_core::engine::FanState;
+    use fanforge_core::telemetry::SensorReading;
     use fanforge_hw::ite::It8655e;
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
+    use fanforge_hw::sensors::SensorCache;
     use fanforge_hw::system::Hardware;
 
     use super::*;
@@ -809,6 +827,92 @@ pub(crate) mod tests {
         let mut config = rig.runtime.engine.config().clone();
         config.safety.critical_sensor = "board/temp1".into();
         assert!(rig.runtime.replace_config(config).is_ok());
+    }
+
+    fn gpu_reading(celsius: Option<f32>) -> Vec<SensorReading> {
+        vec![SensorReading {
+            id: "gpu/test".into(),
+            label: "Test GPU".into(),
+            celsius,
+        }]
+    }
+
+    fn extras_with_gpu(celsius: Option<f32>) -> ExtraSensors {
+        let mut cache = SensorCache::default();
+        let source = cache.register(Duration::from_secs(60));
+        cache.record(source, &Ok(gpu_reading(celsius)), Instant::now());
+        ExtraSensors::from_cache(cache)
+    }
+
+    fn gpu_curve_config() -> Config {
+        let mut config = config_with(&[(
+            "pwm2",
+            FanMode::Curve {
+                curve: "gpu".into(),
+            },
+        )]);
+        config.curves.push(CurveDef {
+            id: "gpu".into(),
+            name: "GPU".into(),
+            kind: CurveKind::Graph {
+                sensor: "gpu/test".into(),
+                points: vec![CurvePoint::new(30.0, 40.0), CurvePoint::new(80.0, 100.0)],
+            },
+            tuning: Tuning::default(),
+        });
+        config
+    }
+
+    #[test]
+    fn extra_sensors_are_published_even_without_hardware() {
+        let mut rig = rig("extras-none", &[], Vec::new());
+        rig.runtime = rig.runtime.with_extra_sensors(extras_with_gpu(Some(48.0)));
+        rig.runtime.publish();
+        let state = rig.runtime.shared.state().unwrap();
+        assert_eq!(state.readings.temperature(&"gpu/test".into()), Some(48.0));
+    }
+
+    #[test]
+    fn a_curve_on_a_failing_extra_sensor_goes_to_full_speed() {
+        let mut rig = rig("extras-fail", &[], Vec::new());
+        let extras = extras_with_gpu(Some(40.0));
+        rig.runtime = rig.runtime.with_extra_sensors(extras.clone());
+        rig.runtime.open_hardware();
+        rig.runtime.replace_config(gpu_curve_config()).unwrap();
+        rig.runtime.tick();
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, 0);
+        assert!(reg(&rig, CHA1_DUTY) < Duty::new(100.0).to_raw());
+
+        extras.with_cache(|cache| cache.record(0, &Err("lost".into()), Instant::now()));
+        let ticks = rig.runtime.engine.config().safety.sensor_failure_ticks;
+        for _ in 0..=ticks {
+            rig.runtime.tick();
+        }
+        let fan = rig
+            .runtime
+            .last_outcome
+            .fans
+            .iter()
+            .find(|fan| fan.id.as_str() == "pwm2")
+            .unwrap();
+        assert!(matches!(fan.state, FanState::SensorFallback(_)));
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(100.0).to_raw());
+    }
+
+    #[test]
+    fn an_extra_critical_sensor_counts_as_present() {
+        let mut rig = rig("extras-critical", &[], Vec::new());
+        rig.runtime = rig.runtime.with_extra_sensors(extras_with_gpu(Some(45.0)));
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        let mut config = rig.runtime.engine.config().clone();
+        config.safety.critical_sensor = "gpu/test".into();
+        rig.runtime.replace_config(config).unwrap();
+        for _ in 0..5 {
+            rig.runtime.tick();
+        }
+        assert!(!rig.runtime.last_outcome.critical_sensor_missing);
+        assert!(!rig.runtime.last_outcome.critical);
     }
 
     #[test]
