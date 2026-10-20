@@ -78,10 +78,13 @@ fn exit_config<P: PortIo, T>(
     space.write_index(EXIT_KEY)
 }
 
-fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>) -> Result<(), HwError> {
+fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>, unlock: bool) -> Result<(), HwError> {
     let lock = space.read(IO_LOCK_REG)?;
     if lock & IO_LOCK_BIT == 0 {
         return Ok(());
+    }
+    if !unlock {
+        return Err(HwError::IoSpaceLocked);
     }
     tracing::info!("unlocking the Nuvoton hardware monitor I/O space");
     space.write(IO_LOCK_REG, lock & !IO_LOCK_BIT)?;
@@ -91,7 +94,11 @@ fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>) -> Result<(), HwEr
     Ok(())
 }
 
-pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
+pub(crate) fn read_config<P: PortIo>(
+    io: &mut P,
+    slot: Slot,
+    unlock: bool,
+) -> Result<ChipConfig, HwError> {
     with_config_space(
         io,
         slot.config_port(),
@@ -110,7 +117,7 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfi
             space.select(HWM_LDN)?;
             let base_address = space.read_base_address()?;
             if io_lock {
-                unlock_io_space(space)?;
+                unlock_io_space(space, unlock)?;
             }
             Ok(ChipConfig {
                 chip,
@@ -722,12 +729,41 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_that_does_not_clear_is_reported() {
+    fn a_lock_that_does_not_clear_is_reported_and_config_mode_is_left() {
         let mut fake = nct6798d();
         fake.lock_register = IO_LOCK_BIT;
         fake.lock_stuck = true;
         assert!(matches!(
-            SuperIo::probe(fake, Slot::Primary, lock("stuck-lock")),
+            read_config(&mut fake, Slot::Primary, true),
+            Err(HwError::IoSpaceLocked)
+        ));
+        assert!(!fake.config_mode);
+        assert_eq!(fake.exits, 1);
+    }
+
+    #[test]
+    fn an_unlocked_chip_never_gets_a_lock_write() {
+        let chip = probe(nct6798d(), "no-lock-write");
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, _, index)| port != chip.io.port + 1 || index != IO_LOCK_REG)
+        );
+    }
+
+    #[test]
+    fn attaching_read_only_reports_the_lock_without_clearing_it() {
+        let mut fake = nct6798d();
+        fake.lock_register = IO_LOCK_BIT;
+        assert!(matches!(
+            read_config(&mut fake, Slot::Primary, false),
+            Err(HwError::IoSpaceLocked)
+        ));
+        assert_eq!(fake.lock_register, IO_LOCK_BIT);
+        assert!(!fake.config_mode);
+        assert!(matches!(
+            SuperIo::attach(fake, Slot::Primary, lock("attach-locked")),
             Err(HwError::IoSpaceLocked)
         ));
     }
@@ -757,13 +793,13 @@ mod tests {
     fn unknown_and_absent_chips_are_told_apart() {
         let mut io = FakeNct::new(0xD4, 0x99);
         assert!(matches!(
-            read_config(&mut io, Slot::Primary),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::UnsupportedChip(0xD499))
         ));
         assert!(!io.config_mode);
         let mut io = FakeNct::new(0xFF, 0xFF);
         assert!(matches!(
-            read_config(&mut io, Slot::Primary),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::ChipNotFound(0xFFFF))
         ));
     }
