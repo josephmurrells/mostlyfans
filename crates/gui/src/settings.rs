@@ -524,8 +524,15 @@ fn about(ui: &mut egui::Ui, state: &ControlState) {
                 ui.end_row();
                 ui.label(widgets::muted("Fan controller"));
                 ui.label(format!(
-                    "Super I/O {:#06x} · {} fan headers",
-                    board.chip_id, board.fan_headers
+                    "{} ({:#06x}) · {} fan headers{}",
+                    board.chip_name,
+                    board.chip_id,
+                    board.fan_headers,
+                    if board.fan_control {
+                        ""
+                    } else {
+                        " · monitor only"
+                    }
                 ));
                 ui.end_row();
             }

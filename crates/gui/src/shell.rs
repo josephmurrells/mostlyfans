@@ -368,8 +368,15 @@ impl Shell {
                             board.identity.manufacturer, board.identity.product
                         ));
                         ui.label(widgets::muted(format!(
-                            "Super I/O {:#06x} · {} fan headers",
-                            board.chip_id, board.fan_headers
+                            "{} ({:#06x}) · {} fan headers{}",
+                            board.chip_name,
+                            board.chip_id,
+                            board.fan_headers,
+                            if board.fan_control {
+                                ""
+                            } else {
+                                " · monitor only"
+                            }
                         )));
                     }
                 });

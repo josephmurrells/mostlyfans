@@ -238,9 +238,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
-    use fanforge_hw::ite::It8655e;
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
+    use fanforge_hw::superio::{Slot, SuperIo};
 
     use super::*;
     use crate::failsafe;
@@ -385,7 +385,7 @@ mod tests {
     }
 
     struct FakeReleaser {
-        chip: It8655e<SharedFake>,
+        chip: SuperIo<SharedFake>,
         snapshot: tempfile::TempDir,
     }
 
@@ -409,7 +409,7 @@ mod tests {
         ))
         .unwrap();
         let releaser = FakeReleaser {
-            chip: It8655e::probe(fake.clone(), lock).unwrap(),
+            chip: SuperIo::probe(fake.clone(), Slot::Primary, lock).unwrap(),
             snapshot: tempfile::tempdir().unwrap(),
         };
         let link = FakeLink {

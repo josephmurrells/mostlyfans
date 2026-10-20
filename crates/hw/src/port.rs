@@ -1,5 +1,6 @@
 use crate::HwError;
 use crate::pawnio::{LPC_IO_MODULE, PawnIoModule};
+use crate::superio::Slot;
 
 pub trait PortIo: Send {
     fn read(&mut self, port: u16) -> Result<u8, HwError>;
@@ -13,9 +14,9 @@ pub struct LpcIo {
 }
 
 impl LpcIo {
-    pub fn open_primary() -> Result<Self, HwError> {
+    pub fn open(slot: Slot) -> Result<Self, HwError> {
         let module = PawnIoModule::load(LPC_IO_MODULE)?;
-        module.execute("ioctl_select_slot", &[0], 0)?;
+        module.execute("ioctl_select_slot", &[slot.index()], 0)?;
         Ok(Self { module })
     }
 }

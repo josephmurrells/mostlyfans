@@ -234,8 +234,12 @@ impl<B: Backend> Runtime<B> {
         }
 
         let findings = self.conflicts.poll().clone();
+        let unverified = self
+            .hardware
+            .as_ref()
+            .is_some_and(|hardware| !hardware.fan_control());
         self.engine
-            .set_monitor_only(!findings.controlling.is_empty());
+            .set_monitor_only(!findings.controlling.is_empty() || unverified);
 
         self.beat();
         self.control(elapsed);
@@ -553,10 +557,11 @@ pub(crate) mod tests {
     use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
     use fanforge_core::engine::FanState;
     use fanforge_core::telemetry::SensorReading;
-    use fanforge_hw::ite::It8655e;
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
+    use fanforge_hw::nuvoton::fake::{FakeNct, OUTSIDE_CONFIG_MODE, SharedNct};
     use fanforge_hw::sensors::SensorCache;
+    use fanforge_hw::superio::{Slot, SuperIo};
     use fanforge_hw::system::Hardware;
 
     use super::*;
@@ -576,7 +581,7 @@ pub(crate) mod tests {
     pub(crate) fn opener(fake: SharedFake, tag: &str) -> Opener<Hardware<SharedFake>> {
         let name = format!(r"Local\fanforge-runtime-{tag}-{}", std::process::id());
         Box::new(move |snapshot: &Path| {
-            let chip = It8655e::probe(fake.clone(), NamedMutex::open(&name)?)?;
+            let chip = SuperIo::probe(fake.clone(), Slot::Primary, NamedMutex::open(&name)?)?;
             Hardware::from_parts(
                 chip,
                 Err("no CPU in tests".to_owned()),
@@ -936,5 +941,139 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("could not be loaded")
         );
+    }
+
+    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config: dir.path().join("config.toml"),
+            snapshot: dir.path().join("snapshot.toml"),
+        };
+        store::save_toml_atomic(&paths.config, &config_with(&[("pwm2", manual(60.0))]), 0).unwrap();
+        let name = format!(
+            r"Local\fanforge-runtime-hands-off-{tag}-{}",
+            std::process::id()
+        );
+        let chip_io = io.clone();
+        let chip_name = name.clone();
+        let opener: Opener<Hardware<P>> = Box::new(move |snapshot: &Path| {
+            let chip = SuperIo::probe(
+                chip_io.clone(),
+                Slot::Primary,
+                NamedMutex::open(&chip_name)?,
+            )?;
+            Hardware::from_parts(
+                chip,
+                Err("no CPU in tests".to_owned()),
+                BoardIdentity::default(),
+                snapshot,
+            )
+        });
+        let (_messages, rx) = mpsc::channel();
+        let conflicts = ConflictMonitor::with_processes(Box::new(|| Ok(Vec::new())));
+        let mut runtime = Runtime::new(
+            paths.clone(),
+            Arc::new(Shared::default()),
+            rx,
+            opener,
+            conflicts,
+        );
+        runtime.open_hardware();
+        runtime.tick();
+        runtime.tick();
+        assert!(runtime.engine.is_monitor_only());
+        let state = runtime.shared.state().unwrap();
+        assert!(state.monitor_only);
+        assert!(!state.board.as_ref().unwrap().fan_control);
+        assert!(!runtime.owns_any());
+        runtime.suspend();
+        assert!(matches!(runtime.resume(), Flow::Continue));
+        runtime.tick();
+        runtime.reinitialize_after_failure();
+        runtime.drop_hardware("test".to_owned());
+        runtime.open_hardware();
+        runtime.tick();
+        assert!(runtime.shutdown());
+        drop(runtime);
+
+        let mut chip = SuperIo::probe(io, Slot::Primary, NamedMutex::open(&name).unwrap()).unwrap();
+        assert!(matches!(
+            chip.set_duty(1, 0x20),
+            Err(HwError::Unverified(_))
+        ));
+        crate::failsafe::release_with(&mut chip, &paths.snapshot, Duration::from_secs(1)).unwrap();
+        crate::failsafe::release_preferring(
+            Some(&mut chip),
+            &paths.snapshot,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(!paths.snapshot.exists());
+    }
+
+    fn ite_write_allowed(
+        fake: &FakeIte,
+        bank_select: bool,
+        (port, value, index): (u16, u8, u8),
+    ) -> bool {
+        match port {
+            0x2E => true,
+            0x2F => matches!(index, 0x07 | 0x02),
+            p if p == fake.base + 5 => true,
+            p if p == fake.base + 6 => bank_select && index == 0x06 && value & 0x60 == 0,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn an_unverified_ite_chip_is_never_written_through_the_whole_lifecycle() {
+        let fake = SharedFake::new(FakeIte::chip(0x8686));
+        hands_off_lifecycle("8686", fake.clone());
+        fake.with(|chip| {
+            assert!(!chip.writes.is_empty());
+            for write in chip.writes.clone() {
+                assert!(ite_write_allowed(chip, false, write), "{write:x?}");
+            }
+        });
+    }
+
+    #[test]
+    fn the_it8665e_only_ever_selects_bank_zero() {
+        let mut it8665e = FakeIte::chip(0x8665);
+        it8665e.banks[0][0x00] = 0;
+        it8665e.bank_register = 0x20;
+        let fake = SharedFake::new(it8665e);
+        hands_off_lifecycle("8665", fake.clone());
+        fake.with(|chip| {
+            assert!(
+                chip.writes
+                    .iter()
+                    .any(|&(port, _, index)| port == chip.base + 6 && index == 0x06)
+            );
+            for write in chip.writes.clone() {
+                assert!(ite_write_allowed(chip, true, write), "{write:x?}");
+            }
+        });
+    }
+
+    #[test]
+    fn an_unverified_nuvoton_chip_only_sees_bank_selects() {
+        let mut nct = FakeNct::new(0xD4, 0x2B);
+        nct.bank_register = 0x04;
+        let fake = SharedNct::new(nct);
+        hands_off_lifecycle("6798", fake.clone());
+        fake.with(|chip| {
+            assert_eq!(chip.bank_register, 0x04);
+            for (port, value, index) in chip.writes.clone() {
+                let allowed = match port {
+                    0x2E => true,
+                    0x2F => matches!(index, 0x07 | OUTSIDE_CONFIG_MODE),
+                    p if p == chip.base + 5 => true,
+                    p if p == chip.base + 6 => index == 0x4E,
+                    _ => false,
+                };
+                assert!(allowed, "{port:#x} {value:#x} {index:#x}");
+            }
+        });
     }
 }
