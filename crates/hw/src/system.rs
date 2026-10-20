@@ -46,15 +46,17 @@ pub fn force_all_auto<P: PortIo>(
     budget: Duration,
 ) -> Result<(), HwError> {
     let chip_id = chip.config().chip_id;
-    let foreign = BiosSnapshot::for_chip(chip_id);
+    if !snapshot.belongs_to(chip_id) {
+        return Err(HwError::ChipChanged {
+            expected: snapshot.chip_id,
+            found: chip_id,
+        });
+    }
+    let empty = BiosSnapshot::for_chip(chip_id);
     let snapshot = if snapshot.chip_id == chip_id {
         snapshot
     } else {
-        tracing::warn!(
-            saved = format_args!("{:#06x}", snapshot.chip_id),
-            "BIOS snapshot belongs to another chip; ignoring it"
-        );
-        &foreign
+        &empty
     };
     let deadline = Instant::now() + budget;
     let mut first_error = None;
@@ -75,6 +77,7 @@ pub struct Hardware<P: PortIo = LpcIo> {
     identity: BoardIdentity,
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
+    foreign_owner: Option<u16>,
 }
 
 impl Hardware<LpcIo> {
@@ -97,15 +100,18 @@ impl<P: PortIo> Hardware<P> {
         snapshot_path: &Path,
     ) -> Result<Self, HwError> {
         let chip_id = chip.config().chip_id;
-        let mut snapshot = BiosSnapshot::load(snapshot_path).unwrap_or_else(|error| {
+        let mut snapshot = BiosSnapshot::load_for(snapshot_path, chip_id).unwrap_or_else(|error| {
             tracing::error!(%error, "BIOS snapshot is unreadable; starting a new one");
             BiosSnapshot::for_chip(chip_id)
         });
+        let foreign_owner = (!snapshot.belongs_to(chip_id)).then_some(snapshot.chip_id);
         if snapshot.chip_id != chip_id {
-            tracing::warn!(
-                saved = format_args!("{:#06x}", snapshot.chip_id),
-                "BIOS snapshot belongs to another chip; starting a new one"
-            );
+            if foreign_owner.is_some() {
+                tracing::warn!(
+                    saved = format_args!("{:#06x}", snapshot.chip_id),
+                    "BIOS snapshot owns fans on another chip; refusing to report them released"
+                );
+            }
             snapshot = BiosSnapshot::for_chip(chip_id);
         }
         Ok(Self {
@@ -114,6 +120,7 @@ impl<P: PortIo> Hardware<P> {
             identity,
             snapshot,
             snapshot_path: snapshot_path.to_owned(),
+            foreign_owner,
         })
     }
 
@@ -310,6 +317,12 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn release_all(&mut self) -> Result<(), HwError> {
+        if let Some(expected) = self.foreign_owner.filter(|_| !self.fan_control()) {
+            return Err(HwError::ChipChanged {
+                expected,
+                found: self.chip.config().chip_id,
+            });
+        }
         if !self.fan_control() {
             return Ok(());
         }
@@ -533,8 +546,20 @@ mod tests {
         let mut hardware = hardware("leftover", &fake, &path);
         assert!(!hardware.owns_any());
         hardware.initialize_channels(true).unwrap();
-        hardware.release_all().unwrap();
+        assert!(matches!(
+            hardware.release_all(),
+            Err(HwError::ChipChanged {
+                expected: 0x8655,
+                found: 0x8628
+            })
+        ));
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("leftover-chip")).unwrap();
+        let old = BiosSnapshot::load(&path).unwrap();
+        assert!(matches!(
+            force_all_auto(&mut chip, &old, RELEASE_BUDGET),
+            Err(HwError::ChipChanged { .. })
+        ));
     }
 
     #[test]
@@ -559,6 +584,16 @@ mod tests {
         assert_eq!(hardware.snapshot().chip_id, 0x8655);
 
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("foreign-chip")).unwrap();
+        assert!(matches!(
+            force_all_auto(&mut chip, &foreign, RELEASE_BUDGET),
+            Err(HwError::ChipChanged {
+                expected: 0xD42B,
+                found: 0x8655
+            })
+        ));
+        assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x00);
+
+        foreign.owned.clear();
         force_all_auto(&mut chip, &foreign, RELEASE_BUDGET).unwrap();
         assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x80);
         assert_eq!(fake.with(|chip| chip.reg(0x63)), 0x40);

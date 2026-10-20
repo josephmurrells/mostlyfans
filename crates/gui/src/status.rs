@@ -25,7 +25,8 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
     let Some(state) = state else {
         return Overall::Starting;
     };
-    if state.critical && !state.monitor_only {
+    let unverified = state.board.as_ref().is_some_and(|board| !board.fan_control);
+    if state.critical && !(state.monitor_only && unverified) {
         return Overall::Critical;
     }
     match state.hardware {
@@ -153,6 +154,11 @@ mod tests {
 
         state.hardware = HardwareStatus::Ready;
         state.critical = true;
+        assert_eq!(overall(&running, Some(&state)), Overall::Critical);
+
+        if let Some(board) = state.board.as_mut() {
+            board.fan_control = false;
+        }
         assert_eq!(overall(&running, Some(&state)), Overall::MonitorOnly);
 
         state.monitor_only = false;

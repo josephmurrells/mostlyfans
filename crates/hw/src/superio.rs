@@ -195,7 +195,7 @@ pub(crate) fn chip_matching(matches: impl Fn(&ChipSpec) -> bool) -> Option<&'sta
 
 fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
     if slot == Slot::Primary {
-        match ite::read_config(io) {
+        match ite::read_config(io, true) {
             Err(HwError::ChipNotFound(_) | HwError::NotIte(_)) => {}
             result => return result,
         }
@@ -204,14 +204,22 @@ fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError>
 }
 
 fn reread_config<P: PortIo>(io: &mut P, current: &ChipConfig) -> Result<ChipConfig, HwError> {
-    let config = read_config(io, current.slot)?;
+    let changed = |found| HwError::ChipChanged {
+        expected: current.chip_id,
+        found,
+    };
+    let config = match current.chip.map {
+        ChipMap::Ite(_) => ite::read_config(io, false),
+        ChipMap::Nuvoton(_) => nuvoton::read_config(io, current.slot),
+    }
+    .map_err(|error| match error {
+        HwError::UnsupportedChip(found) => changed(found),
+        other => other,
+    })?;
     if config.chip_id == current.chip_id && std::ptr::eq(config.chip, current.chip) {
         Ok(config)
     } else {
-        Err(HwError::ChipChanged {
-            expected: current.chip_id,
-            found: config.chip_id,
-        })
+        Err(changed(config.chip_id))
     }
 }
 
@@ -314,11 +322,7 @@ impl<P: PortIo> SuperIo<P> {
             }
             ChipMap::Nuvoton(map) => {
                 let mut session = nuvoton::Session::open(&mut self.io, base, map)?;
-                let result = if abandoned {
-                    session.verify_vendor().and_then(|()| action(&mut session))
-                } else {
-                    action(&mut session)
-                };
+                let result = action(&mut session);
                 let closed = session.close();
                 let value = result?;
                 closed?;

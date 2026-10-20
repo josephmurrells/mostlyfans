@@ -56,9 +56,9 @@ pub fn rpm_from_count(high: u8, low: u8) -> Option<u32> {
     }
 }
 
-pub fn rpm_from_register(high: u8, low: u8, min_rpm: u16) -> Option<u32> {
+pub fn rpm_from_register(high: u8, low: u8, min_rpm: u16) -> u32 {
     let rpm = u16::from_be_bytes([high, low]);
-    Some(if rpm > min_rpm { u32::from(rpm) } else { 0 })
+    if rpm > min_rpm { u32::from(rpm) } else { 0 }
 }
 
 pub fn temperature_from_halves(halves: i16) -> Option<f32> {
@@ -191,7 +191,6 @@ impl<'a, P: PortIo> Session<'a, P> {
         let low = self.hwm.read(VENDOR_LOW_REG)?;
         match u16::from_be_bytes([high, low]) {
             VENDOR_ID => Ok(()),
-            _ if self.map.io_lock => Err(HwError::IoSpaceLocked),
             other => Err(HwError::VendorMismatch(other)),
         }
     }
@@ -210,7 +209,7 @@ impl<'a, P: PortIo> Session<'a, P> {
             Tach::Rpm { registers, min_rpm } => {
                 let high = self.hwm.read(registers[channel])?;
                 let low = self.hwm.read(registers[channel] + 1)?;
-                Ok(rpm_from_register(high, low, *min_rpm))
+                Ok(Some(rpm_from_register(high, low, *min_rpm)))
             }
             Tach::Count { registers } => {
                 let high = self.hwm.read(registers[channel])?;
@@ -667,9 +666,9 @@ mod tests {
         assert_eq!(rpm_from_count(0x00, 0x14), None);
         assert_eq!(rpm_from_count(0x00, 0x15), Some(64286));
         assert_eq!(rpm_from_count(0x23, 0xE5), Some(1200));
-        assert_eq!(rpm_from_register(0x04, 0xB0, 164), Some(1200));
-        assert_eq!(rpm_from_register(0x00, 164, 164), Some(0));
-        assert_eq!(rpm_from_register(0x00, 21, 20), Some(21));
+        assert_eq!(rpm_from_register(0x04, 0xB0, 164), 1200);
+        assert_eq!(rpm_from_register(0x00, 164, 164), 0);
+        assert_eq!(rpm_from_register(0x00, 21, 20), 21);
         assert_eq!(temperature_from_halves(91), Some(45.5));
         assert_eq!(temperature_from_halves(-110), Some(-55.0));
         assert_eq!(temperature_from_halves(-112), None);
@@ -700,8 +699,11 @@ mod tests {
     fn a_lock_set_after_attach_fails_reads_instead_of_returning_junk() {
         let mut chip = probe(nct6798d(), "relock");
         chip.io.locked = true;
-        assert!(matches!(chip.read(), Err(HwError::IoSpaceLocked)));
+        chip.io.lock_register = IO_LOCK_BIT;
+        assert!(matches!(chip.read(), Err(HwError::VendorMismatch(0xFFFF))));
+        assert!(matches!(chip.reinitialize(), Err(HwError::IoSpaceLocked)));
         chip.io.locked = false;
+        chip.io.lock_register = 0;
         assert!(chip.read().is_ok());
     }
 
@@ -896,7 +898,10 @@ mod tests {
             ChipMap::Ite(_) => unreachable!(),
         };
         let result = Session::open(&mut chip.io, 0x290, map);
-        assert!(matches!(result.map(|_| ()), Err(HwError::IoSpaceLocked)));
+        assert!(matches!(
+            result.map(|_| ()),
+            Err(HwError::VendorMismatch(0x5C00))
+        ));
         assert_eq!(chip.io.bank_register, 0x02);
     }
 }

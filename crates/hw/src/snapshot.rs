@@ -48,6 +48,14 @@ impl BiosSnapshot {
         Ok(store::load_toml(path)?.unwrap_or_default())
     }
 
+    pub fn load_for(path: &Path, chip_id: u16) -> Result<Self, StoreError> {
+        Ok(store::load_toml(path)?.unwrap_or_else(|| Self::for_chip(chip_id)))
+    }
+
+    pub fn belongs_to(&self, chip_id: u16) -> bool {
+        self.chip_id == chip_id || self.owned.is_empty()
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), StoreError> {
         store::save_toml_atomic(path, self, 0)
     }

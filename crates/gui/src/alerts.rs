@@ -118,8 +118,9 @@ pub fn collect(
     alerts.extend(driver);
     let live = matches!(status, ControlStatus::Running);
     if let Some(state) = state.filter(|_| live) {
+        let unverified = state.board.as_ref().filter(|board| !board.fan_control);
         if state.critical {
-            let text = if state.monitor_only {
+            let text = if state.monitor_only && unverified.is_some() {
                 "Critical temperature: the fans are under BIOS control"
             } else {
                 "Critical temperature: every fan is at 100%"
@@ -133,7 +134,6 @@ pub fn collect(
             ));
         }
         if state.monitor_only {
-            let unverified = state.board.as_ref().filter(|board| !board.fan_control);
             let text = if let Some(board) = unverified {
                 format!(
                     "Monitor-only mode: fan control on the {} hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
@@ -384,5 +384,11 @@ mod tests {
             &"Monitor-only mode: fan control on the Nuvoton NCT6798D hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
         ));
         assert!(!texts.iter().any(|text| text.contains("100%")));
+
+        let mut conflict = fixtures::state();
+        conflict.monitor_only = true;
+        conflict.critical = true;
+        let alerts = collect(&ControlStatus::Running, Some(&conflict), &[], None);
+        assert_eq!(alerts[0].text, "Critical temperature: every fan is at 100%");
     }
 }

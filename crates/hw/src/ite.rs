@@ -63,7 +63,7 @@ pub(crate) fn is_ite_id(chip_id: u16) -> bool {
     matches!(chip_id >> 8, 0x86 | 0x87)
 }
 
-pub(crate) fn read_config<P: PortIo>(io: &mut P) -> Result<ChipConfig, HwError> {
+pub(crate) fn read_config<P: PortIo>(io: &mut P, probing: bool) -> Result<ChipConfig, HwError> {
     with_config_space(
         io,
         CONFIG_PORT,
@@ -75,7 +75,9 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P) -> Result<ChipConfig, HwError> 
                 None if matches!(chip_id, 0x0000 | 0xFFFF) => {
                     return Err(HwError::ChipNotFound(chip_id));
                 }
-                None if is_ite_id(chip_id) => return Err(HwError::UnsupportedChip(chip_id)),
+                None if is_ite_id(chip_id) || !probing => {
+                    return Err(HwError::UnsupportedChip(chip_id));
+                }
                 None => return Err(HwError::NotIte(chip_id)),
             };
             let version = space.read(CHIP_VERSION_REG)? & 0x0F;
@@ -608,7 +610,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io),
+            read_config(&mut io, true),
             Err(HwError::UnsupportedChip(0x8613))
         ));
         assert!(!io.config_mode);
@@ -618,7 +620,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io),
+            read_config(&mut io, true),
             Err(HwError::ChipNotFound(0xFFFF))
         ));
     }
@@ -629,7 +631,10 @@ mod tests {
             chip_id: 0xD42B,
             ..FakeIte::new()
         };
-        assert!(matches!(read_config(&mut io), Err(HwError::NotIte(0xD42B))));
+        assert!(matches!(
+            read_config(&mut io, true),
+            Err(HwError::NotIte(0xD42B))
+        ));
         assert!(io.config_mode);
         assert_eq!(io.exits, 0);
         assert!(io.writes.iter().all(|&(port, ..)| port == CONFIG_PORT));
@@ -644,7 +649,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    read_config(&mut io),
+                    read_config(&mut io, true),
                     Err(HwError::InvalidBaseAddress { .. })
                 ),
                 "base {base:#x}"
@@ -819,6 +824,26 @@ mod tests {
         chip.io.chip_id = IT8655E_ID;
         chip.restore(0, None).unwrap();
         assert_eq!(chip.io.reg(CONTROL[0]) & AUTO_MODE_BIT, AUTO_MODE_BIT);
+    }
+
+    #[test]
+    fn a_glitched_foreign_id_on_reinitialisation_still_exits_config_mode() {
+        let mut chip = probe(FakeIte::new(), "glitch");
+        chip.io.chip_id = 0xD42B;
+        let before = chip.io.writes.len();
+        assert!(matches!(
+            chip.reinitialize(),
+            Err(HwError::ChipChanged {
+                expected: IT8655E_ID,
+                found: 0xD42B
+            })
+        ));
+        assert!(!chip.io.config_mode);
+        assert!(
+            chip.io.writes[before..]
+                .iter()
+                .all(|&(_, value, _)| value != 0xAA)
+        );
     }
 
     #[test]
