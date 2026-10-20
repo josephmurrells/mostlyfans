@@ -517,14 +517,14 @@ fn calibration_results_and_abort_reasons_are_shown() {
             .insert(fixtures::fan(0), calibrated(35.0));
         state.calibration.last = Some(CalibrationReport {
             fan: fixtures::fan(0),
-            outcome: CalibrationOutcome::Aborted("Board temp 1 rose by 5.5 °C".to_owned()),
+            outcome: CalibrationOutcome::Aborted("Board temp 1 reached 75 °C".to_owned()),
         });
     });
     let harness = harness(&link, Page::Fans);
     assert!(harness.query_by_label("Stops at 35%").is_some());
     assert!(
         harness
-            .query_by_label("Calibration stopped: Board temp 1 rose by 5.5 °C")
+            .query_by_label("Calibration stopped: Board temp 1 reached 75 °C")
             .is_some()
     );
     assert!(

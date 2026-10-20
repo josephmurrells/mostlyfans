@@ -14,7 +14,6 @@ pub const SETTLE_SAMPLES: usize = 3;
 pub const SETTLE_TOLERANCE: f32 = 0.03;
 pub const SETTLE_TOLERANCE_RPM: u32 = 25;
 pub const STOPPED_BELOW_RPM: u32 = 100;
-pub const MAX_TEMP_RISE: f32 = 5.0;
 pub const MAX_TEMP: f32 = 75.0;
 pub const MAX_TOTAL_TIME: Duration = Duration::from_secs(20 * 60);
 pub const MARGIN: f32 = 10.0;
@@ -306,13 +305,6 @@ impl Calibration {
             };
             if now >= MAX_TEMP {
                 return Err(format!("{} reached {now:.0} °C", sensor.label));
-            }
-            if now - sensor.start > MAX_TEMP_RISE {
-                return Err(format!(
-                    "{} rose by {:.1} °C",
-                    sensor.label,
-                    now - sensor.start
-                ));
             }
         }
         Ok(())
@@ -683,8 +675,8 @@ mod tests {
     #[test]
     fn every_watched_condition_aborts() {
         aborted_with(
-            abort_after(|readings| readings.sensors[1].celsius = Some(45.5)),
-            "Board rose by 5.5 °C",
+            abort_after(|readings| readings.sensors[1].celsius = Some(75.0)),
+            "Board reached 75 °C",
         );
         aborted_with(
             abort_after(|readings| readings.sensors[0].celsius = Some(75.0)),
@@ -706,11 +698,12 @@ mod tests {
     }
 
     #[test]
-    fn a_rise_of_exactly_five_degrees_is_allowed() {
+    fn a_large_rise_below_the_limit_is_allowed() {
         let mut readings = readings(Some(1500));
         let mut calibration = start(&FanSettings::default(), &readings).unwrap();
         calibration.advance(&readings, SECOND);
-        readings.sensors[1].celsius = Some(45.0);
+        readings.sensors[0].celsius = Some(74.5);
+        readings.sensors[1].celsius = Some(74.5);
         assert!(matches!(
             calibration.advance(&readings, SECOND),
             Step::Hold(_)
