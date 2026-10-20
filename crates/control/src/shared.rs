@@ -11,6 +11,8 @@ pub enum LoopMessage {
     ReplaceConfig(Box<Config>, SyncSender<Result<(), String>>),
     SetActiveProfile(String, SyncSender<Result<(), String>>),
     Identify(FanId),
+    Calibrate(FanId, SyncSender<Result<(), String>>),
+    CancelCalibration,
     Suspend(SyncSender<()>),
     Resume,
     RetryHardware,

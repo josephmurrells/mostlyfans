@@ -12,12 +12,14 @@ test-support = []
 [dependencies]
 fanforge-core.workspace = true
 fanforge-win.workspace = true
+nvml-wrapper.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 windows.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

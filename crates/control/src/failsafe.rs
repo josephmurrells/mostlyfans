@@ -3,9 +3,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fanforge_hw::HwError;
-use fanforge_hw::ite::It8655e;
 use fanforge_hw::port::PortIo;
 use fanforge_hw::snapshot::BiosSnapshot;
+use fanforge_hw::superio::SuperIo;
 use fanforge_hw::system::{force_all_auto, open_chip};
 
 const RETRY_PAUSE: Duration = Duration::from_millis(100);
@@ -18,7 +18,7 @@ fn load_snapshot(path: &Path) -> BiosSnapshot {
 }
 
 pub fn release_with<P: PortIo>(
-    chip: &mut It8655e<P>,
+    chip: &mut SuperIo<P>,
     snapshot_path: &Path,
     budget: Duration,
 ) -> Result<(), HwError> {
@@ -26,7 +26,7 @@ pub fn release_with<P: PortIo>(
 }
 
 pub fn release_preferring<P: PortIo>(
-    chip: Option<&mut It8655e<P>>,
+    chip: Option<&mut SuperIo<P>>,
     snapshot_path: &Path,
     budget: Duration,
 ) -> Result<(), HwError> {
@@ -70,6 +70,7 @@ pub fn release_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(), H
 mod tests {
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
+    use fanforge_hw::superio::Slot;
 
     use super::*;
 
@@ -85,7 +86,7 @@ mod tests {
         });
         let lock =
             NamedMutex::open(&format!(r"Local\fanforge-failsafe-{}", std::process::id())).unwrap();
-        let mut chip = It8655e::probe(fake.clone(), lock).unwrap();
+        let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock).unwrap();
         release_with(&mut chip, &path, Duration::from_secs(1)).unwrap();
         for register in [0x15, 0x16, 0x17] {
             assert_eq!(fake.with(|chip| chip.reg(register)) & 0x80, 0x80);

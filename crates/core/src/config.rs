@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::calibration::{FanCalibration, MAX_POINTS};
 use crate::curve::{CurveDef, CurveKind, find_curve};
 use crate::telemetry::{MAX_PLAUSIBLE_CELSIUS, MIN_PLAUSIBLE_CELSIUS};
 use crate::{CurveId, Duty, FanId, SensorId};
@@ -66,9 +67,11 @@ pub struct Profile {
 #[serde(default)]
 pub struct SafetyConfig {
     pub critical_sensor: SensorId,
+    pub critical_enabled: bool,
     pub critical_c: f32,
     pub release_c: f32,
     pub release_hold_secs: f32,
+    pub sensor_fallback_enabled: bool,
     pub sensor_failure_ticks: u32,
 }
 
@@ -76,9 +79,11 @@ impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
             critical_sensor: SensorId::new("cpu/tctl"),
+            critical_enabled: true,
             critical_c: 85.0,
             release_c: 80.0,
             release_hold_secs: 10.0,
+            sensor_fallback_enabled: true,
             sensor_failure_ticks: 3,
         }
     }
@@ -94,6 +99,7 @@ pub struct Config {
     pub fans: BTreeMap<FanId, FanSettings>,
     pub curves: Vec<CurveDef>,
     pub safety: SafetyConfig,
+    pub calibration: BTreeMap<FanId, FanCalibration>,
 }
 
 impl Default for Config {
@@ -110,6 +116,7 @@ impl Default for Config {
             fans: BTreeMap::new(),
             curves: Vec::new(),
             safety: SafetyConfig::default(),
+            calibration: BTreeMap::new(),
         }
     }
 }
@@ -150,6 +157,8 @@ pub enum ConfigError {
     },
     #[error("fan `{fan}` in profile `{profile}` has a sync cycle")]
     SyncCycle { profile: String, fan: FanId },
+    #[error("calibration for fan `{0}` is invalid")]
+    InvalidCalibration(FanId),
     #[error("critical temperature settings are invalid")]
     InvalidSafety,
     #[error("configuration is too large: {0}")]
@@ -174,6 +183,10 @@ impl Config {
         self.fans.get(fan).cloned().unwrap_or_default()
     }
 
+    pub fn calibration_for(&self, fan: &FanId) -> Option<&FanCalibration> {
+        self.calibration.get(fan)
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedVersion(self.version));
@@ -191,6 +204,7 @@ impl Config {
         }
         self.validate_size()?;
         self.validate_safety()?;
+        self.validate_calibration()?;
         self.validate_curves()?;
         self.validate_profiles()
     }
@@ -204,6 +218,7 @@ impl Config {
             return too_large(format!("more than {MAX_CURVES} curves"));
         }
         if self.fans.len() > MAX_FAN_ENTRIES
+            || self.calibration.len() > MAX_FAN_ENTRIES
             || self
                 .profiles
                 .values()
@@ -238,7 +253,12 @@ impl Config {
                 ));
             }
         }
-        let serialized = serde_json::to_vec(self).map_or(usize::MAX, |bytes| bytes.len());
+        let without_calibration = Self {
+            calibration: BTreeMap::new(),
+            ..self.clone()
+        };
+        let serialized =
+            serde_json::to_vec(&without_calibration).map_or(usize::MAX, |bytes| bytes.len());
         if serialized > MAX_SERIALIZED_LEN {
             return too_large(format!("{serialized} bytes exceeds {MAX_SERIALIZED_LEN}"));
         }
@@ -257,6 +277,16 @@ impl Config {
             Ok(())
         } else {
             Err(ConfigError::InvalidSafety)
+        }
+    }
+
+    fn validate_calibration(&self) -> Result<(), ConfigError> {
+        let invalid = self.calibration.iter().find(|(id, calibration)| {
+            id.as_str().len() > MAX_NAME_LEN || calibration.points.len() > MAX_POINTS
+        });
+        match invalid {
+            Some((id, _)) => Err(ConfigError::InvalidCalibration(id.clone())),
+            None => Ok(()),
         }
     }
 
@@ -508,6 +538,113 @@ mod tests {
         let mut config = Config::default();
         config.safety.critical_sensor = SensorId::new(" ");
         assert_eq!(config.validate(), Err(ConfigError::InvalidSafety));
+    }
+
+    fn measured(points: usize) -> FanCalibration {
+        FanCalibration {
+            stop_duty: Some(Duty::new(25.0)),
+            start_duty: Some(Duty::new(35.0)),
+            lowest_tested: Duty::new(25.0),
+            points: (0..points)
+                .map(|index| crate::calibration::CalibrationPoint {
+                    duty: Duty::new(100.0 - index as f32),
+                    rpm: 65_535,
+                })
+                .collect(),
+            not_restarting: true,
+        }
+    }
+
+    #[test]
+    fn calibration_round_trips_and_old_files_load_without_it() {
+        let mut config = Config::default();
+        config.calibration.insert("pwm1".into(), measured(3));
+        config.calibration.insert(
+            "pwm2".into(),
+            FanCalibration {
+                lowest_tested: Duty::new(30.0),
+                ..FanCalibration::default()
+            },
+        );
+        config.validate().unwrap();
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed, config);
+
+        let old: Config = toml::from_str(
+            "version = 1\ninterval_ms = 1000\nactive_profile = \"Balanced\"\n[profiles.Balanced]\n",
+        )
+        .unwrap();
+        assert!(old.calibration.is_empty());
+        old.validate().unwrap();
+    }
+
+    #[test]
+    fn safety_toggles_default_on_round_trip_and_load_on_from_old_files() {
+        let defaults = SafetyConfig::default();
+        assert!(defaults.critical_enabled);
+        assert!(defaults.sensor_fallback_enabled);
+
+        let mut config = Config::default();
+        config.safety.critical_enabled = false;
+        config.safety.sensor_fallback_enabled = false;
+        config.validate().unwrap();
+        let parsed: Config = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        assert_eq!(parsed, config);
+
+        let old: Config = toml::from_str(
+            "version = 1\nactive_profile = \"Balanced\"\n[profiles.Balanced]\n[safety]\ncritical_sensor = \"cpu/tctl\"\ncritical_c = 90.0\n",
+        )
+        .unwrap();
+        assert!(old.safety.critical_enabled);
+        assert!(old.safety.sensor_fallback_enabled);
+        assert_eq!(old.safety.critical_c, 90.0);
+    }
+
+    #[test]
+    fn oversized_calibrations_are_rejected() {
+        let mut config = Config::default();
+        config
+            .calibration
+            .insert("pwm1".into(), measured(MAX_POINTS + 1));
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::InvalidCalibration("pwm1".into()))
+        );
+        let mut config = Config::default();
+        for index in 0..=MAX_FAN_ENTRIES {
+            config
+                .calibration
+                .insert(FanId::for_channel(index), measured(1));
+        }
+        assert!(matches!(config.validate(), Err(ConfigError::TooLarge(_))));
+    }
+
+    #[test]
+    fn a_full_calibration_table_never_pushes_a_valid_config_over_the_limit() {
+        let mut config = Config::default();
+        let mut index = 0;
+        loop {
+            let mut next = config.clone();
+            next.curves.push(curve(
+                &format!("curve-{index}"),
+                CurveKind::Graph {
+                    sensor: "cpu/tctl".into(),
+                    points: vec![CurvePoint::new(40.0, 30.0); MAX_CURVE_POINTS],
+                },
+            ));
+            if next.validate().is_err() {
+                break;
+            }
+            config = next;
+            index += 1;
+        }
+        for fan in 0..MAX_FAN_ENTRIES {
+            config
+                .calibration
+                .insert(FanId::for_channel(fan), measured(MAX_POINTS));
+        }
+        config.validate().unwrap();
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, Id, RichText, vec2};
@@ -22,20 +23,41 @@ pub enum OverviewAction {
     SkipSetup,
 }
 
+fn category(sensor: &SensorReading) -> usize {
+    const PREFIXES: [&str; 3] = ["cpu/", "gpu/", "drive/"];
+    PREFIXES
+        .iter()
+        .position(|prefix| sensor.id.as_str().starts_with(prefix))
+        .unwrap_or(PREFIXES.len())
+}
+
 pub fn ordered_sensors(state: &ControlState) -> Vec<&SensorReading> {
     let critical = &state.config.safety.critical_sensor;
-    let rank = |sensor: &SensorReading| {
-        if &sensor.id == critical {
-            0
-        } else if sensor.id.as_str().starts_with("cpu/") {
-            1
-        } else {
-            2
-        }
-    };
-    let mut sensors: Vec<&SensorReading> = state.readings.sensors.iter().collect();
-    sensors.sort_by_key(|sensor| rank(sensor));
-    sensors
+    let mut leaders: BTreeSet<usize> = state
+        .readings
+        .sensors
+        .iter()
+        .filter(|sensor| &sensor.id == critical)
+        .map(category)
+        .collect();
+    let mut ranked: Vec<((usize, usize), &SensorReading)> = state
+        .readings
+        .sensors
+        .iter()
+        .map(|sensor| {
+            let group = category(sensor);
+            let tier = if &sensor.id == critical {
+                0
+            } else if leaders.insert(group) {
+                1
+            } else {
+                2
+            };
+            ((tier, group), sensor)
+        })
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().map(|(_, sensor)| sensor).collect()
 }
 
 pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config) -> Vec<FanId> {
@@ -190,7 +212,7 @@ fn fan_card(
     let status = state.fans.iter().find(|status| status.id == fan.id);
     let settings = state.config.settings(&fan.id);
     let limits = state.limits.get(&fan.id).copied().unwrap_or_default();
-    let floor = format::effective_floor(limits, &settings);
+    let floor = format::effective_floor(limits, &settings, state.config.calibration_for(&fan.id));
     let mode = state.config.mode(&fan.id);
     widgets::clickable_card(ui, Id::unique(("fan-card", fan.id.as_str())), &name, |ui| {
         let palette = theme::of(ui);
@@ -253,6 +275,43 @@ mod tests {
             .map(|sensor| sensor.id.as_str())
             .collect();
         assert_eq!(order, vec!["board/temp2", "cpu/tctl", "board/temp1"]);
+    }
+
+    #[test]
+    fn each_category_leads_with_one_tile() {
+        let mut state = fixtures::state();
+        let extra = |id: &str| SensorReading {
+            id: SensorId::new(id),
+            label: id.to_owned(),
+            celsius: Some(40.0),
+        };
+        state.readings.sensors = vec![
+            extra("cpu/tctl"),
+            extra("cpu/tdie"),
+            extra("cpu/ccd1"),
+            extra("board/temp1"),
+            extra("drive/S1"),
+            extra("gpu/nvidia/gpu-1"),
+            extra("drive/S2"),
+            extra("gpu/nvidia/gpu-2"),
+        ];
+        let order: Vec<&str> = ordered_sensors(&state)
+            .iter()
+            .map(|sensor| sensor.id.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "cpu/tctl",
+                "gpu/nvidia/gpu-1",
+                "drive/S1",
+                "board/temp1",
+                "cpu/tdie",
+                "cpu/ccd1",
+                "gpu/nvidia/gpu-2",
+                "drive/S2",
+            ]
+        );
     }
 
     #[test]

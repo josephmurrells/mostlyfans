@@ -10,8 +10,26 @@ LibreHardwareMonitor
   https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
   Licensed under the Mozilla Public License 2.0.
   IT8655E register addresses, the bank-select fix for issue #780, and the PawnIO
-  ioctl interface were taken from its source as reference; no files were copied.
+  ioctl interface were taken from its source as reference. The ITE IT86xx/IT87xx
+  and Nuvoton NCT677x/NCT679x chip IDs, register maps (fan, PWM, tachometer,
+  temperature source and bank-select registers) and decoding rules in
+  crates/hw/src/chips.rs, crates/hw/src/ite.rs and crates/hw/src/nuvoton.rs
+  were ported from LibreHardwareMonitorLib/Hardware/Motherboard/Lpc/IT87XX.cs,
+  Nct677X.cs, LpcIO.cs and LpcPort.cs. No files were copied.
 
 Linux k10temp driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/k10temp.c
   Reference for AMD family 17h/19h temperature register decoding.
+
+nvml-wrapper (crate)
+  Copyright (c) Cldfire
+  https://github.com/Cldfire/nvml-wrapper
+  Licensed under the MIT License or the Apache License 2.0, at your option.
+  Used to read NVIDIA GPU temperatures through NVML.
+
+AMD Display Library (ADL) SDK
+  Copyright (c) Advanced Micro Devices, Inc.
+  https://github.com/GPUOpen-LibrariesAndSDKs/display-library
+  Licensed under the MIT License.
+  AdapterInfo and ADLPMLogDataOutput layouts and function signatures were taken
+  from its headers as reference; no files were copied.

@@ -9,6 +9,7 @@ pub enum Overall {
     Starting,
     Stopped,
     Critical,
+    CriticalUnforced,
     DriverMissing,
     Unavailable,
     Suspended,
@@ -25,8 +26,14 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
     let Some(state) = state else {
         return Overall::Starting;
     };
-    if state.critical {
-        return Overall::Critical;
+    let unverified = state.board.as_ref().is_some_and(|board| !board.fan_control);
+    if !(state.monitor_only && unverified) {
+        if state.critical {
+            return Overall::Critical;
+        }
+        if state.critical_reached && !state.config.safety.critical_enabled {
+            return Overall::CriticalUnforced;
+        }
     }
     match state.hardware {
         HardwareStatus::DriverMissing => return Overall::DriverMissing,
@@ -43,7 +50,7 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
         .filter(|fan| {
             matches!(
                 fan.state,
-                FanState::Faulted(_) | FanState::SensorFallback(_)
+                FanState::Faulted(_) | FanState::SensorFallback(_) | FanState::SensorReleased(_)
             )
         })
         .count();
@@ -60,6 +67,7 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
                     | FanState::Clamped
                     | FanState::Holding(_)
                     | FanState::Identifying
+                    | FanState::Calibrating
             )
         })
         .count();
@@ -80,6 +88,7 @@ impl Overall {
             Self::Starting => "Starting…".to_owned(),
             Self::Stopped => "Control stopped".to_owned(),
             Self::Critical => "Critical temperature".to_owned(),
+            Self::CriticalUnforced => "Critical (override off)".to_owned(),
             Self::DriverMissing => "Driver missing".to_owned(),
             Self::Unavailable => "Hardware unavailable".to_owned(),
             Self::Suspended => "Suspended".to_owned(),
@@ -95,9 +104,11 @@ impl Overall {
 
     pub fn tone(&self) -> Tone {
         match self {
-            Self::Stopped | Self::Critical | Self::DriverMissing | Self::Unavailable => {
-                Tone::Danger
-            }
+            Self::Stopped
+            | Self::Critical
+            | Self::CriticalUnforced
+            | Self::DriverMissing
+            | Self::Unavailable => Tone::Danger,
             Self::MonitorOnly | Self::FanFault(_) => Tone::Warn,
             Self::Controlling(_) => Tone::Ok,
             Self::Starting | Self::Suspended | Self::BiosOnly => Tone::Neutral,
@@ -151,8 +162,41 @@ mod tests {
         state.hardware = HardwareStatus::DriverMissing;
         assert_eq!(overall(&running, Some(&state)), Overall::DriverMissing);
 
+        state.hardware = HardwareStatus::Ready;
         state.critical = true;
         assert_eq!(overall(&running, Some(&state)), Overall::Critical);
+
+        if let Some(board) = state.board.as_mut() {
+            board.fan_control = false;
+        }
+        assert_eq!(overall(&running, Some(&state)), Overall::MonitorOnly);
+
+        state.monitor_only = false;
+        state.hardware = HardwareStatus::DriverMissing;
+        assert_eq!(overall(&running, Some(&state)), Overall::Critical);
+    }
+
+    #[test]
+    fn heat_with_the_override_off_still_shows_as_critical() {
+        let running = ControlStatus::Running;
+        let mut state = fixtures::state();
+        state.critical_reached = true;
+        assert_eq!(overall(&running, Some(&state)), Overall::Controlling(2));
+        state.config.safety.critical_enabled = false;
+        let status = overall(&running, Some(&state));
+        assert_eq!(status, Overall::CriticalUnforced);
+        assert_eq!(status.label(), "Critical (override off)");
+        assert_eq!(status.tone(), Tone::Danger);
+    }
+
+    #[test]
+    fn a_fan_released_after_losing_its_sensor_needs_attention() {
+        let mut state = fixtures::state();
+        state.fans[0].state = FanState::SensorReleased("sensor".into());
+        assert_eq!(
+            overall(&ControlStatus::Running, Some(&state)),
+            Overall::FanFault(1)
+        );
     }
 
     #[test]

@@ -4,6 +4,10 @@ use std::sync::Arc;
 use eframe::egui::{Theme, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use fanforge_core::Duty;
+use fanforge_core::calibration::{
+    CalibrationOutcome, CalibrationPoint, CalibrationReport, FanCalibration,
+};
 use fanforge_core::config::FanMode;
 use fanforge_core::state::ControlState;
 
@@ -364,7 +368,7 @@ fn opening_a_page_never_rounds_or_clamps_values() {
         state.config.profiles.get_mut(&active).unwrap().fans.insert(
             fixtures::fan(0),
             FanMode::Manual {
-                duty: fanforge_core::Duty::new(37.5),
+                duty: Duty::new(37.5),
             },
         );
         state
@@ -372,7 +376,7 @@ fn opening_a_page_never_rounds_or_clamps_values() {
             .fans
             .entry(fixtures::fan(0))
             .or_default()
-            .min_duty = fanforge_core::Duty::new(12.3);
+            .min_duty = Duty::new(12.3);
     });
     for page in [Page::Fans, Page::Settings] {
         let mut harness = harness(&link, page);
@@ -437,4 +441,274 @@ fn render_screenshots() {
     let link = FakeLink::new(fixtures::state());
     let mut harness = harness_with(shell(&link, Page::Fans), vec2(760.0, 600.0), Theme::Light);
     screenshot(&mut harness, &dir, "compact-light");
+}
+
+fn calibrated(stop: f32) -> FanCalibration {
+    FanCalibration {
+        stop_duty: Some(Duty::new(stop)),
+        start_duty: None,
+        lowest_tested: Duty::new(stop),
+        points: vec![CalibrationPoint {
+            duty: Duty::FULL,
+            rpm: 1800,
+        }],
+        not_restarting: false,
+    }
+}
+
+#[test]
+fn calibration_starts_shows_progress_and_cancels() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    click(&mut harness, "Calibrate");
+    assert_eq!(link.sent(), vec!["calibrate:pwm1"]);
+    assert!(
+        harness
+            .query_by_label_contains("Stepping down · 100% · 1500 rpm")
+            .is_some()
+    );
+    let identify = widgets::with_icon(icons::IDENTIFY, "Identify");
+    assert!(
+        harness
+            .get_by_label(&identify)
+            .accesskit_node()
+            .is_disabled()
+    );
+    click(&mut harness, "Cancel calibration");
+    assert_eq!(link.sent(), vec!["calibrate:pwm1", "cancel-calibration"]);
+    assert!(harness.query_by_label("Calibration cancelled").is_some());
+}
+
+#[test]
+fn calibration_is_disabled_in_monitor_only_and_when_stopped() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| state.monitor_only = true);
+    let monitor = harness(&link, Page::Fans);
+    assert!(
+        monitor
+            .get_by_label("Calibrate")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        monitor
+            .query_by_label_contains("Calibration is unavailable: Monitor-only mode")
+            .is_some()
+    );
+
+    let link = FakeLink::new(fixtures::state());
+    link.0.borrow_mut().status = ControlStatus::Stopped("stopped".into());
+    let stopped = harness(&link, Page::Fans);
+    assert!(
+        stopped
+            .get_by_label("Calibrate")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn calibration_results_and_abort_reasons_are_shown() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| {
+        state
+            .config
+            .calibration
+            .insert(fixtures::fan(0), calibrated(35.0));
+        state.calibration.last = Some(CalibrationReport {
+            fan: fixtures::fan(0),
+            outcome: CalibrationOutcome::Aborted("Board temp 1 reached 75 °C".to_owned()),
+        });
+    });
+    let harness = harness(&link, Page::Fans);
+    assert!(harness.query_by_label("Stops at 35%").is_some());
+    assert!(
+        harness
+            .query_by_label("Calibration stopped: Board temp 1 reached 75 °C")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("Floor 45% (calibrated)")
+            .next()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_calibration_landing_during_an_apply_still_confirms_it() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    make_dirty(&mut harness);
+    link.0.borrow_mut().hold = true;
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+    link.release();
+    link.update(|state| {
+        state
+            .config
+            .calibration
+            .insert(fixtures::fan(1), calibrated(30.0));
+    });
+    settle(&mut harness);
+    assert_eq!(harness.state().toasts.texts(), vec!["Changes applied"]);
+    assert!(harness.query_by_label("Apply").is_none());
+}
+
+#[test]
+fn renaming_a_fan_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    settle(&mut harness);
+    for letter in ["C", "P", "U"] {
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text(letter);
+        settle(&mut harness);
+    }
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(
+        draft.settings(&fixtures::fan(0)).name.as_deref(),
+        Some("CPU coolerCPU")
+    );
+}
+
+#[test]
+fn renaming_a_curve_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Curves);
+    let before = harness
+        .state()
+        .draft
+        .clone()
+        .unwrap_or_else(|| link.live_config());
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    settle(&mut harness);
+    for letter in ["x", "y", "z"] {
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .type_text(letter);
+        settle(&mut harness);
+    }
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(
+        draft.curves[0].name,
+        format!("{}xyz", before.curves[0].name)
+    );
+}
+
+#[test]
+fn typing_in_a_number_field_keeps_focus_when_the_unsaved_bar_appears() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Settings);
+    harness.get_by_label("for at least").scroll_to_me();
+    settle(&mut harness);
+    harness.get_by_label("for at least").click();
+    settle(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut harness);
+    for digit in ["2", "5"] {
+        harness.get_by_label("for at least").type_text(digit);
+        settle(&mut harness);
+    }
+    harness.key_press(Key::Enter);
+    settle(&mut harness);
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert_eq!(draft.safety.release_hold_secs, 25.0);
+}
+
+#[test]
+fn the_safety_toggles_default_on_and_disable_their_controls_when_off() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Settings);
+    let override_label = "Critical temperature override: all fans to 100% when it gets too hot";
+    let fallback_label =
+        "Missing-sensor fallback: fans go to 100% when their sensor stops reporting";
+    assert!(harness.query_by_label(fallback_label).is_some());
+    assert!(
+        !harness
+            .get_by_role_and_label(Role::Slider, "Full speed at")
+            .accesskit_node()
+            .is_disabled()
+    );
+    click(&mut harness, override_label);
+    assert!(harness.query_by_label("Apply").is_some());
+    let draft = harness.state().draft.as_ref().unwrap();
+    assert!(!draft.safety.critical_enabled);
+    assert!(draft.safety.sensor_fallback_enabled);
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Slider, "Full speed at")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let disabled = |harness: &Harness<'_, Shell>, role: Role, label: &str| {
+        harness
+            .get_by_role_and_label(role, label)
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!disabled(&harness, Role::Slider, "Back to normal below"));
+    assert!(!disabled(&harness, Role::SpinButton, "for at least"));
+    assert!(!disabled(
+        &harness,
+        Role::SpinButton,
+        "Missing sensor readings"
+    ));
+    click(&mut harness, fallback_label);
+    assert!(disabled(&harness, Role::Slider, "Back to normal below"));
+    assert!(disabled(&harness, Role::SpinButton, "for at least"));
+    assert!(!disabled(
+        &harness,
+        Role::SpinButton,
+        "Missing sensor readings"
+    ));
+}
+
+#[test]
+fn turned_off_safety_shows_warnings_and_heat_still_raises_a_danger_alert() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| {
+        state.config.safety.critical_enabled = false;
+        state.config.safety.sensor_fallback_enabled = false;
+        state.critical_reached = true;
+        state.readings.sensors[0].celsius = Some(92.0);
+    });
+    let harness = harness(&link, Page::Overview);
+    assert!(
+        harness
+            .query_all_by_label_contains("The critical temperature override is off")
+            .next()
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("The missing-sensor fallback is off")
+            .next()
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("reached the critical temperature (92 °C now)")
+            .next()
+            .is_some()
+    );
+    assert!(harness.query_by_label("Critical (override off)").is_some());
+    assert!(harness.query_by_label(icons::CLOSE).is_none());
 }
