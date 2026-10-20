@@ -35,6 +35,7 @@ pub enum RequestKind {
     Config,
     Profile,
     Identify,
+    Calibrate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +49,8 @@ pub enum Request {
     ReplaceConfig(Box<Config>),
     SetActiveProfile(String),
     Identify(FanId),
+    Calibrate(FanId),
+    CancelCalibration,
 }
 
 impl Request {
@@ -56,6 +59,7 @@ impl Request {
             Self::ReplaceConfig(_) => RequestKind::Config,
             Self::SetActiveProfile(_) => RequestKind::Profile,
             Self::Identify(_) => RequestKind::Identify,
+            Self::Calibrate(_) | Self::CancelCalibration => RequestKind::Calibrate,
         }
     }
 }
@@ -218,6 +222,11 @@ impl<B: Backend + Send + 'static> Controller<B> {
             Request::Identify(fan) => {
                 reply_tx.send(Ok(())).ok();
                 LoopMessage::Identify(fan)
+            }
+            Request::Calibrate(fan) => LoopMessage::Calibrate(fan, reply_tx),
+            Request::CancelCalibration => {
+                reply_tx.send(Ok(())).ok();
+                LoopMessage::CancelCalibration
             }
         };
         if self.status() != ControlStatus::Running || lock(&self.sender).send(message).is_err() {
@@ -384,15 +393,20 @@ mod tests {
         rig.controller
             .send(Request::SetActiveProfile("Missing".to_owned()));
         rig.controller.send(Request::Identify("pwm1".into()));
-        let mut results = collect(&rig.controller, 3);
+        rig.controller.send(Request::Calibrate("pwm1".into()));
+        rig.controller.send(Request::CancelCalibration);
+        let mut results = collect(&rig.controller, 5);
         results.sort_by_key(|result| result.kind as u8);
-        assert_eq!(results.len(), 3);
+        assert_eq!(results.len(), 5);
         assert_eq!(results[0].kind, RequestKind::Config);
         assert_eq!(results[0].outcome, Ok(()));
         assert_eq!(results[1].kind, RequestKind::Profile);
         assert!(results[1].outcome.is_err());
         assert_eq!(results[2].kind, RequestKind::Identify);
         assert_eq!(results[2].outcome, Ok(()));
+        assert_eq!(results[3].kind, RequestKind::Calibrate);
+        assert_eq!(results[4].kind, RequestKind::Calibrate);
+        assert!(results[3..].iter().all(|result| result.outcome.is_ok()));
     }
 
     #[test]

@@ -60,6 +60,7 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
                     | FanState::Clamped
                     | FanState::Holding(_)
                     | FanState::Identifying
+                    | FanState::Calibrating
             )
         })
         .count();
