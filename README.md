@@ -96,7 +96,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 4. Start HWiNFO, then close it.
 5. Run the second `dump` (`after-hwinfo.json`), then `diff`.
 
-`dump` only reads; it puts the bank register back exactly as it found it. If the diff shows `bank_register` changing (bits 5–6 of EC register `0x06` on ITE chips), that confirms the bank-select cause. On a Nuvoton NCT679x that the firmware has locked, `detect` says so and `dump` records the lock (register `0x28`) but skips the hardware-monitor registers, because they all read `0xFF` until the lock is cleared. If `cold.json` shows them as "not read", the lock itself (register `0x28` changing in the diff) is the finding, not the bank register. `detect`, `read`, `dump` and `diff` work on every supported chip. `detect` prints the chip and whether its fan control is verified.
+`dump` only reads; it puts the bank register back exactly as it found it. If the diff shows `bank_register` changing (bits 5–6 of EC register `0x06` on ITE chips), that confirms the bank-select cause. On a Nuvoton NCT679x that the firmware has locked, `detect` says so and `dump` records the lock (register `0x28`) but skips the hardware-monitor registers, because they all read `0xFF` until the lock is cleared. If the diff shows them as "not read" on one side, the lock itself (register `0x28` changing in the diff) is the finding, not the bank register. `detect`, `read`, `dump` and `diff` work on every supported chip. `detect` prints the chip and whether its fan control is verified.
 
 `fanforge-diag set-pwm --channel 2 --duty 40` sets one fan to a fixed speed. It returns that fan to the BIOS after the timeout, on Ctrl+C, or when the console is closed, and refuses anything below 30%. It also refuses on monitor-only chips.
 
