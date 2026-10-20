@@ -115,12 +115,17 @@ fanforge-diag diff cold.json after-hwinfo.json
   - Until a curve's sensor has read healthy, the fan stays under BIOS control; if the sensor keeps failing, that fan goes to 100%.
   - A critical Tctl (85 °C by default), or a critical sensor that stops reporting, drives every fan to 100%.
 - **Unverified chips:** see [Supported chips](#supported-chips). FanForge stays monitor-only and never writes their fan registers.
+- **Calibration:** **Calibrate** in a fan's detail page finds the duty at which that fan stops and restarts, and records its speed at each step.
+  - **How it runs:** it steps the duty down from 100% in 5% steps. Each step waits at least 3 s and until the RPM settles.
+  - **Floors still apply:** it never goes below the header floor. It only probes below the floor, down to 0%, on a case fan that is allowed to stop.
+  - **When it stops early:** a temperature rising more than 5 °C or reaching 75 °C ends it, and so do a sensor or tach that stops reporting, the critical override, monitor-only mode, a config change, sleep, or quitting.
+  - **Afterwards:** the fan gets 3 s at 100%, then its normal control returns.
+  - **What it changes:** results are saved in the config and can only raise the floor: floor = max(header floor, minimum duty, stop duty + 10). They can also raise the spin-up duty to the start duty + 10. A fan that does not restart even at 100% stays flagged with a warning.
 - **Conflicts:** when another fan controller is running (FanControl, SpeedFan, Fan Xpert, …), FanForge switches to monitor-only. It does not touch the chip at startup and only releases fans it drove itself.
 - **Config limits:** profile, curve, point and name counts are capped.
 
 ## Not yet implemented
 
-- Calibration
 - Testing the AMD GPU (ADL) path on real hardware
 - Fan control on chips other than the IT8655E (they are monitor-only until verified on hardware)
 - Fan headers that have a tachometer but no PWM output (e.g. the IT8686E's 6th tach) are not shown

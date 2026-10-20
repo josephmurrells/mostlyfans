@@ -1,4 +1,5 @@
 use fanforge_core::board::FanLimits;
+use fanforge_core::calibration::{self, FanCalibration};
 use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::engine::FanState;
 use fanforge_core::state::{ControlState, HardwareStatus};
@@ -16,6 +17,7 @@ pub fn fan_state(state: &FanState) -> (String, Tone) {
         FanState::SensorFallback(reason) => (format!("100% fallback: {reason}"), Tone::Danger),
         FanState::Critical => ("Critical override".to_owned(), Tone::Danger),
         FanState::Identifying => ("Identifying".to_owned(), Tone::Accent),
+        FanState::Calibrating => ("Calibrating".to_owned(), Tone::Accent),
         FanState::Faulted(reason) => (format!("Released after fault: {reason}"), Tone::Danger),
         FanState::MonitorOnly => ("Monitor only".to_owned(), Tone::Neutral),
     }
@@ -90,27 +92,26 @@ pub fn mode_summary(config: &Config, state: &ControlState, mode: &FanMode) -> St
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Floor {
-    pub percent: f32,
-    pub may_stop: bool,
+pub use calibration::Floor;
+
+pub fn effective_floor(
+    limits: FanLimits,
+    settings: &FanSettings,
+    calibration: Option<&FanCalibration>,
+) -> Floor {
+    calibration::effective_floor(limits, settings, calibration)
 }
 
-pub fn effective_floor(limits: FanLimits, settings: &FanSettings) -> Floor {
-    let limits = limits.for_header(settings.case_fan);
-    Floor {
-        percent: limits.floor.percent().max(settings.min_duty.percent()),
-        may_stop: limits.stop_permitted && settings.allow_stop,
-    }
-}
-
-impl Floor {
-    pub fn describe(self) -> String {
-        if self.may_stop {
-            format!("Floor {:.0}%; may stop at 0%", self.percent)
-        } else {
-            format!("Floor {:.0}%", self.percent)
-        }
+pub fn describe_floor(floor: Floor) -> String {
+    let source = if floor.calibrated {
+        " (calibrated)"
+    } else {
+        ""
+    };
+    if floor.may_stop {
+        format!("Floor {:.0}%{source}; may stop at 0%", floor.percent)
+    } else {
+        format!("Floor {:.0}%{source}", floor.percent)
     }
 }
 
@@ -134,23 +135,42 @@ mod tests {
         let limits = FanLimits::default();
         let mut settings = FanSettings::default();
         assert_eq!(
-            effective_floor(limits, &settings),
+            effective_floor(limits, &settings, None),
             Floor {
                 percent: SAFETY_FLOOR.percent(),
-                may_stop: false
+                may_stop: false,
+                calibrated: false
             }
         );
         settings.allow_stop = true;
-        assert!(!effective_floor(limits, &settings).may_stop);
+        assert!(!effective_floor(limits, &settings, None).may_stop);
         settings.case_fan = true;
         assert_eq!(
-            effective_floor(limits, &settings),
+            effective_floor(limits, &settings, None),
             Floor {
                 percent: CASE_FAN_FLOOR.percent(),
-                may_stop: true
+                may_stop: true,
+                calibrated: false
             }
         );
         settings.min_duty = Duty::new(45.0);
-        assert_eq!(effective_floor(limits, &settings).percent, 45.0);
+        assert_eq!(effective_floor(limits, &settings, None).percent, 45.0);
+    }
+
+    #[test]
+    fn a_calibration_only_raises_the_floor() {
+        let limits = FanLimits::default();
+        let settings = FanSettings::default();
+        let stalls_at = |percent: f32| FanCalibration {
+            stop_duty: Some(Duty::new(percent)),
+            ..FanCalibration::default()
+        };
+        let raised = effective_floor(limits, &settings, Some(&stalls_at(35.0)));
+        assert_eq!(raised.percent, 45.0);
+        assert!(raised.calibrated);
+        assert_eq!(describe_floor(raised), "Floor 45% (calibrated)");
+        let low = effective_floor(limits, &settings, Some(&stalls_at(5.0)));
+        assert_eq!(low.percent, SAFETY_FLOOR.percent());
+        assert!(!low.calibrated);
     }
 }
