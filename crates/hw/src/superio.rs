@@ -562,13 +562,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_it8655e_is_verified_and_ambiguous_rows_never_are() {
+    fn only_tested_chips_are_verified_and_ambiguous_rows_never_are() {
         let verified: Vec<&str> = CHIPS
             .iter()
             .filter(|chip| chip.verified)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(verified, ["ITE IT8655E"]);
+        assert_eq!(verified, ["ITE IT8655E", "ITE IT8689E"]);
         for chip in CHIPS.iter().filter(|chip| chip.name.contains(" or ")) {
             assert!(!chip.verified, "{}", chip.name);
         }

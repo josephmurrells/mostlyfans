@@ -82,6 +82,10 @@ impl ChipSpec {
         }
     }
 
+    pub fn forces_auto_without_snapshot(&self) -> bool {
+        matches!(&self.map, ChipMap::Ite(map) if map.manual_control.is_none())
+    }
+
     pub fn matches_ite(&self, chip_id: u16) -> bool {
         self.ident == Ident::Ite(chip_id)
     }
@@ -347,17 +351,19 @@ pub static CHIPS: [ChipSpec; 24] = [
             ..ITE
         },
     ),
-    ite(
-        "ITE IT8689E",
-        0x8689,
-        IteMap {
+    ChipSpec {
+        name: "ITE IT8689E",
+        verified: true,
+        ident: Ident::Ite(0x8689),
+        map: ChipMap::Ite(IteMap {
             fans: 6,
             temps: 6,
+            bank_select: true,
             dump_banks: 4,
             manual_control: Some(0x7F),
             ..ITE
-        },
-    ),
+        }),
+    },
     ite("ITE IT8721F", 0x8721, ITE),
     ite("ITE IT8728F", 0x8728, ITE),
     ite("ITE IT8772E", 0x8772, ITE),

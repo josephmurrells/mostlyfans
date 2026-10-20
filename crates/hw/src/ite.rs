@@ -33,6 +33,7 @@ const VENDOR_IDS: [u8; 2] = [0x90, 0x7F];
 const MAIN_CONTROL_REG: u8 = 0x13;
 const MAIN_CONTROL_CHANNELS: usize = 3;
 const PWM_DUTY_REGS: [u8; 6] = [0x63, 0x6B, 0x73, 0x7B, 0xA3, 0xAB];
+const FULL_SPEED: u8 = 0xFF;
 const TEMP_BASE_REG: u8 = 0x29;
 const MIN_VALID_TACH: u16 = 0x3F;
 
@@ -250,14 +251,19 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         let saved = saved.filter(|state| state.kind == ControlKind::Ite);
         let register = self.map.pwm_control[channel];
         let current = self.ec.read(register)?;
-        let control = saved.map_or(current, |state| state.control) | AUTO_MODE_BIT;
-        if let Some(state) = saved {
-            self.ec.write(PWM_DUTY_REGS[channel], state.duty)?;
-        }
-        self.ec.write_verified(register, control)?;
-        if let Some(state) = saved
-            && channel < MAIN_CONTROL_CHANNELS
-        {
+        let Some(state) = saved else {
+            return match self.map.manual_control {
+                None => self.ec.write_verified(register, current | AUTO_MODE_BIT),
+                Some(_) if current & AUTO_MODE_BIT == 0 => {
+                    self.ec.write_verified(PWM_DUTY_REGS[channel], FULL_SPEED)
+                }
+                Some(_) => Ok(()),
+            };
+        };
+        self.ec.write(PWM_DUTY_REGS[channel], state.duty)?;
+        self.ec
+            .write_verified(register, state.control | AUTO_MODE_BIT)?;
+        if channel < MAIN_CONTROL_CHANNELS {
             let main = self.ec.read(MAIN_CONTROL_REG)?;
             let bit = 1 << channel;
             let wanted = if state.main_enabled {
@@ -568,6 +574,7 @@ mod tests {
     use crate::superio::SuperIo;
 
     const CONTROL: [u8; 3] = [0x15, 0x16, 0x17];
+    const PWM_CONTROL_8689: [u8; 6] = [0x15, 0x16, 0x17, 0x7F, 0xA7, 0xAF];
 
     fn lock(tag: &str) -> NamedMutex {
         NamedMutex::open(&format!(r"Local\fanforge-ite-{tag}-{}", std::process::id())).unwrap()
@@ -1044,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn it8689e_dumps_four_banks_and_puts_the_bank_back() {
+    fn it8689e_dumps_four_banks_and_selects_bank_zero_before_access() {
         let mut fake = FakeIte::chip(0x8689);
         fake.bank_register = 0x40 | 0x03;
         let mut chip = SuperIo::attach(fake, Slot::Primary, lock("8689")).unwrap();
@@ -1054,7 +1061,7 @@ mod tests {
         assert_eq!(chip.io.bank_register, 0x43);
         let readings = chip.read().unwrap();
         assert_eq!(readings.channels.len(), 6);
-        assert_eq!(chip.io.bank_register, 0x43);
+        assert_eq!(chip.io.bank_register, 0x03);
     }
 
     #[test]
@@ -1087,31 +1094,43 @@ mod tests {
     }
 
     #[test]
-    fn the_it8689e_control_path_writes_its_manual_value_when_verified() {
-        static VERIFIED_8689: crate::chips::ChipSpec = crate::chips::ChipSpec {
-            name: "test IT8689E",
-            verified: true,
-            ident: crate::chips::Ident::Ite(0x8689),
-            map: crate::chips::ChipMap::Ite(IteMap {
-                fans: 6,
-                temps: 6,
-                pwm_control: [0x15, 0x16, 0x17, 0x7F, 0xA7, 0xAF],
-                tach_low: [0x0D, 0x0E, 0x0F, 0x80, 0x82, 0x4C],
-                tach_high: [0x18, 0x19, 0x1A, 0x81, 0x83, 0x4D],
-                tach_enable: [None; 6],
-                bank_select: false,
-                dump_banks: 4,
-                index_echo: true,
-                config_check: true,
-                manual_control: Some(0x7F),
-            }),
-        };
+    fn the_it8689e_control_path_restores_the_exact_bios_bytes_on_every_channel() {
         let mut chip = probe(FakeIte::chip(0x8689), "8689-control");
-        chip.config.chip = &VERIFIED_8689;
+        chip.io.banks[0][usize::from(MAIN_CONTROL_REG)] = 0b011;
+        let saved = chip.channel_states().unwrap();
+        for channel in 0..6 {
+            chip.io.bank_register = 0x20;
+            chip.set_duty(channel, 0x66).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(chip.io.reg(PWM_CONTROL_8689[channel]), 0x7F);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x66);
+        }
+        assert_eq!(chip.io.reg(MAIN_CONTROL_REG), 0b111);
+        for channel in 0..6 {
+            chip.io.bank_register = 0x60;
+            chip.restore(channel, Some(saved[channel])).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(
+                chip.io.reg(PWM_CONTROL_8689[channel]),
+                AUTO_MODE_BIT | channel as u8
+            );
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+        }
+        assert_eq!(chip.io.reg(MAIN_CONTROL_REG), 0b011);
+    }
+
+    #[test]
+    fn the_it8689e_without_a_snapshot_runs_manual_channels_at_full_speed() {
+        let mut chip = probe(FakeIte::chip(0x8689), "8689-unsaved");
         chip.set_duty(4, 0x66).unwrap();
-        assert_eq!(chip.io.reg(0xA7), 0x7F);
-        assert_eq!(chip.io.reg(0xA3), 0x66);
         chip.restore(4, None).unwrap();
-        assert_eq!(chip.io.reg(0xA7), 0xFF);
+        assert_eq!(chip.io.reg(0xA7), 0x7F);
+        assert_eq!(chip.io.reg(0xA3), FULL_SPEED);
+
+        let writes = data_writes(&chip.io).len();
+        chip.restore(5, None).unwrap();
+        assert_eq!(data_writes(&chip.io).len(), writes);
+        assert_eq!(chip.io.reg(0xAF), AUTO_MODE_BIT | 0x05);
+        assert_eq!(chip.io.reg(0xAB), 0x40);
     }
 }

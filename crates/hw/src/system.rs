@@ -16,7 +16,7 @@ use crate::board::detect_identity;
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
 use crate::snapshot::BiosSnapshot;
-use crate::superio::{ControlKind, SuperIo, detect};
+use crate::superio::{SuperIo, detect};
 
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 
@@ -274,7 +274,7 @@ impl<P: PortIo> Hardware<P> {
                 }
                 if !self.snapshot.is_owned(channel) {
                     let current = self.chip.channel_states()?[channel];
-                    if current.kind == ControlKind::Nuvoton
+                    if !self.chip.chip().forces_auto_without_snapshot()
                         && !current.is_auto()
                         && self.snapshot.channel(channel).is_none()
                     {
@@ -511,6 +511,37 @@ mod tests {
             fan: fan.into(),
             action: Action::Release,
         }
+    }
+
+    #[test]
+    fn the_it8689e_restores_all_six_headers_after_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0xAF] = 0x05;
+        let fake = SharedFake::new(ite);
+        {
+            let mut hardware = hardware("8689-a", &fake, &path);
+            assert!(hardware.fan_control());
+            hardware.initialize_channels(true).unwrap();
+            for fan in ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"] {
+                hardware.apply(&set(fan, 60.0), &RUNNING).unwrap();
+            }
+            assert!(matches!(
+                hardware.apply(&set("pwm6", 60.0), &RUNNING),
+                Err(HwError::UnknownBiosMode(5))
+            ));
+        }
+        fake.with(|chip| assert_eq!(chip.reg(0xA7), 0x7F));
+        let mut restarted = hardware("8689-b", &fake, &path);
+        restarted.initialize_channels(true).unwrap();
+        fake.with(|chip| {
+            for (channel, register) in [0x15, 0x16, 0x17, 0x7F, 0xA7].into_iter().enumerate() {
+                assert_eq!(chip.reg(register), 0x80 | channel as u8);
+            }
+            assert_eq!((chip.reg(0xAF), chip.reg(0xAB)), (0x05, 0xFF));
+        });
+        assert!(!restarted.owns_any());
     }
 
     #[test]
