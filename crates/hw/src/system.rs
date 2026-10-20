@@ -46,12 +46,18 @@ pub fn force_all_auto<P: PortIo>(
     budget: Duration,
 ) -> Result<(), HwError> {
     let chip_id = chip.config().chip_id;
-    if !snapshot.belongs_to(chip_id) {
-        return Err(HwError::ChipChanged {
-            expected: snapshot.chip_id,
-            found: chip_id,
-        });
-    }
+    let error = HwError::ForeignSnapshot {
+        owner: snapshot.chip_id,
+        found: chip_id,
+    };
+    let foreign = match (snapshot.belongs_to(chip_id), chip.fan_control()) {
+        (true, _) => None,
+        (false, true) => Some(error),
+        (false, false) => {
+            tracing::error!(%error, "refusing to report fans released");
+            return Err(error);
+        }
+    };
     let empty = BiosSnapshot::for_chip(chip_id);
     let snapshot = if snapshot.chip_id == chip_id {
         snapshot
@@ -67,7 +73,10 @@ pub fn force_all_auto<P: PortIo>(
             first_error.get_or_insert(error);
         }
     }
-    first_error.map_or(Ok(()), Err)
+    match first_error.or(foreign) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[derive(Debug)]
@@ -317,9 +326,9 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn release_all(&mut self) -> Result<(), HwError> {
-        if let Some(expected) = self.foreign_owner.filter(|_| !self.fan_control()) {
-            return Err(HwError::ChipChanged {
-                expected,
+        if let Some(owner) = self.foreign_owner.filter(|_| !self.fan_control()) {
+            return Err(HwError::ForeignSnapshot {
+                owner,
                 found: self.chip.config().chip_id,
             });
         }
@@ -546,20 +555,23 @@ mod tests {
         let mut hardware = hardware("leftover", &fake, &path);
         assert!(!hardware.owns_any());
         hardware.initialize_channels(true).unwrap();
+        let error = hardware.release_all().unwrap_err();
         assert!(matches!(
-            hardware.release_all(),
-            Err(HwError::ChipChanged {
-                expected: 0x8655,
+            error,
+            HwError::ForeignSnapshot {
+                owner: 0x8655,
                 found: 0x8628
-            })
+            }
         ));
+        assert!(error.to_string().contains("delete"));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("leftover-chip")).unwrap();
         let old = BiosSnapshot::load(&path).unwrap();
         assert!(matches!(
             force_all_auto(&mut chip, &old, RELEASE_BUDGET),
-            Err(HwError::ChipChanged { .. })
+            Err(HwError::ForeignSnapshot { .. })
         ));
+        assert!(fake.with(|chip| chip.writes.iter().all(|&(port, ..)| port != chip.base + 6)));
     }
 
     #[test]
@@ -586,17 +598,18 @@ mod tests {
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("foreign-chip")).unwrap();
         assert!(matches!(
             force_all_auto(&mut chip, &foreign, RELEASE_BUDGET),
-            Err(HwError::ChipChanged {
-                expected: 0xD42B,
+            Err(HwError::ForeignSnapshot {
+                owner: 0xD42B,
                 found: 0x8655
             })
         ));
-        assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x00);
+        assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x80);
+        assert_eq!(fake.with(|chip| chip.reg(0x63)), 0x40);
 
+        fake.with(|chip| chip.banks[0][0x15] = 0x00);
         foreign.owned.clear();
         force_all_auto(&mut chip, &foreign, RELEASE_BUDGET).unwrap();
         assert_eq!(fake.with(|chip| chip.reg(0x15)), 0x80);
-        assert_eq!(fake.with(|chip| chip.reg(0x63)), 0x40);
     }
 
     static VERIFIED_NCT: crate::chips::ChipSpec = crate::chips::ChipSpec {

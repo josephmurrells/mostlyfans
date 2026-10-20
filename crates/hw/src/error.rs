@@ -46,6 +46,10 @@ pub enum HwError {
     IoSpaceLocked,
     #[error("the Super I/O chip changed from {expected:#06x} to {found:#06x}")]
     ChipChanged { expected: u16, found: u16 },
+    #[error(
+        "bios_snapshot.toml records fans driven on chip {owner:#06x}, but the attached chip is {found:#06x}; check that the fans are under BIOS control, then delete C:\\ProgramData\\FanForge\\bios_snapshot.toml"
+    )]
+    ForeignSnapshot { owner: u16, found: u16 },
     #[error("fan control on the {0} is not verified yet; FanForge only monitors it")]
     Unverified(&'static str),
     #[error("fan channel {0} is in manual mode with no saved BIOS state to return to")]
