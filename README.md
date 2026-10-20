@@ -71,11 +71,11 @@ Debug builds don't request elevation. Run them from an elevated terminal.
 Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures. They show on the Overview and any curve can use them.
 
 - **NVIDIA:** through NVML (`nvml.dll`, installed with the driver). Each GPU is identified by its NVML UUID, so a curve stays bound to the same card across reboots and slot moves.
-- **AMD:** through ADL (`atiadlxx.dll`, installed with Adrenalin), edge temperature of discrete cards (the Radeon graphics built into Ryzen CPUs is skipped; its temperature tracks the CPU). This path has not been tested on real AMD hardware yet. Each GPU is identified by its PCI bus/device/function. That number can change when you add or remove a PCIe device or change BIOS PCIe settings; a curve bound to the old id then sees a missing sensor and its fan goes to 100% until you pick the sensor again.
+- **AMD:** through ADL (`atiadlxx.dll`, installed with Adrenalin), edge temperature of discrete cards (the Radeon graphics built into Ryzen CPUs is skipped; its temperature tracks the CPU). This path has not been tested on real AMD hardware yet. Each GPU is identified by its PCI bus/device/function. That number can change when you add or remove a PCIe device or change BIOS PCIe settings; a curve bound to the old id then sees a missing sensor and its fan goes to 100% (or back to BIOS control if the missing-sensor fallback is off) until you pick the sensor again.
 - **Drives:** NVMe drives through Windows' storage temperature query, SATA drives through their SMART table (attribute 194, else 190). Each drive is identified by its serial number. Drives without a serial, spinning hard disks (polling would keep them from spinning down) and drives that report no temperature are not listed.
 - **Loading:** both GPU libraries are loaded from System32 only, with their dependencies, never from the folder FanForge runs from.
 - **Polling:** GPUs are read every second and drives every 5 s, each on its own thread. They never touch the Super I/O bus, and a slow or hung driver call can't delay the control loop. A missing driver is retried every 30 s.
-- **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual fallback to 100%. The critical sensor stays CPU Tctl unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
+- **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual missing-sensor fallback. The critical sensor stays CPU Tctl unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
 - `fanforge-diag temps` prints these temperatures without PawnIO or administrator rights.
 
 ## Confirm the root cause on your PC
@@ -112,13 +112,15 @@ fanforge-diag diff cold.json after-hwinfo.json
 - **Floors and fallbacks:**
   - FanForge can't tell for sure which header drives the CPU fan; header 1 is marked "usually the CPU fan" because that's the norm on ITE boards. Every header keeps a 30% floor with 0 RPM disabled until you tick **Case fan** in its settings. A case fan's floor drops to 20%, and it stops only if you also allow 0 RPM. The control loop enforces this whatever the config asks for.
   - 30% may be too low for a pump, so set a higher minimum duty for it.
-  - Until a curve's sensor has read healthy, the fan stays under BIOS control; if the sensor keeps failing, that fan goes to 100%.
-  - A critical Tctl (85 °C by default), or a critical sensor that stops reporting, drives every fan to 100%.
+  - Until a curve's sensor has read healthy, the fan stays under BIOS control.
+  - **Missing-sensor fallback** (on by default): if a curve's sensor keeps failing, that fan goes to 100%, and if the safety sensor stops reporting, every fan does. Turned off in Settings, a fan whose sensor fails goes back to BIOS control instead, and a lost safety sensor only raises a warning. Config errors (a missing curve or a follow loop) still go to 100%.
+  - **Critical temperature override** (on by default): a critical Tctl (85 °C by default) drives every fan to 100%. Turned off in Settings, reaching it still raises a red alert, but the fans aren't forced.
+  - While either is off, a warning that can't be dismissed says so. Floors, the 0 RPM gate, release to BIOS on exit and calibration's 75 °C stop stay on regardless.
 - **Unverified chips:** see [Supported chips](#supported-chips). FanForge stays monitor-only and never writes their fan registers.
 - **Calibration:** **Calibrate** in a fan's detail page finds the duty at which that fan stops and restarts, and records its speed at each step.
   - **How it runs:** it steps the duty down from 100% in 5% steps. Each step waits at least 3 s and until the RPM settles.
   - **Floors still apply:** it never goes below the header floor. It only probes below the floor, down to 0%, on a case fan that is allowed to stop.
-  - **When it stops early:** a temperature reaching 75 °C ends it, and so do a sensor or tach that stops reporting, the critical override, monitor-only mode, a config change, sleep, or quitting.
+  - **When it stops early:** a temperature reaching 75 °C ends it, and so do a sensor or tach that stops reporting, the critical override or missing-sensor fallback taking over (when they're on), monitor-only mode, a config change, sleep, or quitting.
   - **Afterwards:** the fan gets 3 s at 100%, then its normal control returns.
   - **What it changes:** results are saved in the config and can only raise the floor: floor = max(header floor, minimum duty, stop duty + 10). They can also raise the spin-up duty to the start duty + 10. A fan that does not restart even at 100% stays flagged with a warning.
 - **Conflicts:** when another fan controller is running (FanControl, SpeedFan, Fan Xpert, …), FanForge switches to monitor-only. It does not touch the chip at startup and only releases fans it drove itself.

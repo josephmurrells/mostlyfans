@@ -565,9 +565,15 @@ impl<B: Backend> Runtime<B> {
             ),
         };
         if self.last_outcome.critical_sensor_missing {
+            let safety = &self.engine.config().safety;
+            let consequence = if safety.sensor_fallback_enabled {
+                "fans go to 100% if it stays silent"
+            } else {
+                "the missing-sensor fallback is off"
+            };
             warnings.push(format!(
-                "critical sensor `{}` is not reporting; fans go to 100% if it stays silent",
-                self.engine.config().safety.critical_sensor
+                "critical sensor `{}` is not reporting; {consequence}",
+                safety.critical_sensor
             ));
         }
         if self.lock_skips >= LOCK_SKIPS_BEFORE_WARNING {
@@ -591,6 +597,7 @@ impl<B: Backend> Runtime<B> {
             limits: self.engine.limits().clone(),
             config: self.engine.config().clone(),
             critical: self.last_outcome.critical,
+            critical_reached: self.last_outcome.critical_reached,
             monitor_only: self.engine.is_monitor_only(),
             conflicts: findings.controlling,
             warnings,
@@ -1039,6 +1046,36 @@ pub(crate) mod tests {
         }
         assert!(!rig.runtime.last_outcome.critical_sensor_missing);
         assert!(!rig.runtime.last_outcome.critical);
+    }
+
+    #[test]
+    fn the_missing_safety_sensor_warning_follows_the_fallback_toggle() {
+        let extras = extras_with_gpu(Some(45.0));
+        let mut rig = rig("extras-warning", &[], Vec::new());
+        rig.runtime = rig.runtime.with_extra_sensors(extras.clone());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        let mut config = rig.runtime.engine.config().clone();
+        config.safety.critical_sensor = "gpu/test".into();
+        rig.runtime.replace_config(config.clone()).unwrap();
+        extras.with_cache(|cache| cache.record(0, &Err("lost".into()), Instant::now()));
+        let warning = |rig: &mut Rig| {
+            rig.runtime.tick();
+            rig.runtime.publish();
+            rig.runtime
+                .shared
+                .state()
+                .unwrap()
+                .warnings
+                .iter()
+                .find(|warning| warning.contains("gpu/test"))
+                .cloned()
+                .unwrap()
+        };
+        assert!(warning(&mut rig).ends_with("fans go to 100% if it stays silent"));
+        config.safety.sensor_fallback_enabled = false;
+        rig.runtime.replace_config(config).unwrap();
+        assert!(warning(&mut rig).ends_with("the missing-sensor fallback is off"));
     }
 
     #[test]

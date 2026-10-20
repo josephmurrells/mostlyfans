@@ -9,7 +9,7 @@ use crate::calibration::{
     RECOVER_TIME, Step,
 };
 use crate::config::{Config, FanMode};
-use crate::curve::{CurveEvaluator, HysteresisState, Tuning, find_curve};
+use crate::curve::{CurveError, CurveEvaluator, HysteresisState, Tuning, find_curve};
 use crate::safety::CriticalGuard;
 use crate::telemetry::{FanReading, HardwareMode, Readings};
 use crate::{Duty, FanId};
@@ -39,6 +39,7 @@ pub enum FanState {
     Clamped,
     Holding(String),
     SensorFallback(String),
+    SensorReleased(String),
     Critical,
     Identifying,
     Calibrating,
@@ -59,6 +60,7 @@ pub struct TickOutcome {
     pub commands: Vec<Command>,
     pub fans: Vec<FanStatus>,
     pub critical: bool,
+    pub critical_reached: bool,
     pub critical_sensor_missing: bool,
 }
 
@@ -87,6 +89,7 @@ enum Target {
     Immediate(f32),
     Smoothed { duty: f32, tuning: Tuning },
     Follow(FanId),
+    SensorLost(String),
     Failed(String),
 }
 
@@ -163,8 +166,8 @@ impl Engine {
         if self.monitor_only {
             return Err("FanForge is in monitor-only mode".to_owned());
         }
-        if self.critical.is_active() {
-            return Err("the critical temperature override is active".to_owned());
+        if let Some(cause) = self.critical.active_cause(&self.config.safety) {
+            return Err(format!("{} is active", cause.describe()));
         }
         if let Some(running) = self
             .calibration
@@ -239,7 +242,7 @@ impl Engine {
         self.calibration_report = Some(CalibrationReport { fan, outcome });
     }
 
-    fn begin_calibration(&mut self, readings: &Readings, critical: bool) {
+    fn begin_calibration(&mut self, readings: &Readings) {
         let Some(fan) = self.calibration_request.take() else {
             return;
         };
@@ -248,8 +251,8 @@ impl Engine {
         let failing = runtime.is_some_and(|runtime| runtime.failures > 0);
         let started = if self.monitor_only {
             Err("FanForge is in monitor-only mode".to_owned())
-        } else if critical {
-            Err("the critical temperature override is active".to_owned())
+        } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
+            Err(format!("{} is active", cause.describe()))
         } else if let Some(reason) = fault {
             Err(format!("the fan is faulted: {reason}"))
         } else if failing {
@@ -281,18 +284,17 @@ impl Engine {
         &mut self,
         readings: &Readings,
         elapsed: Duration,
-        critical: bool,
         identifying: Option<&FanId>,
     ) {
-        self.begin_calibration(readings, critical);
+        self.begin_calibration(readings);
         let Some(mut calibration) = self.calibration.take() else {
             return;
         };
         let fan = calibration.fan().clone();
         let abort = if self.monitor_only {
             Some("monitor-only mode turned on".to_owned())
-        } else if critical {
-            Some("the critical temperature override fired".to_owned())
+        } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
+            Some(format!("{} fired", cause.describe()))
         } else if identifying == Some(&fan) {
             Some("Identify was requested for this fan".to_owned())
         } else if std::mem::take(&mut self.calibration_clamped) {
@@ -336,7 +338,7 @@ impl Engine {
             .critical
             .update(critical_temp, &self.config.safety, elapsed);
         let identifying = self.advance_identify(elapsed);
-        self.advance_calibration(readings, elapsed, critical, identifying.as_ref());
+        self.advance_calibration(readings, elapsed, identifying.as_ref());
 
         let mut pending: Vec<(FanId, Target)> = {
             let mut evaluator =
@@ -389,6 +391,7 @@ impl Engine {
 
         let mut outcome = TickOutcome {
             critical,
+            critical_reached: self.critical.is_hot(),
             critical_sensor_missing: self.critical.is_sensor_missing(),
             ..TickOutcome::default()
         };
@@ -450,6 +453,7 @@ impl Engine {
             .filter(|calibration| calibration.fan() == fan)
             .map(|calibration| calibration.duty().percent());
         let failure_limit = self.config.safety.sensor_failure_ticks;
+        let sensor_fallback = self.config.safety.sensor_fallback_enabled;
         let runtime = self.fans.entry(fan.clone()).or_default();
 
         let recovering = !runtime.recover_left.is_zero();
@@ -488,6 +492,18 @@ impl Engine {
                     let next = if duty <= 0.0 && next < 0.5 { 0.0 } else { next };
                     runtime.smoothed = Some(next);
                     (FanState::Controlled, Some(next))
+                }
+                Target::SensorLost(reason) => {
+                    runtime.failures += 1;
+                    if runtime.failures < failure_limit {
+                        (FanState::Holding(reason), runtime.smoothed)
+                    } else if sensor_fallback {
+                        runtime.smoothed = Some(100.0);
+                        (FanState::SensorFallback(reason), Some(100.0))
+                    } else {
+                        runtime.smoothed = None;
+                        (FanState::SensorReleased(reason), None)
+                    }
                 }
                 Target::Failed(reason) => {
                     runtime.failures += 1;
@@ -641,6 +657,7 @@ fn resolve(config: &Config, fan: &FanId, evaluator: &mut CurveEvaluator<'_>) -> 
                     .map(|c| c.tuning.clone())
                     .unwrap_or_default(),
             },
+            Err(error @ CurveError::SensorUnavailable(_)) => Target::SensorLost(error.to_string()),
             Err(error) => Target::Failed(error.to_string()),
         },
         FanMode::Sync { fan: leader } if &leader != fan => Target::Follow(leader),
@@ -957,6 +974,154 @@ mod tests {
         assert_eq!(fallback.output, Some(Duty::FULL));
         rig.set_temp(Some(50.0));
         assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Controlled);
+    }
+
+    fn safety_off(mut config: Config, critical: bool, fallback: bool) -> Config {
+        config.safety.critical_enabled = critical;
+        config.safety.sensor_fallback_enabled = fallback;
+        config
+    }
+
+    fn curve_fan() -> Config {
+        config_with(&[(
+            "pwm1",
+            FanMode::Curve {
+                curve: "cpu".into(),
+            },
+        )])
+    }
+
+    #[test]
+    fn with_the_fallback_off_a_lost_sensor_holds_then_releases_to_the_bios() {
+        let mut rig = Rig::new(safety_off(curve_fan(), true, false), open_limits());
+        rig.tick();
+        rig.set_curve_temp(None);
+        for _ in 0..2 {
+            assert!(matches!(
+                Rig::status(&rig.tick(), "pwm1").state,
+                FanState::Holding(_)
+            ));
+        }
+        let outcome = rig.tick();
+        let released = Rig::status(&outcome, "pwm1");
+        assert!(matches!(released.state, FanState::SensorReleased(_)));
+        assert_eq!(released.output, None);
+        assert!(outcome.commands.contains(&Command {
+            fan: "pwm1".into(),
+            action: Action::Release,
+        }));
+        rig.set_curve_temp(Some(50.0));
+        assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Controlled);
+    }
+
+    #[test]
+    fn a_config_apply_never_brings_back_a_released_fans_old_duty() {
+        let config = safety_off(curve_fan(), true, false);
+        let mut rig = Rig::new(config.clone(), open_limits());
+        rig.tick();
+        rig.set_curve_temp(None);
+        for _ in 0..3 {
+            rig.tick();
+        }
+        rig.engine.set_config(config);
+        for _ in 0..5 {
+            let outcome = rig.tick();
+            assert_eq!(Rig::status(&outcome, "pwm1").output, None);
+            assert!(
+                outcome
+                    .commands
+                    .iter()
+                    .all(|command| command.action == Action::Release)
+            );
+        }
+    }
+
+    #[test]
+    fn with_the_fallback_off_config_errors_still_go_to_full_speed() {
+        let mut rig = Rig::new(
+            safety_off(
+                config_with(&[("pwm2", FanMode::Sync { fan: "pwm9".into() })]),
+                true,
+                false,
+            ),
+            open_limits(),
+        );
+        rig.tick();
+        rig.tick();
+        let status = Rig::status(&rig.tick(), "pwm2");
+        assert!(matches!(status.state, FanState::SensorFallback(_)));
+        assert_eq!(status.output, Some(Duty::FULL));
+    }
+
+    #[test]
+    fn a_follower_of_a_released_leader_is_released_too() {
+        let mut config = safety_off(curve_fan(), true, false);
+        config
+            .profiles
+            .get_mut(&config.active_profile)
+            .unwrap()
+            .fans
+            .insert("pwm2".into(), FanMode::Sync { fan: "pwm1".into() });
+        let mut rig = Rig::new(config, open_limits());
+        rig.tick();
+        rig.set_curve_temp(None);
+        for _ in 0..2 {
+            rig.tick();
+        }
+        let outcome = rig.tick();
+        assert!(matches!(
+            Rig::status(&outcome, "pwm1").state,
+            FanState::SensorReleased(_)
+        ));
+        let follower = Rig::status(&outcome, "pwm2");
+        assert_eq!(follower.state, FanState::Released);
+        assert_eq!(follower.output, None);
+    }
+
+    #[test]
+    fn with_the_override_off_heat_is_reported_but_fans_are_not_forced() {
+        let mut rig = Rig::new(
+            safety_off(
+                config_with(&[(
+                    "pwm1",
+                    FanMode::Manual {
+                        duty: Duty::new(30.0),
+                    },
+                )]),
+                false,
+                true,
+            ),
+            open_limits(),
+        );
+        rig.set_temp(Some(95.0));
+        let outcome = rig.tick();
+        assert!(!outcome.critical);
+        assert!(outcome.critical_reached);
+        assert_eq!(Rig::status(&outcome, "pwm1").output, Some(Duty::new(30.0)));
+    }
+
+    #[test]
+    fn with_the_fallback_off_a_missing_safety_sensor_forces_nothing() {
+        let mut rig = Rig::new(
+            safety_off(
+                config_with(&[(
+                    "pwm1",
+                    FanMode::Manual {
+                        duty: Duty::new(40.0),
+                    },
+                )]),
+                true,
+                false,
+            ),
+            open_limits(),
+        );
+        rig.readings.sensors[0].celsius = None;
+        for _ in 0..5 {
+            let outcome = rig.tick();
+            assert!(!outcome.critical);
+            assert!(outcome.critical_sensor_missing);
+            assert_eq!(Rig::status(&outcome, "pwm1").output, Some(Duty::new(40.0)));
+        }
     }
 
     #[test]
@@ -1386,6 +1551,34 @@ mod tests {
         rig.set_temp(Some(90.0));
         rig.tick();
         assert!(rig.engine.request_calibration("pwm1".into()).is_err());
+    }
+
+    #[test]
+    fn a_missing_safety_sensor_names_the_fallback_when_refusing_calibration() {
+        let mut rig = calibration_rig(&[], false, false);
+        let mut config = rig.engine.config().clone();
+        config.safety.critical_enabled = false;
+        rig.engine.set_config(config);
+        rig.readings.sensors[0].celsius = None;
+        for _ in 0..3 {
+            rig.tick();
+        }
+        let error = rig.engine.request_calibration("pwm1".into()).unwrap_err();
+        assert_eq!(error, "the missing-sensor fallback is active");
+    }
+
+    #[test]
+    fn calibration_still_aborts_at_75_degrees_with_the_override_off() {
+        let mut rig = calibration_rig(&[("pwm1", manual(40.0))], false, false);
+        let mut config = rig.engine.config().clone();
+        config.safety.critical_enabled = false;
+        rig.engine.set_config(config);
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        rig.spin(0.0, true);
+        rig.spin(0.0, true);
+        rig.set_temp(Some(95.0));
+        rig.spin_until(0.0, |engine, _| !engine.is_calibrating());
+        aborted(rig.report(), "reached");
     }
 
     #[test]

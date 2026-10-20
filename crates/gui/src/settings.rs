@@ -162,10 +162,16 @@ pub fn safety_sentence(state: &ControlState, config: &Config) -> String {
             || safety.critical_sensor.to_string(),
             |sensor| sensor.label.clone(),
         );
-    format!(
-        "All fans go to 100% when {sensor} reaches {:.0} °C, and return to normal after {:.0} s below {:.0} °C.",
-        safety.critical_c, safety.release_hold_secs, safety.release_c
-    )
+    if safety.critical_enabled {
+        format!(
+            "All fans go to 100% when {sensor} reaches {:.0} °C, and return to normal after {:.0} s below {:.0} °C.",
+            safety.critical_c, safety.release_hold_secs, safety.release_c
+        )
+    } else {
+        format!(
+            "The critical temperature override is off: fans are not forced to 100% when {sensor} gets hot."
+        )
+    }
 }
 
 pub fn failure_time(config: &Config) -> f32 {
@@ -452,12 +458,24 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                 .labelled_by(label.id);
             ui.end_row();
 
+            ui.label("");
+            changed |= ui
+                .checkbox(
+                    &mut safety.critical_enabled,
+                    "Critical temperature override: all fans to 100% when it gets too hot",
+                )
+                .changed();
+            ui.end_row();
+
+            let critical = safety.critical_enabled;
             let label = ui.label("Full speed at");
             changed |= ui
-                .add(
+                .add_enabled(
+                    critical,
                     Slider::new(&mut safety.critical_c, 40.0..=110.0)
                         .suffix(" °C")
-                        .fixed_decimals(1).clamping(SliderClamping::Edits),
+                        .fixed_decimals(1)
+                        .clamping(SliderClamping::Edits),
                 )
                 .labelled_by(label.id)
                 .changed();
@@ -466,10 +484,12 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
             let label = ui.label("Back to normal below");
             let max_release = safety.critical_c - 1.0;
             changed |= ui
-                .add(
+                .add_enabled(
+                    critical,
                     Slider::new(&mut safety.release_c, 0.0..=max_release)
                         .suffix(" °C")
-                        .fixed_decimals(1).clamping(SliderClamping::Edits),
+                        .fixed_decimals(1)
+                        .clamping(SliderClamping::Edits),
                 )
                 .labelled_by(label.id)
                 .changed();
@@ -477,7 +497,8 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
 
             let label = ui.label("for at least");
             changed |= ui
-                .add(
+                .add_enabled(
+                    critical,
                     DragValue::new(&mut safety.release_hold_secs)
                         .range(0.0..=600.0)
                         .speed(0.5)
@@ -487,6 +508,20 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                 .changed();
             ui.end_row();
 
+            ui.label("");
+            changed |= ui
+                .checkbox(
+                    &mut safety.sensor_fallback_enabled,
+                    "Missing-sensor fallback: fans go to 100% when their sensor stops reporting",
+                )
+                .changed();
+            ui.end_row();
+
+            let consequence = if safety.sensor_fallback_enabled {
+                "then the fan goes to 100% (every fan, for the safety sensor)"
+            } else {
+                "then the fan goes back to BIOS control"
+            };
             let label = ui.label("Missing sensor readings");
             ui.horizontal(|ui| {
                 changed |= ui
@@ -495,9 +530,7 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                     .changed();
                 ui.label(widgets::caption(
                     ui,
-                    format!(
-                        "readings ≈ {failure:.1} s at the current interval, then every fan goes to 100%"
-                    ),
+                    format!("readings ≈ {failure:.1} s at the current interval, {consequence}"),
                 ));
             });
             ui.end_row();

@@ -30,9 +30,11 @@ fn tint(overall: &Overall) -> [u8; 3] {
     match overall {
         Overall::Controlling(_) => glyph::BLUE,
         Overall::FanFault(_) => glyph::AMBER,
-        Overall::Stopped | Overall::Critical | Overall::DriverMissing | Overall::Unavailable => {
-            glyph::RED
-        }
+        Overall::Stopped
+        | Overall::Critical
+        | Overall::CriticalUnforced
+        | Overall::DriverMissing
+        | Overall::Unavailable => glyph::RED,
         Overall::Starting | Overall::Suspended | Overall::MonitorOnly | Overall::BiosOnly => {
             glyph::GREY
         }

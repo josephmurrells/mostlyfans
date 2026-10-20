@@ -117,6 +117,7 @@ pub fn state() -> ControlState {
         limits: fan_limits(3),
         config: config(),
         critical: false,
+        critical_reached: false,
         monitor_only: false,
         conflicts: Vec::new(),
         warnings: Vec::new(),

@@ -15,6 +15,9 @@ pub fn fan_state(state: &FanState) -> (String, Tone) {
         FanState::Clamped => ("At minimum floor".to_owned(), Tone::Warn),
         FanState::Holding(reason) => (format!("Holding: {reason}"), Tone::Warn),
         FanState::SensorFallback(reason) => (format!("100% fallback: {reason}"), Tone::Danger),
+        FanState::SensorReleased(reason) => {
+            (format!("BIOS control (sensor lost): {reason}"), Tone::Warn)
+        }
         FanState::Critical => ("Critical override".to_owned(), Tone::Danger),
         FanState::Identifying => ("Identifying".to_owned(), Tone::Accent),
         FanState::Calibrating => ("Calibrating".to_owned(), Tone::Accent),
