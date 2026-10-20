@@ -1122,12 +1122,14 @@ mod tests {
     #[test]
     fn the_it8689e_without_a_snapshot_only_runs_its_own_manual_headers_at_full_speed() {
         let mut chip = probe(FakeIte::chip(0x8689), "8689-unsaved");
-        for channel in 0..6 {
+        for (channel, parity) in (0..6).flat_map(|channel| [(channel, 0), (channel, 1)]) {
             let control = PWM_CONTROL_8689[channel];
-            if channel % 2 == 0 {
+            let ours = channel % 2 == parity;
+            if ours {
                 chip.set_duty(channel, 0x66).unwrap();
             } else {
                 chip.io.banks[0][usize::from(control)] = 0x05;
+                chip.io.banks[0][usize::from(PWM_DUTY_REGS[channel])] = 0x40;
             }
             chip.io.bank_register = 0x40;
             let writes = data_writes(&chip.io).len();
@@ -1137,7 +1139,7 @@ mod tests {
                 .iter()
                 .filter(|&&(index, _)| index != BANK_REG)
                 .count();
-            if channel % 2 == 0 {
+            if ours {
                 assert_eq!(fan_writes, 1);
                 assert_eq!(chip.io.reg(control), 0x7F);
                 assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), FULL_SPEED);

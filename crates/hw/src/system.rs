@@ -274,8 +274,10 @@ impl<P: PortIo> Hardware<P> {
                 }
                 if !self.snapshot.is_owned(channel) {
                     let current = self.chip.channel_states()?[channel];
-                    if !self.chip.chip().forces_auto_without_snapshot()
+                    let chip = self.chip.chip();
+                    if !chip.forces_auto_without_snapshot()
                         && !current.is_auto()
+                        && chip.manual_control() != Some(current.control)
                         && self.snapshot.channel(channel).is_none()
                     {
                         return Err(HwError::UnknownBiosMode(channel));
@@ -557,6 +559,26 @@ mod tests {
             assert_eq!((chip.reg(0xAF), chip.reg(0xAB)), (0x05, 0x40));
         });
         assert!(!restarted.owns_any());
+    }
+
+    #[test]
+    fn an_it8689e_header_left_at_its_manual_value_can_still_be_driven() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0x16] = 0x7F;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8689-leftover", &fake, &path);
+        hardware.initialize_channels(true).unwrap();
+        assert_eq!(fake.with(|chip| chip.reg(0x6B)), 0xFF);
+        hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
+        assert!(hardware.owns_any());
+        assert_eq!(fake.with(|chip| chip.reg(0x6B)), Duty::new(60.0).to_raw());
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        assert_eq!(
+            fake.with(|chip| (chip.reg(0x16), chip.reg(0x6B))),
+            (0x7F, 0xFF)
+        );
     }
 
     #[test]
