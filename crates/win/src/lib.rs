@@ -16,6 +16,7 @@ mod shell;
 pub mod storage;
 mod sync;
 mod token;
+pub mod topology;
 
 pub use dialog::{DialogKind, message_box};
 pub use directory::{PRIVATE_DATA_SDDL, secure_directory};
