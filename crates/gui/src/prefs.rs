@@ -1,3 +1,4 @@
+use fanforge_core::{FanId, SensorId};
 use serde::{Deserialize, Serialize};
 
 const KEY: &str = "fanforge-ui";
@@ -6,6 +7,7 @@ const KEY: &str = "fanforge-ui";
 pub enum Page {
     #[default]
     Overview,
+    Temperatures,
     Fans,
     Curves,
     Settings,
@@ -16,6 +18,8 @@ pub enum Page {
 pub struct Prefs {
     pub page: Page,
     pub setup_skipped: bool,
+    pub pinned_sensors: Option<Vec<SensorId>>,
+    pub pinned_fans: Option<Vec<FanId>>,
 }
 
 impl Prefs {
