@@ -17,6 +17,8 @@ const ADAPTER_INFO_LEN: usize = 1572;
 const PMLOG_SENSORS: usize = 256;
 const PMLOG_LEN: usize = 4 + PMLOG_SENSORS * 8;
 const PMLOG_TEMPERATURE_EDGE: usize = 8;
+const PMLOG_TEMPERATURE_MEMORY: usize = 9;
+const PMLOG_TEMPERATURE_HOTSPOT: usize = 27;
 const ODN_TEMPERATURE_EDGE: i32 = 1;
 const MAX_ADAPTERS: i32 = 256;
 const ASIC_INTEGRATED: i32 = 1 << 1;
@@ -108,11 +110,30 @@ pub fn parse_adapter_info(buffer: &[u8]) -> Option<AdapterInfo> {
     })
 }
 
-pub fn edge_temperature(pmlog: &[u8]) -> Option<f32> {
-    let offset = 4 + PMLOG_TEMPERATURE_EDGE * 8;
+pub fn pmlog_temperature(pmlog: &[u8], sensor: usize) -> Option<f32> {
+    let offset = 4 + sensor * 8;
     let supported = i32_at(pmlog, offset)?;
     let value = i32_at(pmlog, offset + 4)?;
     (supported != 0 && value > 0).then_some(value as f32)
+}
+
+pub fn edge_temperature(pmlog: &[u8]) -> Option<f32> {
+    pmlog_temperature(pmlog, PMLOG_TEMPERATURE_EDGE)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpuTemps {
+    pub edge: Option<f32>,
+    pub hotspot: Option<f32>,
+    pub memory: Option<f32>,
+}
+
+pub fn gpu_temps(pmlog: &[u8]) -> GpuTemps {
+    GpuTemps {
+        edge: edge_temperature(pmlog),
+        hotspot: pmlog_temperature(pmlog, PMLOG_TEMPERATURE_HOTSPOT),
+        memory: pmlog_temperature(pmlog, PMLOG_TEMPERATURE_MEMORY),
+    }
 }
 
 pub fn is_integrated(asic_types: i32, valid: i32) -> bool {
@@ -126,6 +147,10 @@ pub fn physical_gpus(adapters: Vec<AdapterInfo>) -> Vec<AdapterInfo> {
         .filter(|adapter| adapter.vendor == AMD_VENDOR_ID && adapter.present)
         .filter(|adapter| seen.insert((adapter.bus, adapter.device, adapter.function)))
         .collect()
+}
+
+pub fn extra_sensor_id(gpu: &SensorId, kind: &str) -> SensorId {
+    SensorId::new(format!("{gpu}/{kind}"))
 }
 
 pub fn sensor_id(adapter: &AdapterInfo) -> SensorId {
@@ -222,16 +247,22 @@ fn open() -> Result<Adl, String> {
 }
 
 impl Adl {
-    fn temperature(&self, adapter: i32) -> Option<f32> {
+    fn temperatures(&self, adapter: i32) -> GpuTemps {
+        let mut temps = GpuTemps::default();
         if let Some(pmlog) = self.functions.pmlog {
             let mut buffer = vec![0u8; PMLOG_LEN];
             let status = unsafe { pmlog(self.context, adapter, buffer.as_mut_ptr()) };
-            if status == ADL_OK
-                && let Some(celsius) = edge_temperature(&buffer)
-            {
-                return Some(celsius);
+            if status == ADL_OK {
+                temps = gpu_temps(&buffer);
             }
         }
+        if temps.edge.is_none() {
+            temps.edge = self.overdrive_edge(adapter);
+        }
+        temps
+    }
+
+    fn overdrive_edge(&self, adapter: i32) -> Option<f32> {
         let overdrive = self.functions.overdrive?;
         let mut millidegrees = 0;
         let status = unsafe {
@@ -249,12 +280,32 @@ impl Adl {
         let readings: Vec<SensorReading> = self
             .gpus
             .iter()
-            .filter_map(|gpu| {
-                self.temperature(gpu.adapter).map(|celsius| SensorReading {
-                    id: gpu.id.clone(),
-                    label: gpu.label.clone(),
-                    celsius: Some(celsius),
-                })
+            .flat_map(|gpu| {
+                let temps = self.temperatures(gpu.adapter);
+                temps
+                    .edge
+                    .map(|celsius| (gpu.id.clone(), gpu.label.clone(), celsius))
+                    .into_iter()
+                    .chain(temps.hotspot.map(|celsius| {
+                        (
+                            extra_sensor_id(&gpu.id, "hotspot"),
+                            format!("{} hotspot", gpu.label),
+                            celsius,
+                        )
+                    }))
+                    .chain(temps.memory.map(|celsius| {
+                        (
+                            extra_sensor_id(&gpu.id, "memory"),
+                            format!("{} memory", gpu.label),
+                            celsius,
+                        )
+                    }))
+                    .map(|(id, label, celsius)| SensorReading {
+                        id,
+                        label,
+                        celsius: Some(celsius),
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
         if readings.is_empty() && !self.gpus.is_empty() {
@@ -361,6 +412,36 @@ mod tests {
         buffer[offset..offset + 4].copy_from_slice(&1i32.to_le_bytes());
         assert_eq!(edge_temperature(&buffer), Some(61.0));
         assert_eq!(edge_temperature(&buffer[..offset]), None);
+    }
+
+    #[test]
+    fn hotspot_and_memory_come_from_the_same_pmlog() {
+        let mut buffer = vec![0u8; PMLOG_LEN];
+        for (sensor, celsius) in [
+            (PMLOG_TEMPERATURE_EDGE, 61i32),
+            (PMLOG_TEMPERATURE_HOTSPOT, 78),
+            (PMLOG_TEMPERATURE_MEMORY, 70),
+        ] {
+            let offset = 4 + sensor * 8;
+            buffer[offset..offset + 4].copy_from_slice(&1i32.to_le_bytes());
+            buffer[offset + 4..offset + 8].copy_from_slice(&celsius.to_le_bytes());
+        }
+        assert_eq!(
+            gpu_temps(&buffer),
+            GpuTemps {
+                edge: Some(61.0),
+                hotspot: Some(78.0),
+                memory: Some(70.0),
+            }
+        );
+        let offset = 4 + PMLOG_TEMPERATURE_MEMORY * 8;
+        buffer[offset..offset + 4].copy_from_slice(&0i32.to_le_bytes());
+        assert_eq!(gpu_temps(&buffer).memory, None);
+        let gpu = SensorId::new("gpu/amd/pci-3-0-0");
+        assert_eq!(
+            extra_sensor_id(&gpu, "hotspot").as_str(),
+            "gpu/amd/pci-3-0-0/hotspot"
+        );
     }
 
     #[test]
