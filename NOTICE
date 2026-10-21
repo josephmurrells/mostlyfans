@@ -1,3 +1,7 @@
+FanForge
+Copyright (C) 2026 Joseph Murrells
+Licensed under the GNU General Public License v3.0 or later (see LICENSE).
+
 FanForge includes or is derived from the following third-party work.
 
 PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
@@ -20,7 +24,10 @@ LibreHardwareMonitor
   temperature source and bank-select registers) and decoding rules in
   crates/hw/src/chips.rs, crates/hw/src/ite.rs and crates/hw/src/nuvoton.rs
   were ported from LibreHardwareMonitorLib/Hardware/Motherboard/Lpc/IT87XX.cs,
-  Nct677X.cs, LpcIO.cs and LpcPort.cs. No files were copied.
+  Nct677X.cs, LpcIO.cs and LpcPort.cs. No files were copied. Those three
+  Rust files are covered by the MPL-2.0 (text in LICENSE-MPL-2.0, header in
+  each file); FanForge as a whole is distributed under the GPL-3.0-or-later,
+  which the MPL-2.0 allows as a Secondary License.
 
 Linux k10temp driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/k10temp.c

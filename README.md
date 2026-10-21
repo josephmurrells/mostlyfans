@@ -166,4 +166,6 @@ fanforge-diag diff cold.json after-hwinfo.json
 
 ## License
 
-FanForge is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE). Third-party components keep their own licenses, listed in [NOTICE](NOTICE).
+Copyright (C) 2026 Joseph Murrells.
+
+FanForge is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE). `crates/hw/src/chips.rs`, `ite.rs` and `nuvoton.rs` are derived from LibreHardwareMonitor and are also covered by the [Mozilla Public License 2.0](LICENSE-MPL-2.0). Third-party components keep their own licenses, listed in [NOTICE](NOTICE).
