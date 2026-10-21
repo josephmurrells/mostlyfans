@@ -140,11 +140,11 @@ impl AmdCpu {
             let _guard = cpu.lock.acquire(DEFAULT_TIMEOUT)?;
             (0..ccd_count)
                 .map(|index| cpu.read_smn(ccd_base + index * 4))
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Vec<_>>()
         };
         cpu.ccds = (0..ccd_count)
             .zip(raw)
-            .filter(|(_, raw)| decode_ccd(*raw).is_some())
+            .filter(|(_, raw)| raw.as_ref().is_ok_and(|raw| decode_ccd(*raw).is_some()))
             .map(|(index, _)| index)
             .collect();
         Ok(cpu)
