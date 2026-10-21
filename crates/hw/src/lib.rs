@@ -3,7 +3,10 @@
 pub mod amd;
 pub mod board;
 pub mod chips;
+pub mod cpu;
+pub mod ec;
 mod error;
+pub mod intel;
 pub mod ite;
 pub mod mutex;
 pub mod nuvoton;

@@ -11,12 +11,12 @@ use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading
 use fanforge_core::{Duty, FanId, SensorId};
 
 use crate::HwError;
-use crate::amd::AmdCpu;
 use crate::board::detect_identity;
+use crate::cpu::{CPU_SENSOR, Cpu};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
 use crate::snapshot::BiosSnapshot;
-use crate::superio::{ControlKind, SuperIo, detect};
+use crate::superio::{SuperIo, detect};
 
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 
@@ -50,7 +50,7 @@ pub fn force_all_auto<P: PortIo>(
         owner: snapshot.chip_id,
         found: chip_id,
     };
-    let foreign = match (snapshot.belongs_to(chip_id), chip.fan_control()) {
+    let foreign = match (snapshot.belongs_to(chip_id), chip.can_release()) {
         (true, _) => None,
         (false, true) => Some(error),
         (false, false) => {
@@ -58,7 +58,10 @@ pub fn force_all_auto<P: PortIo>(
             return Err(error);
         }
     };
-    let empty = BiosSnapshot::for_chip(chip_id);
+    let empty = BiosSnapshot {
+        lost: snapshot.lost && snapshot.owned.is_empty(),
+        ..BiosSnapshot::for_chip(chip_id)
+    };
     let snapshot = if snapshot.chip_id == chip_id {
         snapshot
     } else {
@@ -66,8 +69,14 @@ pub fn force_all_auto<P: PortIo>(
     };
     let deadline = Instant::now() + budget;
     let mut first_error = None;
-    for channel in 0..chip.fan_count() {
+    let widen = chip.fan_control() && (snapshot.lost || chip.chip().forces_auto_without_snapshot());
+    for channel in (0..chip.fan_count()).filter(|&channel| widen || snapshot.is_owned(channel)) {
         let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            tracing::error!(channel, "no time left to return channel to BIOS control");
+            first_error.get_or_insert(HwError::ReleaseOutOfTime(channel));
+            continue;
+        }
         if let Err(error) = chip.restore_patiently(channel, snapshot.channel(channel), remaining) {
             tracing::error!(channel, %error, "failed to return channel to BIOS control");
             first_error.get_or_insert(error);
@@ -82,7 +91,7 @@ pub fn force_all_auto<P: PortIo>(
 #[derive(Debug)]
 pub struct Hardware<P: PortIo = LpcIo> {
     chip: SuperIo<P>,
-    cpu: Result<AmdCpu, String>,
+    cpu: Result<Cpu, String>,
     identity: BoardIdentity,
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
@@ -93,7 +102,7 @@ impl Hardware<LpcIo> {
     pub fn open(snapshot_path: &Path) -> Result<Self, HwError> {
         let chip = open_chip()?;
         let identity = detect_identity();
-        let cpu = AmdCpu::open().map_err(|error| error.to_string());
+        let cpu = Cpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
             tracing::warn!(%error, "CPU temperature sensors are unavailable");
         }
@@ -104,14 +113,17 @@ impl Hardware<LpcIo> {
 impl<P: PortIo> Hardware<P> {
     pub fn from_parts(
         chip: SuperIo<P>,
-        cpu: Result<AmdCpu, String>,
+        cpu: Result<Cpu, String>,
         identity: BoardIdentity,
         snapshot_path: &Path,
     ) -> Result<Self, HwError> {
         let chip_id = chip.config().chip_id;
         let mut snapshot = BiosSnapshot::load_for(snapshot_path, chip_id).unwrap_or_else(|error| {
             tracing::error!(%error, "BIOS snapshot is unreadable; starting a new one");
-            BiosSnapshot::for_chip(chip_id)
+            BiosSnapshot {
+                lost: true,
+                ..BiosSnapshot::for_chip(chip_id)
+            }
         });
         let foreign_owner = (!snapshot.belongs_to(chip_id)).then_some(snapshot.chip_id);
         if snapshot.chip_id != chip_id {
@@ -165,7 +177,7 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn owns_any(&self) -> bool {
-        self.fan_control() && !self.snapshot.owned.is_empty()
+        self.chip.can_release() && !self.snapshot.owned.is_empty()
     }
 
     fn persist_snapshot(&self) -> Result<(), HwError> {
@@ -175,18 +187,22 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn initialize_channels(&mut self, take_control: bool) -> Result<(), HwError> {
-        if !self.fan_control() {
+        if !self.chip.can_release() {
             return Ok(());
         }
         let states = self.chip.channel_states()?;
         let mut changed = self.snapshot.refresh(&states);
         let result = if take_control {
-            let result = self.release_all_channels();
+            let result = self.release_channels(false);
             changed = true;
             result
         } else {
             Ok(())
         };
+        if result.is_ok() && self.snapshot.lost {
+            self.snapshot.lost = false;
+            changed = true;
+        }
         if changed && let Err(error) = self.persist_snapshot() {
             tracing::error!(%error, "failed to persist BIOS snapshot");
         }
@@ -242,40 +258,34 @@ impl<P: PortIo> Hardware<P> {
             Err(_) => Err(()),
         };
         let Ok(temps) = temps else {
-            return vec![sensor("cpu/tctl", "CPU Tctl", None)];
+            return vec![sensor(CPU_SENSOR, "CPU", None)];
         };
-        let mut sensors = vec![sensor("cpu/tctl", "CPU Tctl", Some(temps.tctl))];
-        if let Some(tdie) = temps.tdie {
-            sensors.push(sensor("cpu/tdie", "CPU Tdie", Some(tdie)));
-        }
-        sensors.extend(temps.ccds.into_iter().map(|(index, celsius)| {
-            sensor(
-                &format!("cpu/ccd{}", index + 1),
-                &format!("CPU CCD{}", index + 1),
-                Some(celsius),
-            )
-        }));
-        sensors
+        temps
+            .into_iter()
+            .map(|reading| sensor(&reading.id, &reading.label, Some(reading.celsius)))
+            .collect()
     }
 
     pub fn apply(&mut self, command: &Command, halted: &AtomicBool) -> Result<(), HwError> {
         let channel = channel_index(&command.fan, self.chip.fan_count())
             .ok_or_else(|| HwError::UnknownFan(command.fan.to_string()))?;
-        if !self.fan_control() {
-            return match command.action {
-                Action::SetDuty(_) => Err(HwError::Unverified(self.chip.chip().name)),
-                Action::Release => Ok(()),
-            };
-        }
         match command.action {
+            Action::SetDuty(_) if !self.fan_control() => {
+                Err(HwError::NoFanControl(self.chip.chip().name))
+            }
+            Action::Release if !self.chip.can_release() || !self.resettable(channel, false) => {
+                Ok(())
+            }
             Action::SetDuty(duty) => {
                 if halted.load(Ordering::SeqCst) {
                     return Err(HwError::Halted);
                 }
                 if !self.snapshot.is_owned(channel) {
                     let current = self.chip.channel_states()?[channel];
-                    if current.kind == ControlKind::Nuvoton
+                    let chip = self.chip.chip();
+                    if !chip.forces_auto_without_snapshot()
                         && !current.is_auto()
+                        && chip.manual_control() != Some(current.control)
                         && self.snapshot.channel(channel).is_none()
                     {
                         return Err(HwError::UnknownBiosMode(channel));
@@ -305,9 +315,12 @@ impl<P: PortIo> Hardware<P> {
         }
     }
 
-    fn release_all_channels(&mut self) -> Result<(), HwError> {
+    fn release_channels(&mut self, owned_only: bool) -> Result<(), HwError> {
         let mut first_error = None;
         for channel in 0..self.chip.fan_count() {
+            if !self.resettable(channel, owned_only) {
+                continue;
+            }
             match self.chip.restore_patiently(
                 channel,
                 self.snapshot.channel(channel),
@@ -325,17 +338,32 @@ impl<P: PortIo> Hardware<P> {
         first_error.map_or(Ok(()), Err)
     }
 
+    fn resettable(&self, channel: usize, owned_only: bool) -> bool {
+        self.snapshot.is_owned(channel)
+            || (!owned_only
+                && self.chip.fan_control()
+                && (self.snapshot.lost || self.chip.chip().forces_auto_without_snapshot()))
+    }
+
     pub fn release_all(&mut self) -> Result<(), HwError> {
-        if let Some(owner) = self.foreign_owner.filter(|_| !self.fan_control()) {
+        self.release(false)
+    }
+
+    pub fn release_owned(&mut self) -> Result<(), HwError> {
+        self.release(true)
+    }
+
+    fn release(&mut self, owned_only: bool) -> Result<(), HwError> {
+        if let Some(owner) = self.foreign_owner.filter(|_| !self.chip.can_release()) {
             return Err(HwError::ForeignSnapshot {
                 owner,
                 found: self.chip.config().chip_id,
             });
         }
-        if !self.fan_control() {
+        if !self.chip.can_release() {
             return Ok(());
         }
-        let result = self.release_all_channels();
+        let result = self.release_channels(owned_only);
         if let Err(error) = self.persist_snapshot() {
             tracing::warn!(%error, "failed to persist BIOS snapshot after release");
         }
@@ -369,6 +397,21 @@ mod tests {
 
     fn hardware(tag: &str, fake: &SharedFake, path: &Path) -> Hardware<SharedFake> {
         let chip = SuperIo::probe(fake.clone(), Slot::Primary, lock(tag)).unwrap();
+        hardware_for(chip, path)
+    }
+
+    fn monitor_only(
+        tag: &str,
+        fake: &SharedFake,
+        path: &Path,
+        spec: &'static crate::chips::ChipSpec,
+    ) -> Hardware<SharedFake> {
+        let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock(tag)).unwrap();
+        chip.config.chip = spec;
+        hardware_for(chip, path)
+    }
+
+    fn hardware_for(chip: SuperIo<SharedFake>, path: &Path) -> Hardware<SharedFake> {
         Hardware::from_parts(
             chip,
             Err("no CPU in tests".to_owned()),
@@ -514,11 +557,197 @@ mod tests {
     }
 
     #[test]
+    fn owned_fans_are_still_released_after_the_pwm_check_starts_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let fake = SharedFake::new(FakeIte::chip(0x8628));
+        let mut hardware = hardware("polarity-release", &fake, &path);
+        hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
+        fake.with(|chip| chip.banks[0][0x14] = 0x00);
+        hardware.reinitialize().unwrap();
+        assert!(!hardware.fan_control());
+        assert!(hardware.owns_any());
+        assert!(matches!(
+            hardware.apply(&set("pwm2", 70.0), &RUNNING),
+            Err(HwError::NoFanControl(_))
+        ));
+        hardware.release_all().unwrap();
+        assert_eq!(fake.with(|chip| chip.reg(0x16)) & 0x80, 0x80);
+        assert!(!hardware.owns_any());
+    }
+
+    #[test]
+    fn an_unreadable_snapshot_sends_a_nuvoton_header_left_in_manual_to_full_speed() {
+        use crate::nuvoton::fake::{FakeNct, SharedNct};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        std::fs::write(&path, "not toml [").unwrap();
+        let mut nct = FakeNct::new(0xC5, 0x62);
+        nct.set(0x102, 0x00);
+        nct.set(0x109, 0x30);
+        let fake = SharedNct::new(nct);
+        let chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("nct-lost")).unwrap();
+        let mut hardware = Hardware::from_parts(
+            chip,
+            Err("no CPU in tests".to_owned()),
+            BoardIdentity::default(),
+            &path,
+        )
+        .unwrap();
+        hardware.initialize_channels(true).unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0xFF);
+        fake.with(|chip| chip.set(0x109, 0x30));
+        hardware.release_all().unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0x30);
+
+        let mut chip =
+            SuperIo::probe(fake.clone(), Slot::Primary, lock("nct-lost-failsafe")).unwrap();
+        force_all_auto(&mut chip, &BiosSnapshot::lost(), RELEASE_BUDGET).unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0xFF);
+    }
+
+    #[test]
+    fn a_lost_snapshot_never_touches_another_tools_headers() {
+        use crate::nuvoton::fake::{FakeNct, SharedNct};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        std::fs::write(&path, "not toml [").unwrap();
+        let mut nct = FakeNct::new(0xC5, 0x62);
+        nct.set(0x102, 0x00);
+        nct.set(0x109, 0x30);
+        let fake = SharedNct::new(nct);
+        let chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("nct-lost-tool")).unwrap();
+        let mut hardware = Hardware::from_parts(
+            chip,
+            Err("no CPU in tests".to_owned()),
+            BoardIdentity::default(),
+            &path,
+        )
+        .unwrap();
+        hardware.initialize_channels(false).unwrap();
+        hardware.release_owned().unwrap();
+        hardware.release_all().unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0x30);
+    }
+
+    #[test]
+    fn a_chip_failing_the_pwm_check_from_the_start_is_never_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8628);
+        ite.banks[0][0x14] = 0x00;
+        ite.banks[0][0x16] = 0x00;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("polarity-start", &fake, &path);
+        assert!(!hardware.fan_control());
+        hardware.initialize_channels(true).unwrap();
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        hardware.release_all().unwrap();
+        let snapshot = hardware.snapshot.clone();
+        force_all_auto(&mut hardware.chip, &snapshot, RELEASE_BUDGET).unwrap();
+        fake.with(|chip| {
+            assert_eq!(chip.reg(0x16), 0x00);
+            assert!(
+                chip.writes
+                    .iter()
+                    .all(|&(port, _, index)| port != chip.base + 6 || index == 0x06)
+            );
+        });
+    }
+
+    #[test]
+    fn releasing_owned_fans_leaves_the_others_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let fake = SharedFake::new(FakeIte::new());
+        let mut hardware = hardware("owned-only", &fake, &path);
+        hardware.initialize_channels(false).unwrap();
+        hardware.apply(&set("pwm1", 60.0), &RUNNING).unwrap();
+        fake.with(|chip| {
+            chip.banks[0][0x16] = 0x01;
+            chip.banks[0][0x6B] = 0x99;
+        });
+        hardware.release_owned().unwrap();
+        fake.with(|chip| {
+            assert_eq!((chip.reg(0x15), chip.reg(0x63)), (0x80, 0x40));
+            assert_eq!((chip.reg(0x16), chip.reg(0x6B)), (0x01, 0x99));
+        });
+        assert!(!hardware.owns_any());
+    }
+
+    #[test]
+    fn the_it8655e_still_claims_a_manual_header_without_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::new();
+        ite.banks[0][0x16] = 0x01;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8655-manual", &fake, &path);
+        hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
+        assert!(hardware.owns_any());
+        assert_eq!(hardware.snapshot.channel(1), None);
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        assert_eq!(fake.with(|chip| chip.reg(0x16)), 0x81);
+    }
+
+    #[test]
+    fn the_it8689e_restores_all_six_headers_after_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0xAF] = 0x05;
+        let fake = SharedFake::new(ite);
+        {
+            let mut hardware = hardware("8689-a", &fake, &path);
+            assert!(hardware.fan_control());
+            hardware.initialize_channels(true).unwrap();
+            for fan in ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"] {
+                hardware.apply(&set(fan, 60.0), &RUNNING).unwrap();
+            }
+            assert!(matches!(
+                hardware.apply(&set("pwm6", 60.0), &RUNNING),
+                Err(HwError::UnknownBiosMode(5))
+            ));
+        }
+        fake.with(|chip| assert_eq!(chip.reg(0xA7), 0x7F));
+        let mut restarted = hardware("8689-b", &fake, &path);
+        restarted.initialize_channels(true).unwrap();
+        fake.with(|chip| {
+            for (channel, register) in [0x15, 0x16, 0x17, 0x7F, 0xA7].into_iter().enumerate() {
+                assert_eq!(chip.reg(register), 0x80 | channel as u8);
+            }
+            assert_eq!((chip.reg(0xAF), chip.reg(0xAB)), (0x05, 0x40));
+        });
+        assert!(!restarted.owns_any());
+    }
+
+    #[test]
+    fn an_it8689e_header_left_at_its_manual_value_can_still_be_driven() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0x16] = 0x7F;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8689-leftover", &fake, &path);
+        hardware.initialize_channels(true).unwrap();
+        assert_eq!(fake.with(|chip| chip.reg(0x6B)), 0x40);
+        hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
+        assert!(hardware.owns_any());
+        assert_eq!(fake.with(|chip| chip.reg(0x6B)), Duty::new(60.0).to_raw());
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        assert_eq!(
+            fake.with(|chip| (chip.reg(0x16), chip.reg(0x6B))),
+            (0x7F, 0xFF)
+        );
+    }
+
+    #[test]
     fn unverified_chips_are_monitored_without_touching_fans_or_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
         let fake = SharedFake::new(FakeIte::chip(0x8686));
-        let mut hardware = hardware("unverified", &fake, &path);
+        let mut hardware =
+            monitor_only("unverified", &fake, &path, &crate::chips::MONITOR_ONLY_8686);
         let info = hardware.board_info();
         assert_eq!(info.chip_name, "ITE IT8686E");
         assert!(!info.fan_control);
@@ -530,7 +759,7 @@ mod tests {
         assert_eq!(readings.fans.len(), 5);
         assert!(matches!(
             hardware.apply(&set("pwm1", 60.0), &RUNNING),
-            Err(HwError::Unverified(_))
+            Err(HwError::NoFanControl(_))
         ));
         hardware.apply(&release("pwm1"), &RUNNING).unwrap();
         hardware.release_all().unwrap();
@@ -552,7 +781,7 @@ mod tests {
         old.save(&path).unwrap();
         let before = std::fs::read(&path).unwrap();
         let fake = SharedFake::new(FakeIte::chip(0x8628));
-        let mut hardware = hardware("leftover", &fake, &path);
+        let mut hardware = monitor_only("leftover", &fake, &path, &crate::chips::MONITOR_ONLY_8628);
         assert!(!hardware.owns_any());
         hardware.initialize_channels(true).unwrap();
         let error = hardware.release_all().unwrap_err();
@@ -566,6 +795,7 @@ mod tests {
         assert!(error.to_string().contains("delete"));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("leftover-chip")).unwrap();
+        chip.config.chip = &crate::chips::MONITOR_ONLY_8628;
         let old = BiosSnapshot::load(&path).unwrap();
         assert!(matches!(
             force_all_auto(&mut chip, &old, RELEASE_BUDGET),
@@ -614,7 +844,7 @@ mod tests {
 
     static VERIFIED_NCT: crate::chips::ChipSpec = crate::chips::ChipSpec {
         name: "test NCT6779D",
-        verified: true,
+        fan_control: true,
         ident: crate::chips::Ident::Nuvoton {
             id: 0xC5,
             revision: 0x60,
@@ -653,6 +883,12 @@ mod tests {
             Err(HwError::UnknownBiosMode(0))
         ));
         assert!(!hardware.owns_any());
+        let bios = fake.with(|chip| chip.get(0x109));
+        hardware.apply(&release("pwm1"), &RUNNING).unwrap();
+        assert_eq!(
+            fake.with(|chip| (chip.get(0x102), chip.get(0x109))),
+            (0x00, bios)
+        );
         hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
         assert!(hardware.owns_any());
         assert_eq!(fake.with(|chip| chip.get(0x202)), 0x00);
@@ -660,6 +896,15 @@ mod tests {
         assert_eq!(
             fake.with(|chip| (chip.get(0x202), chip.get(0x209))),
             (0x50, 0x80)
+        );
+        let bios_manual = fake.with(|chip| chip.get(0x109));
+        hardware.initialize_channels(true).unwrap();
+        hardware.release_all().unwrap();
+        let snapshot = hardware.snapshot.clone();
+        force_all_auto(&mut hardware.chip, &snapshot, RELEASE_BUDGET).unwrap();
+        assert_eq!(
+            fake.with(|chip| (chip.get(0x102), chip.get(0x109))),
+            (0x00, bios_manual)
         );
     }
 }

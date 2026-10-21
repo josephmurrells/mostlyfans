@@ -1,10 +1,11 @@
 FanForge includes or is derived from the following third-party work.
 
-PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin)
+PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
+crates/hw/modules/IntelMSR.bin)
   Copyright (C) namazso
   https://github.com/namazso/PawnIO.Modules
   Licensed under the GNU Lesser General Public License v2.1.
-  The binaries are the signed builds redistributed by LibreHardwareMonitor.
+  The binaries are the signed builds from the PawnIO.Modules 0.2.11 release.
 
 LibreHardwareMonitor
   https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
@@ -19,7 +20,17 @@ LibreHardwareMonitor
 
 Linux k10temp driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/k10temp.c
-  Reference for AMD family 17h/19h temperature register decoding.
+  Reference for AMD family 17h/19h/1Ah temperature register decoding and the
+  per-model CCD temperature layouts.
+
+Linux nct6687d driver (out of tree)
+  https://github.com/Fred78290/nct6687d
+  Reference for the NCT6683D/NCT6686D/NCT6687D embedded-controller registers,
+  the MSI board layouts and the fan configuration handshake. No code was copied.
+
+Linux coretemp driver
+  https://github.com/torvalds/linux/blob/master/drivers/hwmon/coretemp.c
+  Reference for Intel digital thermal sensor and TjMax decoding.
 
 nvml-wrapper (crate)
   Copyright (c) Cldfire

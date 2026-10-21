@@ -42,7 +42,9 @@ pub enum HwError {
         "environment controller configuration register reads {0:#04x}; the monitor is not running"
     )]
     UnexpectedConfiguration(u8),
-    #[error("the firmware has locked the Nuvoton hardware monitor I/O space")]
+    #[error(
+        "the firmware has locked the Nuvoton hardware monitor I/O space and it was not unlocked"
+    )]
     IoSpaceLocked,
     #[error("the Super I/O chip changed from {expected:#06x} to {found:#06x}")]
     ChipChanged { expected: u16, found: u16 },
@@ -51,8 +53,8 @@ pub enum HwError {
         fanforge_win::paths::data_dir().join("bios_snapshot.toml").display()
     )]
     ForeignSnapshot { owner: u16, found: u16 },
-    #[error("fan control on the {0} is not verified yet; FanForge only monitors it")]
-    Unverified(&'static str),
+    #[error("FanForge doesn't support fan control on the {0}; it only monitors it")]
+    NoFanControl(&'static str),
     #[error("fan channel {0} is in manual mode with no saved BIOS state to return to")]
     UnknownBiosMode(usize),
     #[error("environment controller did not acknowledge register {0:#04x}")]
@@ -63,6 +65,12 @@ pub enum HwError {
         written: u8,
         read: u8,
     },
+    #[error("the fan controller timed out {0}")]
+    FanConfigTimeout(&'static str),
+    #[error("the fan controller rejected the new fan settings")]
+    FanConfigRejected,
+    #[error("ran out of time before fan channel {0} was returned to BIOS control")]
+    ReleaseOutOfTime(usize),
     #[error("fan channel {0} does not exist")]
     InvalidChannel(usize),
     #[error("unsupported CPU: {0}")]

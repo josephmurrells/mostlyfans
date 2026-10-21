@@ -31,8 +31,11 @@ const BANK_SHIFT: u8 = 5;
 const VENDOR_ID_REG: u8 = 0x58;
 const VENDOR_IDS: [u8; 2] = [0x90, 0x7F];
 const MAIN_CONTROL_REG: u8 = 0x13;
+const FAN_CONTROL_REG: u8 = 0x14;
+const PWM_CONFIGURED: u8 = 0x87;
 const MAIN_CONTROL_CHANNELS: usize = 3;
 const PWM_DUTY_REGS: [u8; 6] = [0x63, 0x6B, 0x73, 0x7B, 0xA3, 0xAB];
+const FULL_SPEED: u8 = 0xFF;
 const TEMP_BASE_REG: u8 = 0x29;
 const MIN_VALID_TACH: u16 = 0x3F;
 
@@ -191,6 +194,10 @@ impl<'a, P: PortIo> Session<'a, P> {
 }
 
 impl<P: PortIo> crate::superio::Session for Session<'_, P> {
+    fn control_usable(&mut self) -> Result<bool, HwError> {
+        Ok(!self.map.polarity_check || self.ec.read(FAN_CONTROL_REG)? & PWM_CONFIGURED != 0)
+    }
+
     fn verify_vendor(&mut self) -> Result<(), HwError> {
         let vendor = self.ec.read(VENDOR_ID_REG)?;
         if !VENDOR_IDS.contains(&vendor) {
@@ -250,14 +257,19 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         let saved = saved.filter(|state| state.kind == ControlKind::Ite);
         let register = self.map.pwm_control[channel];
         let current = self.ec.read(register)?;
-        let control = saved.map_or(current, |state| state.control) | AUTO_MODE_BIT;
-        if let Some(state) = saved {
-            self.ec.write(PWM_DUTY_REGS[channel], state.duty)?;
-        }
-        self.ec.write_verified(register, control)?;
-        if let Some(state) = saved
-            && channel < MAIN_CONTROL_CHANNELS
-        {
+        let Some(state) = saved else {
+            return match self.map.manual_control {
+                None => self.ec.write_verified(register, current | AUTO_MODE_BIT),
+                Some(manual) if current == manual => {
+                    self.ec.write_verified(PWM_DUTY_REGS[channel], FULL_SPEED)
+                }
+                Some(_) => Ok(()),
+            };
+        };
+        self.ec.write(PWM_DUTY_REGS[channel], state.duty)?;
+        self.ec
+            .write_verified(register, state.control | AUTO_MODE_BIT)?;
+        if channel < MAIN_CONTROL_CHANNELS {
             let main = self.ec.read(MAIN_CONTROL_REG)?;
             let bit = 1 << channel;
             let wanted = if state.main_enabled {
@@ -327,7 +339,7 @@ pub(crate) fn dump<P: PortIo>(
         global_config,
         ldn: EC_LDN,
         ec_ldn_config,
-        bank_register,
+        bank_register: Some(bank_register),
         banks,
     })
 }
@@ -397,6 +409,7 @@ pub mod fake {
             let mut fake = Self::new();
             fake.chip_id = chip_id;
             fake.banks[0][usize::from(CONFIGURATION_REG)] = CONFIGURATION_READY;
+            fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
             if let Some(spec) = chip_matching(|chip| chip.matches_ite(chip_id)) {
                 for channel in 0..spec.fan_count() {
                     Self::fill_channel(&mut fake.banks[0], spec, channel);
@@ -568,6 +581,7 @@ mod tests {
     use crate::superio::SuperIo;
 
     const CONTROL: [u8; 3] = [0x15, 0x16, 0x17];
+    const PWM_CONTROL_8689: [u8; 6] = [0x15, 0x16, 0x17, 0x7F, 0xA7, 0xAF];
 
     fn lock(tag: &str) -> NamedMutex {
         NamedMutex::open(&format!(r"Local\fanforge-ite-{tag}-{}", std::process::id())).unwrap()
@@ -741,7 +755,7 @@ mod tests {
         let mut chip = SuperIo::attach(fake, Slot::Primary, lock("dump")).unwrap();
         let dump = chip.dump().unwrap();
         assert_eq!(dump.chip, "ITE IT8655E");
-        assert_eq!(dump.bank_register, 0x40);
+        assert_eq!(dump.bank_register, Some(0x40));
         assert_eq!(dump.banks.len(), FAKE_BANKS);
         assert_eq!(
             dump.banks[0].registers[usize::from(VENDOR_ID_REG)],
@@ -753,7 +767,7 @@ mod tests {
         assert_eq!(dump.ec_ldn_config["0x60"], 0x02);
 
         let mut changed = dump.clone();
-        changed.bank_register = 0x00;
+        changed.bank_register = Some(0x00);
         changed.banks[0].registers[0x15] = Some(0x01);
         changed.ec_ldn_config.insert("0x70".to_owned(), 0x09);
         let diff = dump.diff(&changed);
@@ -985,7 +999,7 @@ mod tests {
         fake.banks[0][0x0C] = 1 << 4;
         let mut chip = probe(fake, "8686");
         assert_eq!(chip.chip().name, "ITE IT8686E");
-        assert!(!chip.fan_control());
+        assert!(chip.fan_control());
         assert_eq!(chip.fan_count(), 5);
         let readings = chip.read().unwrap();
         assert_eq!(readings.channels.len(), 5);
@@ -1044,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn it8689e_dumps_four_banks_and_puts_the_bank_back() {
+    fn it8689e_dumps_four_banks_and_selects_bank_zero_before_access() {
         let mut fake = FakeIte::chip(0x8689);
         fake.bank_register = 0x40 | 0x03;
         let mut chip = SuperIo::attach(fake, Slot::Primary, lock("8689")).unwrap();
@@ -1054,7 +1068,7 @@ mod tests {
         assert_eq!(chip.io.bank_register, 0x43);
         let readings = chip.read().unwrap();
         assert_eq!(readings.channels.len(), 6);
-        assert_eq!(chip.io.bank_register, 0x43);
+        assert_eq!(chip.io.bank_register, 0x03);
     }
 
     #[test]
@@ -1067,13 +1081,50 @@ mod tests {
     }
 
     #[test]
-    fn unverified_chips_refuse_manual_control_without_touching_the_chip() {
+    fn the_it8665e_drives_and_restores_all_six_alternate_channels() {
+        let mut fake = FakeIte::chip(0x8665);
+        fake.banks[0][usize::from(CONFIGURATION_REG)] = 0;
+        let mut chip = probe(fake, "8665-control");
+        let saved = chip.channel_states().unwrap();
+        let control = [0x15, 0x16, 0x17, 0x1E, 0x1F, 0x92];
+        for channel in 0..6 {
+            chip.io.bank_register = 0x20;
+            chip.set_duty(channel, 0x55).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(chip.io.reg(control[channel]), channel as u8);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x55);
+        }
+        for channel in 0..6 {
+            chip.restore(channel, Some(saved[channel])).unwrap();
+            assert_eq!(chip.io.reg(control[channel]), AUTO_MODE_BIT | channel as u8);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+        }
+    }
+
+    #[test]
+    fn a_broken_pwm_configuration_leaves_the_chip_monitor_only() {
+        let mut fake = FakeIte::chip(0x8628);
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x70;
+        let mut chip = probe(fake, "polarity");
+        assert!(!chip.fan_control());
+        assert!(matches!(
+            chip.set_duty(0, 0x80),
+            Err(HwError::NoFanControl("ITE IT8628E"))
+        ));
+        chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x01;
+        chip.reinitialize().unwrap();
+        assert!(chip.fan_control());
+    }
+
+    #[test]
+    fn chips_without_fan_control_refuse_it_without_touching_the_chip() {
         let mut chip = probe(FakeIte::chip(0x8686), "unverified");
+        chip.config.chip = &crate::chips::MONITOR_ONLY_8686;
         chip.io.banks[0][0x15] = 0x00;
         let before = chip.io.writes.len();
         assert!(matches!(
             chip.set_duty(0, 0x80),
-            Err(HwError::Unverified("ITE IT8686E"))
+            Err(HwError::NoFanControl("ITE IT8686E"))
         ));
         chip.restore(0, None).unwrap();
         chip.restore_patiently(1, None, Duration::from_millis(50))
@@ -1087,31 +1138,65 @@ mod tests {
     }
 
     #[test]
-    fn the_it8689e_control_path_writes_its_manual_value_when_verified() {
-        static VERIFIED_8689: crate::chips::ChipSpec = crate::chips::ChipSpec {
-            name: "test IT8689E",
-            verified: true,
-            ident: crate::chips::Ident::Ite(0x8689),
-            map: crate::chips::ChipMap::Ite(IteMap {
-                fans: 6,
-                temps: 6,
-                pwm_control: [0x15, 0x16, 0x17, 0x7F, 0xA7, 0xAF],
-                tach_low: [0x0D, 0x0E, 0x0F, 0x80, 0x82, 0x4C],
-                tach_high: [0x18, 0x19, 0x1A, 0x81, 0x83, 0x4D],
-                tach_enable: [None; 6],
-                bank_select: false,
-                dump_banks: 4,
-                index_echo: true,
-                config_check: true,
-                manual_control: Some(0x7F),
-            }),
-        };
+    fn the_it8689e_control_path_restores_the_exact_bios_bytes_on_every_channel() {
         let mut chip = probe(FakeIte::chip(0x8689), "8689-control");
-        chip.config.chip = &VERIFIED_8689;
-        chip.set_duty(4, 0x66).unwrap();
-        assert_eq!(chip.io.reg(0xA7), 0x7F);
-        assert_eq!(chip.io.reg(0xA3), 0x66);
-        chip.restore(4, None).unwrap();
-        assert_eq!(chip.io.reg(0xA7), 0xFF);
+        chip.io.banks[0][usize::from(MAIN_CONTROL_REG)] = 0b011;
+        let saved = chip.channel_states().unwrap();
+        for channel in 0..6 {
+            chip.io.bank_register = 0x20;
+            chip.set_duty(channel, 0x66).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(chip.io.reg(PWM_CONTROL_8689[channel]), 0x7F);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x66);
+        }
+        assert_eq!(chip.io.reg(MAIN_CONTROL_REG), 0b111);
+        for channel in 0..6 {
+            chip.io.bank_register = 0x60;
+            chip.restore(channel, Some(saved[channel])).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(
+                chip.io.reg(PWM_CONTROL_8689[channel]),
+                AUTO_MODE_BIT | channel as u8
+            );
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+        }
+        assert_eq!(chip.io.reg(MAIN_CONTROL_REG), 0b011);
+    }
+
+    #[test]
+    fn the_it8689e_without_a_snapshot_only_runs_its_own_manual_headers_at_full_speed() {
+        let mut chip = probe(FakeIte::chip(0x8689), "8689-unsaved");
+        for (channel, parity) in (0..6).flat_map(|channel| [(channel, 0), (channel, 1)]) {
+            let control = PWM_CONTROL_8689[channel];
+            let ours = channel % 2 == parity;
+            if ours {
+                chip.set_duty(channel, 0x66).unwrap();
+            } else {
+                chip.io.banks[0][usize::from(control)] = 0x05;
+                chip.io.banks[0][usize::from(PWM_DUTY_REGS[channel])] = 0x40;
+            }
+            chip.io.bank_register = 0x40;
+            let writes = data_writes(&chip.io).len();
+            chip.restore(channel, None).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            let fan_writes = data_writes(&chip.io)[writes..]
+                .iter()
+                .filter(|&&(index, _)| index != BANK_REG)
+                .count();
+            if ours {
+                assert_eq!(fan_writes, 1);
+                assert_eq!(chip.io.reg(control), 0x7F);
+                assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), FULL_SPEED);
+            } else {
+                assert_eq!(fan_writes, 0);
+                assert_eq!(chip.io.reg(control), 0x05);
+                assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+            }
+        }
+
+        let writes = data_writes(&chip.io).len();
+        chip.io.banks[0][0xAF] = AUTO_MODE_BIT | 0x05;
+        chip.restore(5, None).unwrap();
+        assert_eq!(data_writes(&chip.io).len(), writes);
     }
 }

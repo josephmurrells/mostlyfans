@@ -78,7 +78,24 @@ fn exit_config<P: PortIo, T>(
     space.write_index(EXIT_KEY)
 }
 
-pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
+fn unlock_io_space<P: PortIo>(space: &mut ConfigSpace<'_, P>) -> Result<(), HwError> {
+    let lock = space.read(IO_LOCK_REG)?;
+    if lock & IO_LOCK_BIT == 0 {
+        return Ok(());
+    }
+    tracing::info!("unlocking the Nuvoton hardware monitor I/O space");
+    space.write(IO_LOCK_REG, lock & !IO_LOCK_BIT)?;
+    if space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0 {
+        return Err(HwError::IoSpaceLocked);
+    }
+    Ok(())
+}
+
+pub(crate) fn read_config<P: PortIo>(
+    io: &mut P,
+    slot: Slot,
+    unlock: bool,
+) -> Result<ChipConfig, HwError> {
     with_config_space(
         io,
         slot.config_port(),
@@ -88,7 +105,7 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfi
             let revision = space.read(CHIP_REVISION_REG)?;
             let chip_id = u16::from_be_bytes([id, revision]);
             let chip = match chip_matching(|chip| chip.matches_nuvoton(id, revision)) {
-                Some(chip) => chip,
+                Some(chip) => crate::ec::board_variant(chip),
                 None if matches!(id, 0x00 | 0xFF) => return Err(HwError::ChipNotFound(chip_id)),
                 None => return Err(HwError::UnsupportedChip(chip_id)),
             };
@@ -96,8 +113,8 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfi
             space.io.find_bars()?;
             space.select(HWM_LDN)?;
             let base_address = space.read_base_address()?;
-            if io_lock && space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0 {
-                return Err(HwError::IoSpaceLocked);
+            if io_lock && unlock {
+                unlock_io_space(space)?;
             }
             Ok(ChipConfig {
                 chip,
@@ -294,25 +311,59 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
     }
 }
 
+pub(crate) fn io_space_locked<P: PortIo>(
+    io: &mut P,
+    lock: &NamedMutex,
+    config: &ChipConfig,
+) -> Result<bool, HwError> {
+    if !matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock) {
+        return Ok(false);
+    }
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_config_space(
+        io,
+        config.slot.config_port(),
+        &ENTER_KEY,
+        |space| {
+            space.select(HWM_LDN)?;
+            Ok(space.read(IO_LOCK_REG)? & IO_LOCK_BIT != 0)
+        },
+        exit_config,
+    )
+}
+
+pub(crate) type LdnConfig = (BTreeMap<String, u8>, BTreeMap<String, u8>);
+
+pub(crate) fn ldn_config<P: PortIo>(
+    io: &mut P,
+    lock: &NamedMutex,
+    config: &ChipConfig,
+) -> Result<LdnConfig, HwError> {
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_config_space(
+        io,
+        config.slot.config_port(),
+        &ENTER_KEY,
+        |space| space.dump(HWM_LDN, &LDN_DUMP_REGS),
+        exit_config,
+    )
+}
+
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
     lock: &NamedMutex,
     config: &ChipConfig,
 ) -> Result<RegisterDump, HwError> {
-    let (global_config, ec_ldn_config) = {
-        let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-        with_config_space(
-            io,
-            config.slot.config_port(),
-            &ENTER_KEY,
-            |space| space.dump(HWM_LDN, &LDN_DUMP_REGS),
-            exit_config,
-        )?
-    };
+    let (global_config, ec_ldn_config) = ldn_config(io, lock, config)?;
 
+    let locked = matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock)
+        && ec_ldn_config
+            .get(&format!("{IO_LOCK_REG:#04x}"))
+            .is_some_and(|value| value & IO_LOCK_BIT != 0);
+    let rows = if locked { &[][..] } else { DUMP_ROWS };
     let mut banks: BTreeMap<u8, Vec<Option<u8>>> = BTreeMap::new();
     let mut bank_register = None;
-    for &row in DUMP_ROWS {
+    for &row in rows {
         let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
         let mut hwm = Hwm::open(&mut *io, config.base_address)?;
         let original = hwm.bank;
@@ -336,7 +387,7 @@ pub(crate) fn dump<P: PortIo>(
         global_config,
         ldn: HWM_LDN,
         ec_ldn_config,
-        bank_register: bank_register.unwrap_or_default(),
+        bank_register,
         banks: banks
             .into_iter()
             .map(|(bank, registers)| BankDump { bank, registers })
@@ -370,6 +421,7 @@ pub mod fake {
         pub bank_register: u8,
         pub banks: BTreeMap<u8, [u8; 256]>,
         pub locked: bool,
+        pub lock_stuck: bool,
         pub stuck: Vec<u16>,
         pub exits: usize,
         pub writes: Vec<(u16, u8, u8)>,
@@ -392,6 +444,7 @@ pub mod fake {
                 bank_register: 0,
                 banks: BTreeMap::new(),
                 locked: false,
+                lock_stuck: false,
                 stuck: Vec::new(),
                 exits: 0,
                 writes: Vec::new(),
@@ -506,6 +559,15 @@ pub mod fake {
                 p if p == self.port + 1 && self.config_mode && self.config_index == 0x07 => {
                     self.ldn = value;
                 }
+                p if p == self.port + 1
+                    && self.config_mode
+                    && self.config_index == IO_LOCK_REG
+                    && self.ldn == HWM_LDN
+                    && !self.lock_stuck =>
+                {
+                    self.lock_register = value;
+                    self.locked = value & IO_LOCK_BIT != 0;
+                }
                 p if p == self.base + ADDRESS_PORT_OFFSET => self.hwm_index = value,
                 p if p == self.base + DATA_PORT_OFFSET && !self.locked => {
                     if self.hwm_index == BANK_REG {
@@ -589,7 +651,7 @@ mod tests {
         assert_eq!(config.version, 0x2B);
         assert_eq!(config.slot, Slot::Primary);
         assert_eq!(config.base_address, 0x290);
-        assert!(!chip.fan_control());
+        assert!(chip.fan_control());
         assert_eq!(chip.fan_count(), 7);
         assert!(!chip.io.config_mode);
         assert_eq!(chip.io.exits, 1);
@@ -681,29 +743,99 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_monitor_fails_detection_on_679x_chips_only() {
+    fn a_locked_monitor_is_unlocked_on_679x_chips_only() {
         let mut fake = nct6798d();
-        fake.lock_register = IO_LOCK_BIT;
-        assert!(matches!(
-            SuperIo::probe(fake, Slot::Primary, lock("locked")),
-            Err(HwError::IoSpaceLocked)
-        ));
+        fake.lock_register = IO_LOCK_BIT | 0x01;
+        fake.locked = true;
+        let mut chip = probe(fake, "locked");
+        assert_eq!(chip.io.lock_register, 0x01);
+        assert!(chip.read().is_ok());
+        assert_eq!(chip.io.exits, 1);
 
         let mut fake = FakeNct::new(0xC5, 0x62);
         fake.lock_register = IO_LOCK_BIT;
         let chip = probe(fake, "6779-cr28");
         assert_eq!(chip.chip().name, "Nuvoton NCT6779D");
+        assert_eq!(chip.io.lock_register, IO_LOCK_BIT);
     }
 
     #[test]
-    fn a_lock_set_after_attach_fails_reads_instead_of_returning_junk() {
+    fn a_lock_that_does_not_clear_is_reported_and_config_mode_is_left() {
+        let mut fake = nct6798d();
+        fake.lock_register = IO_LOCK_BIT;
+        fake.lock_stuck = true;
+        assert!(matches!(
+            read_config(&mut fake, Slot::Primary, true),
+            Err(HwError::IoSpaceLocked)
+        ));
+        assert!(!fake.config_mode);
+        assert_eq!(fake.exits, 1);
+    }
+
+    #[test]
+    fn an_unlocked_chip_never_gets_a_lock_write() {
+        let chip = probe(nct6798d(), "no-lock-write");
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, _, index)| port != chip.io.port + 1 || index != IO_LOCK_REG)
+        );
+    }
+
+    #[test]
+    fn attaching_read_only_dumps_a_locked_chip_without_clearing_the_lock() {
+        let mut fake = nct6798d();
+        fake.lock_register = IO_LOCK_BIT;
+        fake.locked = true;
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("attach-locked")).unwrap();
+        assert!(chip.io_space_locked().unwrap());
+        let dump = chip.dump().unwrap();
+        assert_eq!(dump.ec_ldn_config["0x28"], IO_LOCK_BIT);
+        assert!(dump.banks.is_empty());
+        assert_eq!(dump.bank_register, None);
+        let mut unlocked = dump.clone();
+        unlocked.bank_register = Some(0x00);
+        unlocked.banks.push(BankDump {
+            bank: 0,
+            registers: vec![Some(0); 256],
+        });
+        assert_eq!(
+            dump.diff(&unlocked),
+            [
+                "bank_register: not read (I/O space locked) -> 0x00",
+                "monitor_registers: not read (I/O space locked) -> read"
+            ]
+        );
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, ..)| port != chip.io.base + ADDRESS_PORT_OFFSET
+                    && port != chip.io.base + DATA_PORT_OFFSET)
+        );
+        assert!(matches!(
+            chip.reinitialize(),
+            Err(HwError::VendorMismatch(0xFFFF))
+        ));
+        assert_eq!(chip.io.lock_register, IO_LOCK_BIT);
+        assert!(!chip.io.config_mode);
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, _, index)| port != chip.io.port + 1 || index != IO_LOCK_REG)
+        );
+    }
+
+    #[test]
+    fn a_lock_set_after_probing_fails_reads_and_is_cleared_on_reinitialisation() {
         let mut chip = probe(nct6798d(), "relock");
         chip.io.locked = true;
         chip.io.lock_register = IO_LOCK_BIT;
         assert!(matches!(chip.read(), Err(HwError::VendorMismatch(0xFFFF))));
-        assert!(matches!(chip.reinitialize(), Err(HwError::IoSpaceLocked)));
-        chip.io.locked = false;
-        chip.io.lock_register = 0;
+        chip.reinitialize().unwrap();
+        assert_eq!(chip.io.lock_register, 0);
         assert!(chip.read().is_ok());
     }
 
@@ -721,13 +853,13 @@ mod tests {
     fn unknown_and_absent_chips_are_told_apart() {
         let mut io = FakeNct::new(0xD4, 0x99);
         assert!(matches!(
-            read_config(&mut io, Slot::Primary),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::UnsupportedChip(0xD499))
         ));
         assert!(!io.config_mode);
         let mut io = FakeNct::new(0xFF, 0xFF);
         assert!(matches!(
-            read_config(&mut io, Slot::Primary),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::ChipNotFound(0xFFFF))
         ));
     }
@@ -786,7 +918,7 @@ mod tests {
         let dump = chip.dump().unwrap();
         assert_eq!(dump.chip, "Nuvoton NCT6798D");
         assert_eq!(dump.ldn, HWM_LDN);
-        assert_eq!(dump.bank_register, 0x05);
+        assert_eq!(dump.bank_register, Some(0x05));
         assert_eq!(chip.io.bank_register, 0x05);
         assert_eq!(dump.ec_ldn_config["0x61"], 0x90);
         let bank = |number: u8| dump.banks.iter().find(|bank| bank.bank == number).unwrap();
@@ -800,12 +932,13 @@ mod tests {
     }
 
     #[test]
-    fn unverified_nuvoton_chips_never_write_fan_registers() {
+    fn nuvoton_chips_without_fan_control_never_write_fan_registers() {
         let mut chip = probe(nct6798d(), "gate");
+        chip.config.chip = &MONITOR_ONLY_6798;
         chip.io.set(MODE_REGS[0], 0x00);
         assert!(matches!(
             chip.set_duty(0, 0x20),
-            Err(HwError::Unverified(_))
+            Err(HwError::NoFanControl(_))
         ));
         chip.restore(0, None).unwrap();
         assert_eq!(chip.io.get(COMMAND_REGS[0]), 0x80);
@@ -817,9 +950,28 @@ mod tests {
         );
     }
 
+    static MONITOR_ONLY_6798: ChipSpec = ChipSpec {
+        name: "test NCT6798D",
+        fan_control: false,
+        ident: Ident::Nuvoton {
+            id: 0xD4,
+            revision: 0x2B,
+            mask: 0xFF,
+        },
+        map: ChipMap::Nuvoton(NctMap {
+            fans: 7,
+            tach: Tach::Count {
+                registers: &[0x4B0, 0x4B2, 0x4B4, 0x4B6, 0x4B8, 0x4BA, 0x4CC],
+            },
+            slots: &[],
+            sources: &[],
+            io_lock: true,
+        }),
+    };
+
     static VERIFIED_6798: ChipSpec = ChipSpec {
         name: "test NCT6798D",
-        verified: true,
+        fan_control: true,
         ident: Ident::Nuvoton {
             id: 0xD4,
             revision: 0x2B,
@@ -895,7 +1047,7 @@ mod tests {
         chip.io.set(VENDOR_LOW_REG, 0x00);
         let map = match &chip.chip().map {
             ChipMap::Nuvoton(map) => map,
-            ChipMap::Ite(_) => unreachable!(),
+            ChipMap::Ite(_) | ChipMap::Ec(_) => unreachable!(),
         };
         let result = Session::open(&mut chip.io, 0x290, map);
         assert!(matches!(

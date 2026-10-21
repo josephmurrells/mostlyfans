@@ -9,7 +9,7 @@ use crate::HwError;
 use crate::chips::{CHIPS, ChipMap, ChipSpec};
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
 use crate::port::PortIo;
-use crate::{ite, nuvoton};
+use crate::{ec, ite, nuvoton};
 
 pub(crate) const LDN_SELECT_REG: u8 = 0x07;
 pub(crate) const CHIP_ID_REG: u8 = 0x20;
@@ -44,6 +44,7 @@ pub enum ControlKind {
     #[default]
     Ite,
     Nuvoton,
+    Ec,
 }
 
 impl ControlKind {
@@ -66,6 +67,7 @@ impl ChannelState {
         match self.kind {
             ControlKind::Ite => self.control & ite::AUTO_MODE_BIT != 0,
             ControlKind::Nuvoton => self.control & nuvoton::MODE_MASK != 0,
+            ControlKind::Ec => self.control == 0,
         }
     }
 }
@@ -103,7 +105,8 @@ pub struct RegisterDump {
     #[serde(default = "default_dump_ldn")]
     pub ldn: u8,
     pub ec_ldn_config: BTreeMap<String, u8>,
-    pub bank_register: u8,
+    #[serde(default)]
+    pub bank_register: Option<u8>,
     pub banks: Vec<BankDump>,
 }
 
@@ -193,24 +196,28 @@ pub(crate) fn chip_matching(matches: impl Fn(&ChipSpec) -> bool) -> Option<&'sta
     CHIPS.iter().find(|chip| matches(chip))
 }
 
-fn read_config<P: PortIo>(io: &mut P, slot: Slot) -> Result<ChipConfig, HwError> {
+fn read_config<P: PortIo>(io: &mut P, slot: Slot, unlock: bool) -> Result<ChipConfig, HwError> {
     if slot == Slot::Primary {
         match ite::read_config(io, true) {
             Err(HwError::ChipNotFound(_) | HwError::NotIte(_)) => {}
             result => return result,
         }
     }
-    nuvoton::read_config(io, slot)
+    nuvoton::read_config(io, slot, unlock)
 }
 
-fn reread_config<P: PortIo>(io: &mut P, current: &ChipConfig) -> Result<ChipConfig, HwError> {
+fn reread_config<P: PortIo>(
+    io: &mut P,
+    current: &ChipConfig,
+    unlock: bool,
+) -> Result<ChipConfig, HwError> {
     let changed = |found| HwError::ChipChanged {
         expected: current.chip_id,
         found,
     };
     let config = match current.chip.map {
         ChipMap::Ite(_) => ite::read_config(io, false),
-        ChipMap::Nuvoton(_) => nuvoton::read_config(io, current.slot),
+        ChipMap::Nuvoton(_) | ChipMap::Ec(_) => nuvoton::read_config(io, current.slot, unlock),
     }
     .map_err(|error| match error {
         HwError::UnsupportedChip(found) => changed(found),
@@ -248,6 +255,10 @@ pub(crate) trait Session {
     fn channel_states(&mut self) -> Result<Vec<ChannelState>, HwError>;
     fn set_duty(&mut self, channel: usize, duty: u8) -> Result<(), HwError>;
     fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError>;
+
+    fn control_usable(&mut self) -> Result<bool, HwError> {
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]
@@ -255,30 +266,56 @@ pub struct SuperIo<P: PortIo> {
     pub(crate) io: P,
     lock: NamedMutex,
     pub(crate) config: ChipConfig,
+    unlock: bool,
+    usable: bool,
 }
 
 impl<P: PortIo> SuperIo<P> {
-    pub fn attach(mut io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
+    pub fn attach(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
+        Self::connect(io, slot, lock, false)
+    }
+
+    fn connect(mut io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
         let config = {
             let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-            read_config(&mut io, slot)?
+            read_config(&mut io, slot, unlock)?
         };
-        Ok(Self { io, lock, config })
+        Ok(Self {
+            io,
+            lock,
+            config,
+            unlock,
+            usable: true,
+        })
     }
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        let mut chip = Self::attach(io, slot, lock)?;
-        chip.transaction(|session| session.verify_vendor())?;
+        let mut chip = Self::connect(io, slot, lock, true)?;
+        chip.check_session()?;
         Ok(chip)
+    }
+
+    fn check_session(&mut self) -> Result<(), HwError> {
+        self.usable = self.transaction(|session| {
+            session.verify_vendor()?;
+            session.control_usable()
+        })?;
+        if !self.usable && self.config.chip.fan_control {
+            tracing::warn!(
+                chip = self.config.chip.name,
+                "the PWM configuration is broken (as Linux it87 checks it); monitoring only"
+            );
+        }
+        Ok(())
     }
 
     pub fn reinitialize(&mut self) -> Result<(), HwError> {
         let config = {
             let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
-            reread_config(&mut self.io, &self.config)?
+            reread_config(&mut self.io, &self.config, self.unlock)?
         };
         self.config = config;
-        self.transaction(|session| session.verify_vendor())
+        self.check_session()
     }
 
     pub fn config(&self) -> ChipConfig {
@@ -298,7 +335,11 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     pub fn fan_control(&self) -> bool {
-        self.config.chip.verified
+        self.config.chip.fan_control && self.usable
+    }
+
+    pub fn can_release(&self) -> bool {
+        self.config.chip.fan_control
     }
 
     fn transaction<T>(
@@ -309,7 +350,7 @@ impl<P: PortIo> SuperIo<P> {
         let abandoned = guard.was_abandoned();
         if abandoned {
             tracing::warn!(mutex = %self.lock.name(), "bus mutex was abandoned; reinitialising the chip");
-            self.config = reread_config(&mut self.io, &self.config)?;
+            self.config = reread_config(&mut self.io, &self.config, self.unlock)?;
         }
         let base = self.config.base_address;
         match &self.config.chip.map {
@@ -320,6 +361,7 @@ impl<P: PortIo> SuperIo<P> {
                 }
                 action(&mut session)
             }
+            ChipMap::Ec(map) => action(&mut ec::Session::open(&mut self.io, base, map)),
             ChipMap::Nuvoton(map) => {
                 let mut session = nuvoton::Session::open(&mut self.io, base, map)?;
                 let result = action(&mut session);
@@ -371,7 +413,7 @@ impl<P: PortIo> SuperIo<P> {
     ) -> Result<(), HwError> {
         self.check_channel(channel)?;
         if !self.fan_control() {
-            return Err(HwError::Unverified(self.config.chip.name));
+            return Err(HwError::NoFanControl(self.config.chip.name));
         }
         self.transaction(|session| {
             if halted.load(Ordering::SeqCst) {
@@ -383,16 +425,21 @@ impl<P: PortIo> SuperIo<P> {
 
     pub fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError> {
         self.check_channel(channel)?;
-        if !self.fan_control() {
+        if !self.can_release() {
             return Ok(());
         }
         self.transaction(|session| session.restore(channel, saved))
+    }
+
+    pub fn io_space_locked(&mut self) -> Result<bool, HwError> {
+        nuvoton::io_space_locked(&mut self.io, &self.lock, &self.config)
     }
 
     pub fn dump(&mut self) -> Result<RegisterDump, HwError> {
         match &self.config.chip.map {
             ChipMap::Ite(map) => ite::dump(&mut self.io, &self.lock, &self.config, map),
             ChipMap::Nuvoton(_) => nuvoton::dump(&mut self.io, &self.lock, &self.config),
+            ChipMap::Ec(_) => ec::dump(&mut self.io, &self.lock, &self.config),
         }
     }
 
@@ -431,8 +478,13 @@ impl RegisterDump {
         );
         field(
             "bank_register",
-            hex(self.bank_register),
-            hex(other.bank_register),
+            self.bank_register.map_or_else(not_read, hex),
+            other.bank_register.map_or_else(not_read, hex),
+        );
+        field(
+            "monitor_registers",
+            dumped(&self.banks),
+            dumped(&other.banks),
         );
         diff_maps(
             &mut lines,
@@ -484,6 +536,18 @@ fn diff_maps(
     }
 }
 
+fn not_read() -> String {
+    "not read (I/O space locked)".to_owned()
+}
+
+fn dumped(banks: &[BankDump]) -> String {
+    if banks.is_empty() {
+        not_read()
+    } else {
+        "read".to_owned()
+    }
+}
+
 fn format_optional(value: Option<u8>) -> String {
     value.map_or_else(|| "unacknowledged".to_owned(), hex)
 }
@@ -512,6 +576,7 @@ mod tests {
             (0x8686, "ITE IT8686E"),
             (0x8688, "ITE IT8688E"),
             (0x8689, "ITE IT8689E"),
+            (0x8696, "ITE IT8696E"),
             (0x8721, "ITE IT8721F"),
             (0x8728, "ITE IT8728F"),
             (0x8772, "ITE IT8772E"),
@@ -540,6 +605,10 @@ mod tests {
             (0xD4, 0x51, "Nuvoton NCT6797D"),
             (0xD4, 0x2B, "Nuvoton NCT6798D"),
             (0xD8, 0x02, "Nuvoton NCT6799D or NCT6796D-S"),
+            (0xC7, 0x32, "Nuvoton NCT6683D"),
+            (0xD4, 0x40, "Nuvoton NCT6686D"),
+            (0xD4, 0x41, "Nuvoton NCT6686D"),
+            (0xD5, 0x92, "Nuvoton NCT6687D"),
         ];
         for (id, revision, name) in nuvoton_rows {
             assert_eq!(
@@ -551,8 +620,9 @@ mod tests {
         for (id, revision) in [
             (0xB4, 0x60),
             (0xC8, 0x13),
-            (0xD4, 0x40),
-            (0xD5, 0x92),
+            (0xD4, 0x42),
+            (0xD5, 0x93),
+            (0xC7, 0x30),
             (0xD8, 0x06),
             (0xC4, 0x52),
             (0xFF, 0xFF),
@@ -562,23 +632,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_it8655e_is_verified_and_ambiguous_rows_never_are() {
-        let verified: Vec<&str> = CHIPS
+    fn only_the_nct6683d_is_monitor_only() {
+        let monitor_only: Vec<&str> = CHIPS
             .iter()
-            .filter(|chip| chip.verified)
+            .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(verified, ["ITE IT8655E"]);
-        for chip in CHIPS.iter().filter(|chip| chip.name.contains(" or ")) {
-            assert!(!chip.verified, "{}", chip.name);
-        }
-        assert_eq!(
-            CHIPS
-                .iter()
-                .filter(|chip| chip.name.contains(" or "))
-                .count(),
-            2
-        );
+        assert_eq!(monitor_only, ["Nuvoton NCT6683D"]);
     }
 
     #[test]
@@ -605,6 +665,9 @@ mod tests {
                     };
                     assert!(tachs >= map.fans);
                     assert!(!map.slots.is_empty() && !map.sources.is_empty());
+                }
+                (Ident::Nuvoton { .. }, ChipMap::Ec(map)) => {
+                    assert!(map.fans <= 8 && map.temps.len() <= 7);
                 }
                 _ => panic!("{} mixes vendors", chip.name),
             }
