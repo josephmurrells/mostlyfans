@@ -487,7 +487,13 @@ fn default_sensor(state: &ControlState) -> SensorId {
         .sensors
         .iter()
         .find(|sensor| sensor.id.as_str() == CPU_SENSOR)
-        .or_else(|| state.readings.sensors.first())
+        .or_else(|| {
+            state
+                .readings
+                .sensors
+                .iter()
+                .find(|sensor| !sensor.id.is_display_only())
+        })
         .map_or_else(|| SensorId::new(CPU_SENSOR), |sensor| sensor.id.clone())
 }
 
@@ -510,7 +516,12 @@ fn sensor_picker(
             .selected_text(selected)
             .width(200.0)
             .show_ui(ui, |ui| {
-                for candidate in &state.readings.sensors {
+                for candidate in state
+                    .readings
+                    .sensors
+                    .iter()
+                    .filter(|candidate| !candidate.id.is_display_only())
+                {
                     let label = format!(
                         "{}  ({})",
                         candidate.label,

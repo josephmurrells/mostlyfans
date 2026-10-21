@@ -649,7 +649,7 @@ fn load_config(paths: &Paths) -> Loaded {
     match store::load_toml::<Config>(&paths.config) {
         Ok(Some(mut config)) => {
             if config.migrate() {
-                tracing::info!("moved CPU temperature references from `cpu/tctl` to `cpu/package`");
+                tracing::info!("moved old or per-core temperature references to `cpu/package`");
             }
             match config.validate() {
                 Ok(()) => Loaded {

@@ -1,7 +1,9 @@
 use std::arch::x86_64::__cpuid;
 
+use fanforge_win::topology::PhysicalCore;
+use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
 use windows::Win32::System::Threading::{
-    GetActiveProcessorCount, GetCurrentThread, SetThreadAffinityMask,
+    GetActiveProcessorCount, GetCurrentThread, SetThreadGroupAffinity,
 };
 
 use crate::HwError;
@@ -93,7 +95,7 @@ impl IntelCpu {
         let mut hottest = None;
         let mut last_error = None;
         for cpu in 0..cpus {
-            match on_cpu(cpu, || self.read_msr(IA32_THERM_STATUS)).and_then(|read| read) {
+            match on_cpu(0, cpu, || self.read_msr(IA32_THERM_STATUS)).and_then(|read| read) {
                 Ok(raw) => {
                     if let Some(celsius) = decode_core(raw, self.tjmax) {
                         hottest = Some(hottest.map_or(celsius, |hot: f32| hot.max(celsius)));
@@ -108,19 +110,41 @@ impl IntelCpu {
             (None, None) => Err(HwError::UnsupportedCpu(self.info.brand.clone())),
         }
     }
+
+    pub fn core_temps(&self, cores: &[PhysicalCore]) -> Vec<Option<f32>> {
+        cores
+            .iter()
+            .map(|core| {
+                on_cpu(core.group, u32::from(core.first_cpu), || {
+                    self.read_msr(IA32_THERM_STATUS)
+                })
+                .and_then(|read| read)
+                .map_err(|error| tracing::debug!(%error, "core temperature read failed"))
+                .ok()
+                .and_then(|raw| decode_core(raw, self.tjmax))
+            })
+            .collect()
+    }
 }
 
-fn on_cpu<T>(cpu: u32, read: impl FnOnce() -> T) -> Result<T, HwError> {
+fn on_cpu<T>(group: u16, cpu: u32, read: impl FnOnce() -> T) -> Result<T, HwError> {
     let thread = unsafe { GetCurrentThread() };
-    let previous = unsafe { SetThreadAffinityMask(thread, 1 << cpu) };
-    if previous == 0 {
+    let pinned = GROUP_AFFINITY {
+        Mask: 1 << cpu,
+        Group: group,
+        Reserved: [0; 3],
+    };
+    let mut previous = GROUP_AFFINITY::default();
+    if !unsafe { SetThreadGroupAffinity(thread, &pinned, Some(&mut previous)) }.as_bool() {
         return Err(HwError::Driver {
-            call: "SetThreadAffinityMask".to_owned(),
+            call: "SetThreadGroupAffinity".to_owned(),
             source: windows::core::Error::from_thread(),
         });
     }
     let result = read();
-    unsafe { SetThreadAffinityMask(thread, previous) };
+    if !unsafe { SetThreadGroupAffinity(thread, &previous, None) }.as_bool() {
+        tracing::warn!(error = %windows::core::Error::from_thread(), "could not restore thread affinity");
+    }
     Ok(result)
 }
 

@@ -5,11 +5,13 @@ use eframe::egui::{Theme, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use fanforge_core::Duty;
+use fanforge_core::SensorId;
 use fanforge_core::calibration::{
     CalibrationOutcome, CalibrationPoint, CalibrationReport, FanCalibration,
 };
 use fanforge_core::config::FanMode;
 use fanforge_core::state::ControlState;
+use fanforge_core::telemetry::SensorReading;
 
 use super::*;
 use crate::autostart::AutostartState;
@@ -26,7 +28,7 @@ fn shell(link: &FakeLink, page: Page) -> Shell {
         PawnIoPanel::new(Arc::new(|| {})),
         Prefs {
             page,
-            setup_skipped: false,
+            ..Prefs::default()
         },
     )
 }
@@ -80,6 +82,7 @@ fn the_sidebar_switches_pages() {
     let link = FakeLink::new(fixtures::state());
     let mut harness = harness(&link, Page::Overview);
     for (label, page) in [
+        ("Temperatures", Page::Temperatures),
         ("Fans", Page::Fans),
         ("Curves", Page::Curves),
         ("Settings", Page::Settings),
@@ -408,11 +411,12 @@ fn render_screenshots() {
     for (theme, suffix) in [(Theme::Dark, "dark"), (Theme::Light, "light")] {
         for (page, name) in [
             (Page::Overview, "overview"),
+            (Page::Temperatures, "temperatures"),
             (Page::Fans, "fans"),
             (Page::Curves, "curves"),
             (Page::Settings, "settings"),
         ] {
-            let link = FakeLink::new(fixtures::state());
+            let link = FakeLink::new(with_cores(fixtures::state()));
             let mut harness = harness_with(shell(&link, page), SIZE, theme);
             for _ in 0..3 {
                 link.update(|state| {
@@ -441,6 +445,18 @@ fn render_screenshots() {
     let link = FakeLink::new(fixtures::state());
     let mut harness = harness_with(shell(&link, Page::Fans), vec2(760.0, 600.0), Theme::Light);
     screenshot(&mut harness, &dir, "compact-light");
+
+    let link = FakeLink::new(with_cores(fixtures::state()));
+    let mut pinned = shell(&link, Page::Overview);
+    pinned.prefs.pinned_sensors = Some(vec![
+        SensorId::new("cpu/package"),
+        SensorId::core(0),
+        SensorId::core(1),
+        SensorId::new("drive/gone"),
+    ]);
+    pinned.prefs.pinned_fans = Some(vec![fixtures::fan(0), fixtures::fan(1)]);
+    let mut harness = harness_with(pinned, SIZE, Theme::Dark);
+    screenshot(&mut harness, &dir, "overview-pinned-dark");
 }
 
 fn calibrated(stop: f32) -> FanCalibration {
@@ -711,4 +727,154 @@ fn turned_off_safety_shows_warnings_and_heat_still_raises_a_danger_alert() {
     );
     assert!(harness.query_by_label("Critical (override off)").is_some());
     assert!(harness.query_by_label(icons::CLOSE).is_none());
+}
+
+fn with_cores(mut state: ControlState) -> ControlState {
+    for (index, celsius) in [41.1, 41.5, 39.9, 39.3].into_iter().enumerate() {
+        state.readings.sensors.push(SensorReading {
+            id: SensorId::core(index),
+            label: format!("Core{index} (CCD1)"),
+            celsius: Some(celsius),
+        });
+    }
+    state
+}
+
+#[test]
+fn the_temperatures_page_groups_sensors_and_pins_them() {
+    let link = FakeLink::new(with_cores(fixtures::state()));
+    let mut harness = harness(&link, Page::Temperatures);
+    for heading in ["CPU", "Motherboard", "Core2 (CCD1)"] {
+        assert!(harness.query_by_label(heading).is_some(), "{heading}");
+    }
+    assert!(harness.query_by_label("Display only").is_none());
+    let pin = widgets::with_icon(icons::PIN, "Pin");
+    harness.query_all_by_label(&pin).next().unwrap().click();
+    settle(&mut harness);
+    let pinned = harness.state().prefs.pinned_sensors.clone().unwrap();
+    assert_eq!(pinned.last(), Some(&SensorId::core(0)));
+    assert!(harness.state_mut().take_prefs_changed());
+
+    harness.get_by_label("Reset Overview to automatic").click();
+    settle(&mut harness);
+    assert_eq!(harness.state().prefs.pinned_sensors, None);
+}
+
+#[test]
+fn per_core_sensors_stay_off_the_automatic_overview() {
+    let link = FakeLink::new(with_cores(fixtures::state()));
+    let harness = harness(&link, Page::Overview);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Core0 (CCD1)")
+            .is_none()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Board temp 1")
+            .is_some()
+    );
+}
+
+#[test]
+fn right_click_unpins_tiles_and_fan_cards() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Overview);
+    let unpin = widgets::with_icon(icons::UNPIN, "Unpin from Overview");
+
+    harness
+        .get_by_role_and_label(Role::Button, "Board temp 1")
+        .click_secondary();
+    settle(&mut harness);
+    harness.get_by_label(&unpin).click();
+    settle(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Board temp 1")
+            .is_none()
+    );
+    assert_eq!(harness.state().prefs.page, Page::Overview);
+
+    harness
+        .get_by_role_and_label(Role::Button, "Fan 2")
+        .click_secondary();
+    settle(&mut harness);
+    harness.get_by_label(&unpin).click();
+    settle(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Fan 2")
+            .is_none()
+    );
+    assert_eq!(
+        harness.state().prefs.pinned_fans.as_ref().map(Vec::len),
+        Some(fixtures::state().readings.fans.len() - 1)
+    );
+}
+
+#[test]
+fn alerts_stay_with_nothing_pinned() {
+    let link = FakeLink::new(fixtures::state());
+    link.update(|state| {
+        state.warnings = vec!["critical sensor `cpu/package` is not reporting".to_owned()];
+    });
+    let mut shell = shell(&link, Page::Overview);
+    shell.prefs.pinned_sensors = Some(Vec::new());
+    shell.prefs.pinned_fans = Some(Vec::new());
+    let harness = harness_with(shell, SIZE, Theme::Dark);
+    assert!(harness.query_by_label("No temperatures pinned.").is_some());
+    assert!(harness.query_by_label("No fans pinned.").is_some());
+    assert!(
+        harness
+            .query_by_label_contains("is not reporting")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_pinned_sensor_that_never_reported_waits_instead_of_going_missing() {
+    let link = FakeLink::new(fixtures::state());
+    let mut shell = shell(&link, Page::Overview);
+    shell.prefs.pinned_sensors = Some(vec![SensorId::new("drive/gone")]);
+    let harness = harness_with(shell, SIZE, Theme::Dark);
+    assert!(harness.query_by_label("waiting for a reading").is_some());
+    assert!(harness.query_by_label("Missing").is_none());
+}
+
+#[test]
+fn fans_pin_from_their_detail_pane() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Fans);
+    click(
+        &mut harness,
+        &widgets::with_icon(icons::UNPIN, "On Overview"),
+    );
+    let pinned = harness.state().prefs.pinned_fans.clone().unwrap();
+    assert!(!pinned.contains(&fixtures::fan(0)));
+    click(
+        &mut harness,
+        &widgets::with_icon(icons::PIN, "Pin to Overview"),
+    );
+    let pinned = harness.state().prefs.pinned_fans.clone().unwrap();
+    assert_eq!(pinned.last(), Some(&fixtures::fan(0)));
+}
+
+#[test]
+fn a_pinned_sensor_goes_missing_once_hardware_has_settled() {
+    let link = FakeLink::new(fixtures::state());
+    let mut shell = shell(&link, Page::Overview);
+    shell.prefs.pinned_sensors = Some(vec![
+        SensorId::new("cpu/package"),
+        SensorId::new("drive/gone"),
+    ]);
+    let mut harness = harness_with(shell, SIZE, Theme::Dark);
+    harness.state_mut().history.mark_settled(Instant::now());
+    settle(&mut harness);
+    assert!(harness.query_by_label("Missing").is_some());
+    click(&mut harness, &widgets::with_icon(icons::UNPIN, "Unpin"));
+    assert_eq!(
+        harness.state().prefs.pinned_sensors,
+        Some(vec![SensorId::new("cpu/package")])
+    );
+    assert!(harness.query_by_label("Missing").is_none());
 }

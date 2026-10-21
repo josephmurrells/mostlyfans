@@ -1,4 +1,5 @@
 mod cache;
+pub mod cores;
 pub mod drives;
 pub mod nvidia;
 pub mod radeon;
@@ -30,6 +31,12 @@ pub fn default_sources() -> Vec<Box<dyn SensorSource>> {
         Box::new(radeon::RadeonSource::default()),
         Box::new(drives::DriveSource::default()),
     ]
+}
+
+pub fn elevated_sources() -> Vec<Box<dyn SensorSource>> {
+    let mut sources = default_sources();
+    sources.push(Box::new(cores::CoreTempSource::default()));
+    sources
 }
 
 #[derive(Debug, Default)]

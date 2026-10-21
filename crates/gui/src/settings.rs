@@ -442,7 +442,12 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
                 .selected_text(selected)
                 .width(200.0)
                 .show_ui(ui, |ui| {
-                    for sensor in &state.readings.sensors {
+                    for sensor in state
+                        .readings
+                        .sensors
+                        .iter()
+                        .filter(|sensor| !sensor.id.is_display_only())
+                    {
                         let label =
                             format!("{}  ({})", sensor.label, format::celsius(sensor.celsius));
                         if ui

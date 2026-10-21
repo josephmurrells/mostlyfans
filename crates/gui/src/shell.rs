@@ -17,11 +17,13 @@ use crate::format;
 use crate::history::History;
 use crate::icons;
 use crate::notices::Notices;
-use crate::overview::{self, OverviewAction};
+use crate::overview::{self, OverviewAction, OverviewPage};
 use crate::pawnio_setup::PawnIoPanel;
+use crate::pins;
 use crate::prefs::{Page, Prefs};
 use crate::settings::{AutostartPanel, SettingsView};
 use crate::status::{self, Overall};
+use crate::temperatures::{self, TemperaturesAction, TemperaturesPage};
 use crate::theme::{self, BODY, SECTION, SPACE_L, SPACE_M, SPACE_S, SPACE_XL, Tone};
 use crate::widgets;
 
@@ -31,8 +33,9 @@ const NAV_WIDTH: f32 = 208.0;
 const NAV_COMPACT_WIDTH: f32 = 60.0;
 const CONTENT_MAX_WIDTH: f32 = 1120.0;
 
-const PAGES: [(Page, &str, &str); 4] = [
+const PAGES: [(Page, &str, &str); 5] = [
     (Page::Overview, icons::OVERVIEW, "Overview"),
+    (Page::Temperatures, icons::TEMPERATURES, "Temperatures"),
     (Page::Fans, icons::FANS, "Fans"),
     (Page::Curves, icons::CURVES, "Curves"),
     (Page::Settings, icons::SETTINGS, "Settings"),
@@ -56,6 +59,7 @@ pub struct Shell {
     autostart: AutostartPanel,
     pawnio: PawnIoPanel,
     pub prefs: Prefs,
+    prefs_changed: bool,
     draft: Option<Config>,
     dirty: bool,
     pending: Option<PendingApply>,
@@ -92,6 +96,7 @@ impl Shell {
             autostart,
             pawnio,
             prefs,
+            prefs_changed: false,
             draft: None,
             dirty: false,
             pending: None,
@@ -105,6 +110,10 @@ impl Shell {
             curves: CurveEditor::default(),
             settings: SettingsView::default(),
         }
+    }
+
+    pub fn take_prefs_changed(&mut self) -> bool {
+        std::mem::take(&mut self.prefs_changed)
     }
 
     pub fn view(&self) -> (ControlStatus, Option<Arc<ControlState>>) {
@@ -515,15 +524,35 @@ impl Shell {
         };
         let changed = match self.prefs.page {
             Page::Overview => {
+                let sensors = pins::sensors(&self.prefs, state);
+                let fans = pins::fans(&self.prefs, state);
+                let page = OverviewPage {
+                    state,
+                    history: &self.history,
+                    live,
+                    offer_setup: !self.prefs.setup_skipped,
+                    sensors: &sensors,
+                    fans: &fans,
+                };
                 let action = egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        overview::show(ui, state, &self.history, live, !self.prefs.setup_skipped)
-                    })
+                    .show(ui, |ui| overview::show(ui, &page))
                     .inner;
                 match action {
                     Some(OverviewAction::OpenFan(fan)) => {
                         self.fans.select(fan);
                         self.prefs.page = Page::Fans;
+                    }
+                    Some(OverviewAction::OpenFans) => self.prefs.page = Page::Fans,
+                    Some(OverviewAction::OpenTemperatures) => {
+                        self.prefs.page = Page::Temperatures;
+                    }
+                    Some(OverviewAction::UnpinSensor(sensor)) => {
+                        pins::set_sensor(&mut self.prefs, state, &sensor, false);
+                        self.prefs_changed = true;
+                    }
+                    Some(OverviewAction::UnpinFan(fan)) => {
+                        pins::set_fan(&mut self.prefs, state, &fan, false);
+                        self.prefs_changed = true;
                     }
                     Some(OverviewAction::StartSetup) => {
                         if let Some(fan) = overview::unnamed_fans(state, &state.config).first() {
@@ -536,7 +565,37 @@ impl Shell {
                 }
                 false
             }
+            Page::Temperatures => {
+                let pinned = pins::sensors(&self.prefs, state).into_iter().collect();
+                let page = TemperaturesPage {
+                    state,
+                    history: &self.history,
+                    pinned: &pinned,
+                    customised: pins::customised(&self.prefs),
+                    live,
+                };
+                let action = egui::ScrollArea::vertical()
+                    .show(ui, |ui| temperatures::show(ui, &page))
+                    .inner;
+                match action {
+                    Some(TemperaturesAction::Pin(sensor)) => {
+                        pins::set_sensor(&mut self.prefs, state, &sensor, true);
+                        self.prefs_changed = true;
+                    }
+                    Some(TemperaturesAction::Unpin(sensor)) => {
+                        pins::set_sensor(&mut self.prefs, state, &sensor, false);
+                        self.prefs_changed = true;
+                    }
+                    Some(TemperaturesAction::ResetOverview) => {
+                        pins::reset(&mut self.prefs);
+                        self.prefs_changed = true;
+                    }
+                    None => {}
+                }
+                false
+            }
             Page::Fans => {
+                let pinned_fans = pins::fans(&self.prefs, state);
                 let outcome = self.fans.show(
                     ui,
                     FanPage {
@@ -545,8 +604,13 @@ impl Shell {
                         link: &*self.link,
                         identify_block: identify_block(status, state),
                         setup_skipped: self.prefs.setup_skipped,
+                        pinned: &pinned_fans,
                     },
                 );
+                if let Some((fan, pinned)) = outcome.pin {
+                    pins::set_fan(&mut self.prefs, state, &fan, pinned);
+                    self.prefs_changed = true;
+                }
                 if outcome.skip_setup {
                     self.prefs.setup_skipped = true;
                 }
