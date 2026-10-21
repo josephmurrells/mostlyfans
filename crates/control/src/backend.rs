@@ -13,6 +13,7 @@ pub trait Backend {
     fn read(&mut self) -> Result<Readings, HwError>;
     fn apply(&mut self, command: &Command, halted: &AtomicBool) -> Result<(), HwError>;
     fn release_all(&mut self) -> Result<(), HwError>;
+    fn release_owned(&mut self) -> Result<(), HwError>;
     fn reinitialize(&mut self) -> Result<(), HwError>;
     fn initialize_channels(&mut self, take_control: bool) -> Result<(), HwError>;
     fn board_info(&self) -> BoardInfo;
@@ -33,6 +34,10 @@ impl<P: PortIo> Backend for Hardware<P> {
 
     fn release_all(&mut self) -> Result<(), HwError> {
         Hardware::release_all(self)
+    }
+
+    fn release_owned(&mut self) -> Result<(), HwError> {
+        Hardware::release_owned(self)
     }
 
     fn reinitialize(&mut self) -> Result<(), HwError> {

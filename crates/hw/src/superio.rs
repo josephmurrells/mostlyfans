@@ -313,7 +313,7 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     pub fn fan_control(&self) -> bool {
-        self.config.chip.verified
+        self.config.chip.fan_control
     }
 
     fn transaction<T>(
@@ -386,7 +386,7 @@ impl<P: PortIo> SuperIo<P> {
     ) -> Result<(), HwError> {
         self.check_channel(channel)?;
         if !self.fan_control() {
-            return Err(HwError::Unverified(self.config.chip.name));
+            return Err(HwError::NoFanControl(self.config.chip.name));
         }
         self.transaction(|session| {
             if halted.load(Ordering::SeqCst) {
@@ -598,22 +598,18 @@ mod tests {
     }
 
     #[test]
-    fn fan_control_is_on_only_for_listed_chips_and_never_for_ambiguous_rows() {
-        let verified: Vec<&str> = CHIPS
+    fn fan_control_covers_every_nuvoton_row_and_the_listed_ite_chips() {
+        let ite: Vec<&str> = CHIPS
             .iter()
-            .filter(|chip| chip.verified)
+            .filter(|chip| matches!(chip.map, ChipMap::Ite(_)) && chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(verified, ["ITE IT8655E", "ITE IT8689E"]);
-        for chip in CHIPS.iter().filter(|chip| chip.name.contains(" or ")) {
-            assert!(!chip.verified, "{}", chip.name);
-        }
-        assert_eq!(
+        assert_eq!(ite, ["ITE IT8655E", "ITE IT8689E"]);
+        assert!(
             CHIPS
                 .iter()
-                .filter(|chip| chip.name.contains(" or "))
-                .count(),
-            2
+                .filter(|chip| matches!(chip.map, ChipMap::Nuvoton(_)))
+                .all(|chip| chip.fan_control)
         );
     }
 

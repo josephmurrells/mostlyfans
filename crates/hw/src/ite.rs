@@ -1080,7 +1080,7 @@ mod tests {
         let before = chip.io.writes.len();
         assert!(matches!(
             chip.set_duty(0, 0x80),
-            Err(HwError::Unverified("ITE IT8686E"))
+            Err(HwError::NoFanControl("ITE IT8686E"))
         ));
         chip.restore(0, None).unwrap();
         chip.restore_patiently(1, None, Duration::from_millis(50))

@@ -119,9 +119,9 @@ fn detect() -> DiagResult {
         chip.temp_names().len()
     );
     let control = if chip.fan_control() {
-        "verified"
+        "supported"
     } else {
-        "monitor only (not verified on this chip yet)"
+        "monitor only (FanForge doesn't support fan control on this chip)"
     };
     println!("Fan control: {control}");
     if chip.io_space_locked()? {
@@ -213,7 +213,7 @@ fn set_pwm(channel: usize, duty: f32, timeout: Duration, force: bool) -> DiagRes
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
     let mut chip = open_chip()?;
     if !chip.fan_control() {
-        return Err(HwError::Unverified(chip.chip().name).into());
+        return Err(HwError::NoFanControl(chip.chip().name).into());
     }
     if channel >= chip.fan_count() {
         return Err(format!(

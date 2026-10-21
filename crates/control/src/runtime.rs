@@ -408,14 +408,19 @@ impl<B: Backend> Runtime<B> {
         self.read_failures = 0;
     }
 
+    fn others_in_control(&mut self) -> bool {
+        !self.conflicts.poll().controlling.is_empty()
+    }
+
     fn drop_hardware(&mut self, reason: String) {
         self.cancel_calibration("the hardware stopped responding");
+        let others = self.others_in_control();
         if let Some(mut hardware) = self.hardware.take()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(&mut hardware, others)
         {
             tracing::error!(%error, "could not release fans through the failing handle");
-            let fresh =
-                (self.opener)(&self.paths.snapshot).and_then(|mut fresh| fresh.release_all());
+            let fresh = (self.opener)(&self.paths.snapshot)
+                .and_then(|mut fresh| release(&mut fresh, others));
             if let Err(error) = fresh {
                 tracing::error!(%error, "could not release fans through a fresh handle");
                 self.unreleased = true;
@@ -449,8 +454,9 @@ impl<B: Backend> Runtime<B> {
         self.cancel_calibration("the system is suspending");
         self.suspended = true;
         self.shared.heartbeat.pause();
+        let others = self.others_in_control();
         if let Some(hardware) = self.hardware.as_mut()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(hardware, others)
         {
             tracing::error!(%error, "failed to release fans before suspend");
         }
@@ -505,9 +511,10 @@ impl<B: Backend> Runtime<B> {
         let Ok(ready) = self.reinitialize_after_resume() else {
             return Flow::Stop;
         };
+        let others = self.others_in_control();
         if ready
             && let Some(hardware) = self.hardware.as_mut()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(hardware, others)
         {
             tracing::warn!(%error, "failed to reset channels after resume");
         }
@@ -526,10 +533,11 @@ impl<B: Backend> Runtime<B> {
     fn shutdown(&mut self) -> bool {
         self.cancel_calibration("fan control is stopping");
         self.shared.heartbeat.pause();
+        let others = self.others_in_control();
         let Some(mut hardware) = self.hardware.take() else {
             return !self.unreleased;
         };
-        match hardware.release_all() {
+        match release(&mut hardware, others) {
             Ok(()) => {
                 tracing::info!("all fans returned to BIOS control");
                 self.signal(Signal::Owning(false));
@@ -622,6 +630,14 @@ struct Loaded {
     config: Config,
     config_warning: Option<String>,
     calibration_warning: Option<String>,
+}
+
+fn release<B: Backend>(hardware: &mut B, others_in_control: bool) -> Result<(), HwError> {
+    if others_in_control {
+        hardware.release_owned()
+    } else {
+        hardware.release_all()
+    }
 }
 
 fn load_config(paths: &Paths) -> Loaded {
@@ -1428,7 +1444,11 @@ pub(crate) mod tests {
         assert!(loaded.calibration_warning.unwrap().contains("ignored"));
     }
 
-    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
+    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(
+        tag: &str,
+        io: P,
+        conflict: bool,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: dir.path().join("config.toml"),
@@ -1455,7 +1475,13 @@ pub(crate) mod tests {
             )
         });
         let (_messages, rx) = mpsc::channel();
-        let conflicts = ConflictMonitor::with_processes(Box::new(|| Ok(Vec::new())));
+        let conflicts = ConflictMonitor::with_processes(Box::new(move || {
+            Ok(if conflict {
+                vec!["FanControl.exe".to_owned()]
+            } else {
+                Vec::new()
+            })
+        }));
         let mut runtime = Runtime::new(
             paths.clone(),
             Arc::new(Shared::default()),
@@ -1469,7 +1495,7 @@ pub(crate) mod tests {
         assert!(runtime.engine.is_monitor_only());
         let state = runtime.shared.state().unwrap();
         assert!(state.monitor_only);
-        assert!(!state.board.as_ref().unwrap().fan_control);
+        assert_eq!(state.board.as_ref().unwrap().fan_control, conflict);
         assert!(!runtime.owns_any());
         runtime.suspend();
         assert!(matches!(runtime.resume(), Flow::Continue));
@@ -1480,11 +1506,14 @@ pub(crate) mod tests {
         runtime.tick();
         assert!(runtime.shutdown());
         drop(runtime);
+        if conflict {
+            return;
+        }
 
         let mut chip = SuperIo::probe(io, Slot::Primary, NamedMutex::open(&name).unwrap()).unwrap();
         assert!(matches!(
             chip.set_duty(1, 0x20),
-            Err(HwError::Unverified(_))
+            Err(HwError::NoFanControl(_))
         ));
         crate::failsafe::release_with(&mut chip, &paths.snapshot, Duration::from_secs(1)).unwrap();
         crate::failsafe::release_preferring(
@@ -1513,7 +1542,7 @@ pub(crate) mod tests {
     #[test]
     fn an_unverified_ite_chip_is_never_written_through_the_whole_lifecycle() {
         let fake = SharedFake::new(FakeIte::chip(0x8686));
-        hands_off_lifecycle("8686", fake.clone());
+        hands_off_lifecycle("8686", fake.clone(), false);
         fake.with(|chip| {
             assert!(!chip.writes.is_empty());
             for write in chip.writes.clone() {
@@ -1528,7 +1557,7 @@ pub(crate) mod tests {
         it8665e.banks[0][0x00] = 0;
         it8665e.bank_register = 0x20;
         let fake = SharedFake::new(it8665e);
-        hands_off_lifecycle("8665", fake.clone());
+        hands_off_lifecycle("8665", fake.clone(), false);
         fake.with(|chip| {
             assert!(
                 chip.writes
@@ -1542,11 +1571,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unverified_nuvoton_chip_only_sees_bank_selects() {
+    fn a_nuvoton_chip_beside_another_fan_tool_only_sees_bank_selects() {
         let mut nct = FakeNct::new(0xD4, 0x2B);
         nct.bank_register = 0x04;
         let fake = SharedNct::new(nct);
-        hands_off_lifecycle("6798", fake.clone());
+        hands_off_lifecycle("6798", fake.clone(), true);
         fake.with(|chip| {
             assert_eq!(chip.bank_register, 0x04);
             for (port, value, index) in chip.writes.clone() {
