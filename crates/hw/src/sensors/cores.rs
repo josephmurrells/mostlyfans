@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::time::Duration;
 
 use fanforge_core::SensorId;
@@ -6,28 +5,27 @@ use fanforge_core::telemetry::{SensorReading, is_plausible};
 use fanforge_win::topology::{self, PhysicalCore};
 
 use super::SensorSource;
+use crate::HwError;
 use crate::amd::{AmdCpu, CpuInfo, CpuTemps};
 use crate::intel::IntelCpu;
 use crate::smu::{CoreTemp, CoreTempLayout, RyzenSmu};
 
 const CADENCE: Duration = Duration::from_secs(2);
-const BELOW_REFERENCE: f32 = 25.0;
-const ABOVE_REFERENCE: f32 = 15.0;
-const CHECK_WINDOW: usize = 10;
-const FAILED_CHECKS_ALLOWED: usize = 2;
+const CORE_FLOOR: f32 = 10.0;
+const HOTTEST_BELOW_REFERENCE: f32 = 15.0;
+const HOTTEST_ABOVE_REFERENCE: f32 = 15.0;
+const FAILED_CHECKS_ALLOWED: u32 = 2;
+const UNCHECKED_ROUNDS_ALLOWED: u32 = 2;
 
 #[derive(Debug, Default)]
 pub struct LayoutCheck {
-    recent: VecDeque<bool>,
+    failures: u32,
 }
 
 impl LayoutCheck {
     pub fn record(&mut self, passed: bool) -> bool {
-        if self.recent.len() == CHECK_WINDOW {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(passed);
-        self.recent.iter().filter(|passed| !**passed).count() <= FAILED_CHECKS_ALLOWED
+        self.failures = if passed { 0 } else { self.failures + 1 };
+        self.failures <= FAILED_CHECKS_ALLOWED
     }
 }
 
@@ -35,18 +33,29 @@ pub fn layout_plausible(cores: &[CoreTemp], reference: &CpuTemps) -> bool {
     let all_equal = cores
         .windows(2)
         .all(|pair| pair[0].celsius == pair[1].celsius);
-    if cores.is_empty() || all_equal {
+    if cores.len() < 2
+        || all_equal
+        || cores
+            .iter()
+            .any(|core| !is_plausible(core.celsius) || core.celsius < CORE_FLOOR)
+    {
         return false;
     }
-    cores.iter().all(|core| {
-        let ccd = reference
+    let mut ccds: Vec<usize> = cores.iter().map(|core| core.ccd).collect();
+    ccds.dedup();
+    ccds.into_iter().all(|ccd| {
+        let hottest = cores
+            .iter()
+            .filter(|core| core.ccd == ccd)
+            .map(|core| core.celsius)
+            .fold(f32::MIN, f32::max);
+        let measured = reference
             .ccds
             .iter()
-            .find(|(index, _)| *index as usize + 1 == core.ccd)
+            .find(|(index, _)| *index as usize + 1 == ccd)
             .map_or(reference.tctl, |(_, celsius)| *celsius);
-        is_plausible(core.celsius)
-            && core.celsius >= ccd - BELOW_REFERENCE
-            && core.celsius <= ccd.max(reference.tctl) + ABOVE_REFERENCE
+        hottest >= measured - HOTTEST_BELOW_REFERENCE
+            && hottest <= measured.max(reference.tctl) + HOTTEST_ABOVE_REFERENCE
     })
 }
 
@@ -74,6 +83,7 @@ struct AmdCores {
     cpu: AmdCpu,
     layout: CoreTempLayout,
     check: LayoutCheck,
+    unchecked: u32,
 }
 
 #[derive(Debug)]
@@ -102,16 +112,42 @@ pub struct CoreTempSource {
     state: State,
 }
 
+enum AmdRead {
+    Readings(Vec<SensorReading>),
+    WrongLayout,
+}
+
 fn unsupported(reason: &str) -> Result<State, String> {
     tracing::info!(reason, "per-core temperatures are not shown");
     Ok(State::Unsupported)
+}
+
+pub fn worth_retrying(error: &HwError) -> bool {
+    matches!(
+        error,
+        HwError::PawnIoMissing
+            | HwError::AccessDenied
+            | HwError::LockTimeout(_)
+            | HwError::Mutex { .. }
+    )
+}
+
+fn opened<T>(result: Result<T, HwError>) -> Result<Result<T, State>, String> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(error) if worth_retrying(&error) => Err(error.to_string()),
+        Err(error) => unsupported(&error.to_string()).map(Err),
+    }
 }
 
 fn open() -> Result<State, String> {
     let cores = topology::physical_cores().map_err(|error| error.to_string())?;
     match CpuInfo::detect().vendor.as_str() {
         "AuthenticAMD" => {
-            let smu = RyzenSmu::open().map_err(|error| error.to_string())?;
+            let smu = match opened(RyzenSmu::open())? {
+                Ok(smu) => smu,
+                Err(state) => return Ok(state),
+            };
             let table = smu.pm_table();
             let Some(layout) = CoreTempLayout::for_version(table.version) else {
                 return unsupported(&format!(
@@ -126,19 +162,26 @@ fn open() -> Result<State, String> {
                     cores.len()
                 ));
             }
-            let cpu = AmdCpu::open().map_err(|error| error.to_string())?;
+            let cpu = match opened(AmdCpu::open())? {
+                Ok(cpu) => cpu,
+                Err(state) => return Ok(state),
+            };
             Ok(State::Open(Backend::Amd(Box::new(AmdCores {
                 smu,
                 cpu,
                 layout,
                 check: LayoutCheck::default(),
+                unchecked: 0,
             }))))
         }
         "GenuineIntel" => {
             if cores.is_empty() {
                 return unsupported("Windows reported no cores");
             }
-            let cpu = IntelCpu::open().map_err(|error| error.to_string())?;
+            let cpu = match opened(IntelCpu::open())? {
+                Ok(cpu) => cpu,
+                Err(state) => return Ok(state),
+            };
             Ok(State::Open(Backend::Intel(IntelCores {
                 cpu,
                 labels: intel_labels(&cores),
@@ -158,25 +201,28 @@ fn reading(index: usize, label: String, celsius: Option<f32>) -> SensorReading {
 }
 
 impl AmdCores {
-    fn read(&mut self) -> Result<Option<Vec<SensorReading>>, String> {
+    fn read(&mut self) -> Result<AmdRead, HwError> {
         let reference = self.cpu.read();
-        let table = self
-            .smu
-            .read_pm_table()
-            .map_err(|error| error.to_string())?;
-        let cores = self
-            .layout
-            .core_temps(&table)
-            .ok_or_else(|| "the PM table is shorter than its layout".to_owned())?;
+        let table = self.smu.read_pm_table()?;
+        let Some(cores) = self.layout.core_temps(&table) else {
+            return Ok(AmdRead::WrongLayout);
+        };
         match reference {
             Ok(reference) => {
+                self.unchecked = 0;
                 if !self.check.record(layout_plausible(&cores, &reference)) {
-                    return Ok(None);
+                    return Ok(AmdRead::WrongLayout);
                 }
             }
-            Err(error) => tracing::debug!(%error, "no CPU reference for the per-core check"),
+            Err(error) => {
+                tracing::debug!(%error, "no CPU reference for the per-core check");
+                self.unchecked += 1;
+                if self.unchecked > UNCHECKED_ROUNDS_ALLOWED {
+                    return Ok(AmdRead::Readings(Vec::new()));
+                }
+            }
         }
-        Ok(Some(
+        Ok(AmdRead::Readings(
             cores
                 .iter()
                 .map(|core| {
@@ -218,8 +264,8 @@ impl SensorSource for CoreTempSource {
         }
         let readings = match &mut self.state {
             State::Open(Backend::Amd(amd)) => match amd.read() {
-                Ok(Some(readings)) => readings,
-                Ok(None) => {
+                Ok(AmdRead::Readings(readings)) => readings,
+                Ok(AmdRead::WrongLayout) => {
                     tracing::warn!(
                         "per-core temperatures don't match the CPU temperature; the PM table layout looks wrong, so they are turned off until FanForge restarts"
                     );
@@ -227,8 +273,10 @@ impl SensorSource for CoreTempSource {
                     Vec::new()
                 }
                 Err(error) => {
-                    self.state = State::Closed;
-                    return Err(error);
+                    if !matches!(error, HwError::LockTimeout(_)) {
+                        self.state = State::Closed;
+                    }
+                    return Err(error.to_string());
                 }
             },
             State::Open(Backend::Intel(intel)) => intel.read(),
@@ -271,6 +319,12 @@ mod tests {
     }
 
     #[test]
+    fn one_hot_core_with_idle_siblings_passes_the_check() {
+        let single_thread = cores(&[82.0, 44.0, 43.0, 42.0, 41.0, 41.0, 40.0, 42.0]);
+        assert!(layout_plausible(&single_thread, &reference(84.0, 80.0)));
+    }
+
+    #[test]
     fn neighbouring_fields_fail_the_check() {
         let power = cores(&[2.1, 3.4, 0.9, 1.2, 0.8, 0.7, 0.5, 1.1]);
         assert!(!layout_plausible(&power, &reference(47.0, 39.2)));
@@ -278,6 +332,8 @@ mod tests {
             4050.0, 4050.0, 3600.0, 3600.0, 3600.0, 4050.0, 3600.0, 4050.0,
         ]);
         assert!(!layout_plausible(&clocks, &reference(47.0, 39.2)));
+        let residency = cores(&[100.0, 98.0, 97.0, 99.0, 95.0, 96.0, 99.0, 100.0]);
+        assert!(!layout_plausible(&residency, &reference(47.0, 39.2)));
         let flat = cores(&[40.0; 8]);
         assert!(!layout_plausible(&flat, &reference(47.0, 39.2)));
         assert!(!layout_plausible(&[], &reference(47.0, 39.2)));
@@ -293,19 +349,21 @@ mod tests {
     }
 
     #[test]
-    fn three_failed_checks_in_ten_turn_per_core_off() {
+    fn three_failed_checks_in_a_row_turn_per_core_off() {
         let mut check = LayoutCheck::default();
+        assert!(check.record(false));
         assert!(check.record(false));
         assert!(check.record(true));
         assert!(check.record(false));
-        for _ in 0..7 {
-            assert!(check.record(true));
-        }
         assert!(check.record(false));
-        let mut check = LayoutCheck::default();
-        check.record(false);
-        check.record(false);
         assert!(!check.record(false));
+    }
+
+    #[test]
+    fn only_missing_access_is_retried() {
+        assert!(worth_retrying(&HwError::PawnIoMissing));
+        assert!(worth_retrying(&HwError::LockTimeout("pci".into())));
+        assert!(!worth_retrying(&HwError::UnsupportedCpu("x".into())));
     }
 
     #[test]

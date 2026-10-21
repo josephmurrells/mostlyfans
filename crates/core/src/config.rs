@@ -181,7 +181,10 @@ impl Config {
                 .filter_map(|curve| curve.kind.sensor_mut()),
         );
         let mut changed = false;
-        for sensor in sensors.into_iter().filter(|sensor| **sensor == legacy) {
+        for sensor in sensors
+            .into_iter()
+            .filter(|sensor| **sensor == legacy || sensor.is_display_only())
+        {
             *sensor = SensorId::new(CPU_SENSOR);
             changed = true;
         }
@@ -551,6 +554,23 @@ mod tests {
         let mut config = Config::default();
         config.safety.release_c = 90.0;
         assert_eq!(config.validate(), Err(ConfigError::InvalidSafety));
+    }
+
+    #[test]
+    fn migration_moves_per_core_sensors_to_the_cpu_temperature() {
+        let mut config = Config::default();
+        config.safety.critical_sensor = SensorId::core(2);
+        config.curves.push(curve(
+            "a",
+            CurveKind::Graph {
+                sensor: SensorId::core(5),
+                points: vec![CurvePoint::new(40.0, 30.0)],
+            },
+        ));
+        assert!(config.migrate());
+        assert_eq!(config.safety.critical_sensor.as_str(), CPU_SENSOR);
+        assert_eq!(config.curves[0].kind.sensor().unwrap().as_str(), CPU_SENSOR);
+        config.validate().unwrap();
     }
 
     #[test]

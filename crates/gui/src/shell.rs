@@ -572,6 +572,7 @@ impl Shell {
                     history: &self.history,
                     pinned: &pinned,
                     customised: pins::customised(&self.prefs),
+                    live,
                 };
                 let action = egui::ScrollArea::vertical()
                     .show(ui, |ui| temperatures::show(ui, &page))
