@@ -31,6 +31,7 @@ pub struct IteMap {
     pub index_echo: bool,
     pub config_check: bool,
     pub manual_control: Option<u8>,
+    pub polarity_check: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -140,6 +141,7 @@ const ITE: IteMap = IteMap {
     index_echo: true,
     config_check: true,
     manual_control: None,
+    polarity_check: true,
 };
 
 const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
@@ -300,6 +302,7 @@ pub static CHIPS: [ChipSpec; 25] = [
             bank_select: true,
             dump_banks: 4,
             config_check: false,
+            polarity_check: false,
             ..ITE
         }),
     },
@@ -323,6 +326,8 @@ pub static CHIPS: [ChipSpec; 25] = [
         0x8625,
         IteMap {
             fans: 6,
+            bank_select: true,
+            dump_banks: 4,
             pwm_control: PWM_CONTROL_ALT,
             tach_low: TACH_LOW_ALT,
             tach_high: TACH_HIGH_ALT,
@@ -344,6 +349,8 @@ pub static CHIPS: [ChipSpec; 25] = [
         0x8686,
         IteMap {
             fans: 5,
+            bank_select: true,
+            dump_banks: 4,
             temps: 7,
             ..ITE
         },
@@ -353,6 +360,8 @@ pub static CHIPS: [ChipSpec; 25] = [
         0x8688,
         IteMap {
             fans: 5,
+            bank_select: true,
+            dump_banks: 4,
             temps: 6,
             index_echo: false,
             ..ITE
@@ -376,6 +385,8 @@ pub static CHIPS: [ChipSpec; 25] = [
         0x8696,
         IteMap {
             fans: 6,
+            bank_select: true,
+            dump_banks: 4,
             temps: 6,
             ..ITE
         },
