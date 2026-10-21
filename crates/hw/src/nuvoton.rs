@@ -669,21 +669,14 @@ mod tests {
         assert_eq!(readings.channels[0].kind, ControlKind::Nuvoton);
         assert_eq!(readings.channels[0].duty, 0x80);
         assert_eq!(
-            readings.temps,
-            vec![
-                Some(30.0),
-                Some(45.5),
-                None,
-                Some(38.0),
-                None,
-                None,
-                None,
-                None,
-                None
-            ]
+            readings.temps[..4],
+            [Some(30.0), Some(45.5), None, Some(38.0)]
         );
+        assert!(readings.temps[4..].iter().all(Option::is_none));
+        let names = chip.temp_names();
+        assert_eq!(names.len(), readings.temps.len());
         assert_eq!(
-            chip.temp_names(),
+            names[..9],
             [
                 "SYSTIN", "CPUTIN", "AUXTIN0", "AUXTIN1", "AUXTIN2", "AUXTIN3", "AUXTIN4",
                 "TSENSOR", "PECI 0"
@@ -716,9 +709,26 @@ mod tests {
         let readings = chip.read().unwrap();
         assert_eq!(readings.rpm, [Some(1200), Some(0), Some(0)]);
         assert_eq!(
-            readings.temps,
-            vec![Some(30.0), Some(45.5), Some(20.5), None]
+            readings.temps[..4],
+            [Some(30.0), Some(45.5), Some(20.5), None]
         );
+        assert!(readings.temps[4..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_slot_routed_to_an_smbus_master_is_read_not_dropped() {
+        let mut fake = FakeNct::new(0xC3, 0x33);
+        fake.set(0x624, 4);
+        fake.set(0x62B, 41);
+        let mut chip = probe(fake, "6776-smbus");
+        let readings = chip.read().unwrap();
+        let names = chip.temp_names();
+        let index = names
+            .iter()
+            .position(|name| *name == Some("SMBUSMASTER 0"))
+            .unwrap();
+        assert!(index >= 4);
+        assert_eq!(readings.temps[index], Some(41.0));
     }
 
     #[test]
