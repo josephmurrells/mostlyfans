@@ -31,6 +31,8 @@ const BANK_SHIFT: u8 = 5;
 const VENDOR_ID_REG: u8 = 0x58;
 const VENDOR_IDS: [u8; 2] = [0x90, 0x7F];
 const MAIN_CONTROL_REG: u8 = 0x13;
+const FAN_CONTROL_REG: u8 = 0x14;
+const PWM_CONFIGURED: u8 = 0x87;
 const MAIN_CONTROL_CHANNELS: usize = 3;
 const PWM_DUTY_REGS: [u8; 6] = [0x63, 0x6B, 0x73, 0x7B, 0xA3, 0xAB];
 const FULL_SPEED: u8 = 0xFF;
@@ -192,6 +194,10 @@ impl<'a, P: PortIo> Session<'a, P> {
 }
 
 impl<P: PortIo> crate::superio::Session for Session<'_, P> {
+    fn control_usable(&mut self) -> Result<bool, HwError> {
+        Ok(!self.map.polarity_check || self.ec.read(FAN_CONTROL_REG)? & PWM_CONFIGURED != 0)
+    }
+
     fn verify_vendor(&mut self) -> Result<(), HwError> {
         let vendor = self.ec.read(VENDOR_ID_REG)?;
         if !VENDOR_IDS.contains(&vendor) {
@@ -403,6 +409,7 @@ pub mod fake {
             let mut fake = Self::new();
             fake.chip_id = chip_id;
             fake.banks[0][usize::from(CONFIGURATION_REG)] = CONFIGURATION_READY;
+            fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
             if let Some(spec) = chip_matching(|chip| chip.matches_ite(chip_id)) {
                 for channel in 0..spec.fan_count() {
                     Self::fill_channel(&mut fake.banks[0], spec, channel);
@@ -1071,6 +1078,42 @@ mod tests {
         assert_eq!(dump.banks.len(), 1);
         chip.read().unwrap();
         assert!(data_writes(&chip.io).is_empty());
+    }
+
+    #[test]
+    fn the_it8665e_drives_and_restores_all_six_alternate_channels() {
+        let mut fake = FakeIte::chip(0x8665);
+        fake.banks[0][usize::from(CONFIGURATION_REG)] = 0;
+        let mut chip = probe(fake, "8665-control");
+        let saved = chip.channel_states().unwrap();
+        let control = [0x15, 0x16, 0x17, 0x1E, 0x1F, 0x92];
+        for channel in 0..6 {
+            chip.io.bank_register = 0x20;
+            chip.set_duty(channel, 0x55).unwrap();
+            assert_eq!(chip.io.bank(), 0);
+            assert_eq!(chip.io.reg(control[channel]), channel as u8);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x55);
+        }
+        for channel in 0..6 {
+            chip.restore(channel, Some(saved[channel])).unwrap();
+            assert_eq!(chip.io.reg(control[channel]), AUTO_MODE_BIT | channel as u8);
+            assert_eq!(chip.io.reg(PWM_DUTY_REGS[channel]), 0x40);
+        }
+    }
+
+    #[test]
+    fn a_broken_pwm_configuration_leaves_the_chip_monitor_only() {
+        let mut fake = FakeIte::chip(0x8628);
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x70;
+        let mut chip = probe(fake, "polarity");
+        assert!(!chip.fan_control());
+        assert!(matches!(
+            chip.set_duty(0, 0x80),
+            Err(HwError::NoFanControl("ITE IT8628E"))
+        ));
+        chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x01;
+        chip.reinitialize().unwrap();
+        assert!(chip.fan_control());
     }
 
     #[test]

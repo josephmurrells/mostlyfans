@@ -253,6 +253,10 @@ pub(crate) trait Session {
     fn channel_states(&mut self) -> Result<Vec<ChannelState>, HwError>;
     fn set_duty(&mut self, channel: usize, duty: u8) -> Result<(), HwError>;
     fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError>;
+
+    fn control_usable(&mut self) -> Result<bool, HwError> {
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]
@@ -261,6 +265,7 @@ pub struct SuperIo<P: PortIo> {
     lock: NamedMutex,
     pub(crate) config: ChipConfig,
     unlock: bool,
+    usable: bool,
 }
 
 impl<P: PortIo> SuperIo<P> {
@@ -278,13 +283,28 @@ impl<P: PortIo> SuperIo<P> {
             lock,
             config,
             unlock,
+            usable: true,
         })
     }
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
         let mut chip = Self::connect(io, slot, lock, true)?;
-        chip.transaction(|session| session.verify_vendor())?;
+        chip.check_session()?;
         Ok(chip)
+    }
+
+    fn check_session(&mut self) -> Result<(), HwError> {
+        self.usable = self.transaction(|session| {
+            session.verify_vendor()?;
+            session.control_usable()
+        })?;
+        if !self.usable && self.config.chip.fan_control {
+            tracing::warn!(
+                chip = self.config.chip.name,
+                "the PWM configuration is broken (as Linux it87 checks it); monitoring only"
+            );
+        }
+        Ok(())
     }
 
     pub fn reinitialize(&mut self) -> Result<(), HwError> {
@@ -293,7 +313,7 @@ impl<P: PortIo> SuperIo<P> {
             reread_config(&mut self.io, &self.config, self.unlock)?
         };
         self.config = config;
-        self.transaction(|session| session.verify_vendor())
+        self.check_session()
     }
 
     pub fn config(&self) -> ChipConfig {
@@ -313,7 +333,7 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     pub fn fan_control(&self) -> bool {
-        self.config.chip.fan_control
+        self.config.chip.fan_control && self.usable
     }
 
     fn transaction<T>(
