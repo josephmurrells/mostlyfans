@@ -40,6 +40,9 @@ pub struct Readings {
 
 impl Readings {
     pub fn temperature(&self, id: &SensorId) -> Option<f32> {
+        if id.is_display_only() {
+            return None;
+        }
         self.sensors
             .iter()
             .find(|sensor| &sensor.id == id)
@@ -82,5 +85,18 @@ mod tests {
         assert_eq!(readings.temperature(&"b".into()), None);
         assert_eq!(readings.temperature(&"c".into()), Some(45.0));
         assert_eq!(readings.temperature(&"missing".into()), None);
+    }
+
+    #[test]
+    fn per_core_temperatures_never_reach_fan_control() {
+        let readings = Readings {
+            sensors: vec![SensorReading {
+                id: SensorId::core(0),
+                label: "Core0 (CCD1)".into(),
+                celsius: Some(45.0),
+            }],
+            fans: Vec::new(),
+        };
+        assert_eq!(readings.temperature(&SensorId::core(0)), None);
     }
 }
