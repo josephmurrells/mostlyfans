@@ -71,7 +71,7 @@ Debug builds don't request elevation. Run them from an elevated terminal.
 
 ## GPU and drive temperatures
 
-Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures. They show on the Overview and any curve can use them.
+Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures. They show on the Temperatures page and any curve can use them.
 
 - **NVIDIA:** through NVML (`nvml.dll`, installed with the driver). Each GPU is identified by its NVML UUID, so a curve stays bound to the same card across reboots and slot moves.
 - **AMD:** through ADL (`atiadlxx.dll`, installed with Adrenalin), edge temperature of discrete cards (the Radeon graphics built into Ryzen CPUs is skipped; its temperature tracks the CPU). This path has not been tested on real AMD hardware yet. Each GPU is identified by its PCI bus/device/function. That number can change when you add or remove a PCIe device or change BIOS PCIe settings; a curve bound to the old id then sees a missing sensor and its fan goes to 100% (or back to BIOS control if the missing-sensor fallback is off) until you pick the sensor again.
@@ -81,9 +81,19 @@ Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures
 - **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual missing-sensor fallback. The critical sensor stays the CPU temperature (`cpu/package`) unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
 - `fanforge-diag temps` prints these temperatures without PawnIO or administrator rights.
 
-## AMD per-core temperatures (in testing)
+## Temperatures page and Overview pins
 
-Ryzen CPUs publish per-core temperatures in their SMU power-management (PM) table, which is what HWiNFO shows as "Core0 (CCD1)". AMD doesn't document the table; its layout depends on the PM table version the SMU firmware reports. FanForge doesn't show these readings yet. To check whether your CPU's table version has a known layout, run from an elevated terminal:
+- **Temperatures page:** every sensor FanForge reads, grouped as CPU, Motherboard, GPU, Drives and Other. Each row shows the current value, the lowest and highest since FanForge started, a 5-minute sparkline, and whether it's the safety sensor or used by a curve. Motherboard channels that haven't given a usable reading since FanForge started are folded into an "Unconnected" section, unless the safety sensor or a curve uses them.
+- **Pins:** the Overview shows an automatic selection (the safety sensor and one sensor per kind, up to 4, and every fan) until you pin or unpin something. Pin temperatures on the Temperatures page and fans in their Fans page detail; right-click a tile or fan card on the Overview to unpin it. **Reset Overview to automatic** on the Temperatures page goes back. Pins are saved per user straight away. A pinned item that disappears shows as "Missing" once the hardware has been ready for 10 s, with an Unpin button. Unpinning never hides an alert.
+
+## Per-core temperatures
+
+FanForge shows a temperature for each physical core on the Temperatures page. They are display only: fan curves and the critical override can't use them (a config that tries is rejected) and go by the overall CPU temperature. They're read every 2 s on their own thread, so they never delay fan control.
+
+- **Intel:** each physical core's thermal status register, labelled "P-core N" and "E-core N" on hybrid CPUs, "Core N" otherwise.
+- **AMD Ryzen:** "Core0 (CCD1)" and so on, as in HWiNFO, from the SMU power-management (PM) table through PawnIO's `RyzenSMU` module. AMD doesn't document the table; its layout depends on the PM table version the SMU firmware reports, so FanForge only uses the versions in its allow-list (layouts from `ryzen_monitor`) and only when the table's core count matches the CPU's, which leaves out 6- and 12-core parts for now. Every reading is cross-checked against the CCD and Tctl temperatures; if 3 of the last 10 rounds don't match, the layout is taken to be wrong and per-core readings are turned off until FanForge restarts.
+
+To check what your CPU's PM table holds, run from an elevated terminal:
 
 ```powershell
 fanforge-diag pm-table
@@ -143,6 +153,7 @@ fanforge-diag diff cold.json after-hwinfo.json
 ## Not yet implemented
 
 - Testing the AMD GPU (ADL) path on real hardware
+- Per-core temperatures on AMD CPUs with cores fused off (6- and 12-core parts)
 - Fan headers that have a tachometer but no PWM output (e.g. the IT8686E's 6th tach) are not shown
 - ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips, Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips
 - System fan headers on MSI 800-series boards with the NCT6687D

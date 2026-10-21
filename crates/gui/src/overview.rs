@@ -2,16 +2,17 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, Id, RichText, vec2};
-use fanforge_core::FanId;
 use fanforge_core::state::ControlState;
 use fanforge_core::telemetry::{FanReading, SensorReading};
+use fanforge_core::{FanId, SensorId};
 
 use crate::format;
 use crate::history::History;
+use crate::icons;
 use crate::theme::{self, DISPLAY, SPACE_M, SPACE_S, Tone};
 use crate::widgets;
 
-const TILE_COUNT: usize = 4;
+pub const TILE_COUNT: usize = 4;
 const TILE_WIDTH: f32 = 190.0;
 const FAN_CARD_WIDTH: f32 = 230.0;
 const SPARK_HEIGHT: f32 = 36.0;
@@ -19,8 +20,21 @@ const SPARK_HEIGHT: f32 = 36.0;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverviewAction {
     OpenFan(FanId),
+    OpenFans,
+    OpenTemperatures,
+    UnpinSensor(SensorId),
+    UnpinFan(FanId),
     StartSetup,
     SkipSetup,
+}
+
+pub struct OverviewPage<'a> {
+    pub state: &'a ControlState,
+    pub history: &'a History,
+    pub live: bool,
+    pub offer_setup: bool,
+    pub sensors: &'a [SensorId],
+    pub fans: &'a [FanId],
 }
 
 fn category(sensor: &SensorReading) -> usize {
@@ -44,6 +58,7 @@ pub fn ordered_sensors(state: &ControlState) -> Vec<&SensorReading> {
         .readings
         .sensors
         .iter()
+        .filter(|sensor| !sensor.id.is_display_only())
         .map(|sensor| {
             let group = category(sensor);
             let tier = if &sensor.id == critical {
@@ -60,6 +75,12 @@ pub fn ordered_sensors(state: &ControlState) -> Vec<&SensorReading> {
     ranked.into_iter().map(|(_, sensor)| sensor).collect()
 }
 
+pub fn ordered_fans(state: &ControlState) -> Vec<&FanReading> {
+    let mut fans: Vec<&FanReading> = state.readings.fans.iter().collect();
+    fans.sort_by_key(|fan| !format::connected(fan));
+    fans
+}
+
 pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config) -> Vec<FanId> {
     state
         .readings
@@ -70,62 +91,130 @@ pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config
         .collect()
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    state: &ControlState,
-    history: &History,
-    live: bool,
-    offer_setup: bool,
-) -> Option<OverviewAction> {
+enum Tile<'a, T, R> {
+    Present(&'a R),
+    Absent(&'a T),
+}
+
+fn tiles<'a, T: PartialEq, R>(
+    ids: &'a [T],
+    readings: &'a [R],
+    id_of: impl Fn(&R) -> &T,
+) -> Vec<Tile<'a, T, R>> {
+    ids.iter()
+        .map(|id| {
+            readings
+                .iter()
+                .find(|reading| id_of(reading) == id)
+                .map_or(Tile::Absent(id), Tile::Present)
+        })
+        .collect()
+}
+
+pub fn show(ui: &mut egui::Ui, page: &OverviewPage<'_>) -> Option<OverviewAction> {
     let mut action = None;
     let now = Instant::now();
+    let state = page.state;
+    let settled = page.history.settled(now);
     widgets::page_title(ui, "Overview", None);
 
     let unnamed = unnamed_fans(state, &state.config);
-    if offer_setup && !unnamed.is_empty() {
+    if page.offer_setup && !unnamed.is_empty() {
         action = setup_card(ui, unnamed.len()).or(action);
         ui.add_space(SPACE_M);
     }
 
-    widgets::section_heading(ui, "Temperatures");
-    let sensors = ordered_sensors(state);
-    let tiles: Vec<&SensorReading> = sensors.iter().take(TILE_COUNT).copied().collect();
-    widgets::card_grid(ui, &tiles, TILE_WIDTH, |ui, sensor| {
-        temperature_tile(ui, state, history, sensor, live, now);
+    ui.horizontal(|ui| {
+        widgets::section_heading(ui, "Temperatures");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.link("All temperatures").clicked() {
+                action = Some(OverviewAction::OpenTemperatures);
+            }
+        });
     });
-    if sensors.len() > TILE_COUNT {
-        egui::CollapsingHeader::new(format!("All sensors ({})", sensors.len()))
-            .id_salt("all-sensors")
-            .show(ui, |ui| {
-                egui::Grid::new("all-sensors-grid")
-                    .num_columns(2)
-                    .spacing(vec2(SPACE_M * 2.0, SPACE_S))
-                    .show(ui, |ui| {
-                        for sensor in &sensors {
-                            ui.label(&sensor.label).on_hover_text(sensor.id.as_str());
-                            ui.label(RichText::new(format::celsius(sensor.celsius)).strong());
-                            ui.end_row();
-                        }
-                    });
-            });
+    let sensor_tiles = tiles(page.sensors, &state.readings.sensors, |sensor| &sensor.id);
+    if sensor_tiles.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(widgets::muted("No temperatures pinned."));
+            if ui.link("Pin some on the Temperatures page").clicked() {
+                action = Some(OverviewAction::OpenTemperatures);
+            }
+        });
     }
+    widgets::card_grid(ui, &sensor_tiles, TILE_WIDTH, |ui, tile| {
+        let next = match tile {
+            Tile::Present(sensor) => temperature_tile(ui, page, sensor, now),
+            Tile::Absent(id) => absent_tile(ui, id.as_str(), settled && page.live)
+                .then(|| OverviewAction::UnpinSensor((*id).clone())),
+        };
+        if next.is_some() {
+            action = next;
+        }
+    });
 
     ui.add_space(SPACE_M);
     widgets::section_heading(ui, "Fans");
-    if state.readings.fans.is_empty() {
+    if state.readings.fans.is_empty() && page.fans.is_empty() {
         ui.label(widgets::muted(
             "No fan headers found. FanForge needs the PawnIO driver and a supported Super I/O chip.",
         ));
         return action;
     }
-    let mut fans: Vec<&FanReading> = state.readings.fans.iter().collect();
-    fans.sort_by_key(|fan| !format::connected(fan));
-    widgets::card_grid(ui, &fans, FAN_CARD_WIDTH, |ui, fan| {
-        if fan_card(ui, state, history, fan, live, now).clicked() {
-            action = Some(OverviewAction::OpenFan(fan.id.clone()));
+    let fan_tiles = tiles(page.fans, &state.readings.fans, |fan| &fan.id);
+    if fan_tiles.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(widgets::muted("No fans pinned."));
+            if ui.link("Pin some on the Fans page").clicked() {
+                action = Some(OverviewAction::OpenFans);
+            }
+        });
+    }
+    widgets::card_grid(ui, &fan_tiles, FAN_CARD_WIDTH, |ui, tile| {
+        let next = match tile {
+            Tile::Present(fan) => fan_card(ui, page, fan, now),
+            Tile::Absent(id) => absent_tile(ui, id.as_str(), settled && page.live)
+                .then(|| OverviewAction::UnpinFan((*id).clone())),
+        };
+        if next.is_some() {
+            action = next;
         }
     });
     action
+}
+
+fn unpin_menu(response: &egui::Response, unpin: OverviewAction) -> Option<OverviewAction> {
+    let mut action = None;
+    response.context_menu(|ui| {
+        if ui
+            .button(widgets::with_icon(icons::UNPIN, "Unpin from Overview"))
+            .clicked()
+        {
+            action = Some(unpin.clone());
+            ui.close();
+        }
+    });
+    action
+}
+
+fn absent_tile(ui: &mut egui::Ui, id: &str, missing: bool) -> bool {
+    let mut unpin = false;
+    widgets::card(ui, |ui| {
+        ui.label(widgets::caption(ui, id));
+        if missing {
+            ui.label(widgets::value("Missing", theme::SECTION).weak());
+            ui.label(widgets::caption(
+                ui,
+                "Pinned, but FanForge can't find it any more.",
+            ));
+            unpin = ui
+                .button(widgets::with_icon(icons::UNPIN, "Unpin"))
+                .clicked();
+        } else {
+            ui.label(widgets::value("–", DISPLAY).weak());
+            ui.label(widgets::caption(ui, "waiting for a reading"));
+        }
+    });
+    unpin
 }
 
 fn setup_card(ui: &mut egui::Ui, count: usize) -> Option<OverviewAction> {
@@ -157,56 +246,66 @@ fn setup_card(ui: &mut egui::Ui, count: usize) -> Option<OverviewAction> {
 
 fn temperature_tile(
     ui: &mut egui::Ui,
-    state: &ControlState,
-    history: &History,
+    page: &OverviewPage<'_>,
     sensor: &SensorReading,
-    live: bool,
     now: Instant,
-) {
-    let palette = theme::of(ui);
-    widgets::card(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(widgets::caption(ui, &sensor.label))
-                .on_hover_text(sensor.id.as_str());
-            if sensor.id == state.config.safety.critical_sensor {
-                ui.label(widgets::caption(ui, "· safety sensor"));
-            }
-        });
-        let color = if live {
-            palette.text
-        } else {
-            palette.text_muted
-        };
-        ui.label(widgets::value(format::whole_celsius(sensor.celsius), DISPLAY).color(color));
-        let points = history.temperature(&sensor.id, now);
-        let (low, high) = points
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(low, high), (_, value)| {
-                (low.min(*value), high.max(*value))
+) -> Option<OverviewAction> {
+    let state = page.state;
+    let response = widgets::clickable_card(
+        ui,
+        Id::unique(("temperature-tile", sensor.id.as_str())),
+        &sensor.label,
+        |ui| {
+            let palette = theme::of(ui);
+            ui.horizontal(|ui| {
+                ui.label(widgets::caption(ui, &sensor.label))
+                    .on_hover_text(sensor.id.as_str());
+                if sensor.id == state.config.safety.critical_sensor {
+                    ui.label(widgets::caption(ui, "· safety sensor"));
+                }
             });
-        let middle = (low + high) / 2.0;
-        let half = ((high - low) / 2.0).max(5.0) + 1.0;
-        widgets::sparkline(
-            ui,
-            vec2(ui.available_width(), SPARK_HEIGHT),
-            &points,
-            (middle - half, middle + half),
-            palette.accent,
-        );
-        if !live {
-            ui.label(widgets::caption(ui, "last known"));
-        }
-    });
+            let color = if page.live {
+                palette.text
+            } else {
+                palette.text_muted
+            };
+            ui.label(widgets::value(format::whole_celsius(sensor.celsius), DISPLAY).color(color));
+            let points = page.history.temperature(&sensor.id, now);
+            let (low, high) = points
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(low, high), (_, value)| {
+                    (low.min(*value), high.max(*value))
+                });
+            let middle = (low + high) / 2.0;
+            let half = ((high - low) / 2.0).max(5.0) + 1.0;
+            widgets::sparkline(
+                ui,
+                vec2(ui.available_width(), SPARK_HEIGHT),
+                &points,
+                (middle - half, middle + half),
+                palette.accent,
+            );
+            if !page.live {
+                ui.label(widgets::caption(ui, "last known"));
+            }
+        },
+    );
+    let unpin = unpin_menu(&response, OverviewAction::UnpinSensor(sensor.id.clone()));
+    if response.clicked() {
+        return Some(OverviewAction::OpenTemperatures);
+    }
+    unpin
 }
 
 fn fan_card(
     ui: &mut egui::Ui,
-    state: &ControlState,
-    history: &History,
+    page: &OverviewPage<'_>,
     fan: &FanReading,
-    live: bool,
     now: Instant,
-) -> egui::Response {
+) -> Option<OverviewAction> {
+    let state = page.state;
+    let history = page.history;
+    let live = page.live;
     let name = format::fan_name(&state.config, state, &fan.id);
     let connected = format::connected(fan);
     let status = state.fans.iter().find(|status| status.id == fan.id);
@@ -214,56 +313,61 @@ fn fan_card(
     let limits = state.limits.get(&fan.id).copied().unwrap_or_default();
     let floor = format::effective_floor(limits, &settings, state.config.calibration_for(&fan.id));
     let mode = state.config.mode(&fan.id);
-    widgets::clickable_card(ui, Id::unique(("fan-card", fan.id.as_str())), &name, |ui| {
-        let palette = theme::of(ui);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&name).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !live {
-                    widgets::status(ui, Tone::Neutral, "BIOS control");
-                } else if let Some(status) = status {
-                    let (text, tone) = format::fan_state(&status.state);
-                    widgets::status(ui, tone, &text);
-                }
+    let response =
+        widgets::clickable_card(ui, Id::unique(("fan-card", fan.id.as_str())), &name, |ui| {
+            let palette = theme::of(ui);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&name).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !live {
+                        widgets::status(ui, Tone::Neutral, "BIOS control");
+                    } else if let Some(status) = status {
+                        let (text, tone) = format::fan_state(&status.state);
+                        widgets::status(ui, tone, &text);
+                    }
+                });
+            });
+            let rpm = if connected {
+                format::rpm(fan)
+            } else {
+                "No fan".to_owned()
+            };
+            let color = if live && connected {
+                palette.text
+            } else {
+                palette.text_muted
+            };
+            ui.label(widgets::value(rpm, DISPLAY).color(color));
+            let points = history.rpm(&fan.id, now);
+            let peak = points.iter().map(|(_, rpm)| *rpm).fold(0.0, f32::max);
+            widgets::sparkline(
+                ui,
+                vec2(ui.available_width(), SPARK_HEIGHT),
+                &points,
+                (0.0, (peak * 1.15).max(500.0)),
+                palette.accent,
+            );
+            ui.add_space(SPACE_S);
+            let duty = fan.duty.map(|duty| duty.percent());
+            widgets::duty_bar(ui, ui.available_width(), duty, Some(floor.percent));
+            ui.horizontal(|ui| {
+                widgets::chip(ui, &format::mode_summary(&state.config, state, &mode));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(widgets::caption(ui, format::duty(fan.duty)));
+                });
             });
         });
-        let rpm = if connected {
-            format::rpm(fan)
-        } else {
-            "No fan".to_owned()
-        };
-        let color = if live && connected {
-            palette.text
-        } else {
-            palette.text_muted
-        };
-        ui.label(widgets::value(rpm, DISPLAY).color(color));
-        let points = history.rpm(&fan.id, now);
-        let peak = points.iter().map(|(_, rpm)| *rpm).fold(0.0, f32::max);
-        widgets::sparkline(
-            ui,
-            vec2(ui.available_width(), SPARK_HEIGHT),
-            &points,
-            (0.0, (peak * 1.15).max(500.0)),
-            palette.accent,
-        );
-        ui.add_space(SPACE_S);
-        let duty = fan.duty.map(|duty| duty.percent());
-        widgets::duty_bar(ui, ui.available_width(), duty, Some(floor.percent));
-        ui.horizontal(|ui| {
-            widgets::chip(ui, &format::mode_summary(&state.config, state, &mode));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(widgets::caption(ui, format::duty(fan.duty)));
-            });
-        });
-    })
+    let unpin = unpin_menu(&response, OverviewAction::UnpinFan(fan.id.clone()));
+    if response.clicked() {
+        return Some(OverviewAction::OpenFan(fan.id.clone()));
+    }
+    unpin
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixtures;
-    use fanforge_core::SensorId;
 
     #[test]
     fn the_safety_sensor_comes_first_and_the_order_is_stable() {

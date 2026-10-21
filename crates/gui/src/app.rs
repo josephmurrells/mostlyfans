@@ -145,8 +145,14 @@ impl eframe::App for FanForgeApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.shell.ui(ui);
+        if self.shell.take_prefs_changed()
+            && let Some(storage) = frame.storage_mut()
+        {
+            self.shell.prefs.save(storage);
+            storage.flush();
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
