@@ -13,6 +13,7 @@ pub mod nuvoton;
 pub mod pawnio;
 pub mod port;
 pub mod sensors;
+pub mod smu;
 pub mod snapshot;
 pub mod superio;
 pub mod system;

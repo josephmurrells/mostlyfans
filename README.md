@@ -13,7 +13,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 | `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe on the multi-bank ITE chips), AMD (SMN) and Intel (MSR) CPU temperatures, GPU and drive temperature sources. |
 | `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
 | `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
-| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, dump, diff, guarded set-pwm, restore. |
+| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, pm-table, dump, diff, guarded set-pwm, restore. |
 
 ## Supported chips
 
@@ -80,6 +80,17 @@ Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures
 - **Polling:** GPUs are read every second and drives every 5 s, each on its own thread. They never touch the Super I/O bus, and a slow or hung driver call can't delay the control loop. A missing driver is retried every 30 s.
 - **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual missing-sensor fallback. The critical sensor stays the CPU temperature (`cpu/package`) unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
 - `fanforge-diag temps` prints these temperatures without PawnIO or administrator rights.
+
+## AMD per-core temperatures (in testing)
+
+Ryzen CPUs publish per-core temperatures in their SMU power-management (PM) table, which is what HWiNFO shows as "Core0 (CCD1)". AMD doesn't document the table; its layout depends on the PM table version the SMU firmware reports. FanForge doesn't show these readings yet. To check whether your CPU's table version has a known layout, run from an elevated terminal:
+
+```powershell
+fanforge-diag pm-table
+fanforge-diag pm-table --raw | Out-File -Encoding utf8 pm-table.txt
+```
+
+It prints the CPU code name, the SMU firmware version, the PM table version, Tctl and the CCD temperatures, and the per-core temperatures if the version has a known layout (from `ryzen_monitor`; unverified). Compare them with HWiNFO's "Core0 (CCD1)" values. The list shows every core slot in the table, so on CPUs with cores fused off (6- and 12-core parts) it includes slots HWiNFO skips, and the numbering can differ from HWiNFO's. `--raw` adds every value in the table, so an unknown version can be mapped. The command asks the SMU to refresh the table, the same request HWiNFO and ZenTimings make, holding `Global\Access_PCI`; it changes no settings. It works while FanForge runs.
 
 ## Confirm the root cause on your PC
 
