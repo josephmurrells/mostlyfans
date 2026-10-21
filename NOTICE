@@ -1,7 +1,7 @@
 FanForge includes or is derived from the following third-party work.
 
 PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
-crates/hw/modules/IntelMSR.bin)
+crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin)
   Copyright (C) namazso
   https://github.com/namazso/PawnIO.Modules
   Licensed under the GNU Lesser General Public License v2.1.
@@ -22,6 +22,11 @@ Linux k10temp driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/k10temp.c
   Reference for AMD family 17h/19h/1Ah temperature register decoding and the
   per-model CCD temperature layouts.
+
+ryzen_monitor
+  https://github.com/hattedsquirrel/ryzen_monitor
+  Reference for the per-core temperature (CORE_TEMP) positions in the AMD SMU
+  PM table versions listed in crates/hw/src/smu.rs. No code was copied.
 
 Linux nct6687d driver (out of tree)
   https://github.com/Fred78290/nct6687d
