@@ -200,6 +200,12 @@ const SOURCES_6771: &[TempSource] = &[
     source(2, "CPUTIN", None),
     source(3, "AUXTIN", None),
     source(5, "PECI 0", None),
+    source(4, "AMD SB-TSI", None),
+    source(6, "PECI 1", None),
+    source(13, "PCH CPU max", None),
+    source(14, "PCH chip", None),
+    source(15, "PCH CPU", None),
+    source(16, "PCH MCH", None),
 ];
 
 const SOURCES_6776: &[TempSource] = &[
@@ -207,6 +213,13 @@ const SOURCES_6776: &[TempSource] = &[
     source(2, "CPUTIN", None),
     source(3, "AUXTIN", None),
     source(12, "PECI 0", None),
+    source(4, "SMBUSMASTER 0", None),
+    source(5, "SMBUSMASTER 1", None),
+    source(13, "PECI 1", None),
+    source(14, "PCH CPU max", None),
+    source(15, "PCH chip", None),
+    source(16, "PCH CPU", None),
+    source(17, "PCH MCH", None),
 ];
 
 const SLOTS_6779: &[TempSlot] = &[
@@ -252,6 +265,18 @@ const SOURCES_6779: &[TempSource] = &[
     source(5, "AUXTIN2", Some(0x494)),
     source(6, "AUXTIN3", Some(0x495)),
     source(16, "PECI 0", None),
+    source(8, "SMBUSMASTER 0", None),
+    source(9, "SMBUSMASTER 1", None),
+    source(17, "PECI 1", None),
+    source(18, "PCH CPU max", None),
+    source(19, "PCH chip", None),
+    source(20, "PCH CPU", None),
+    source(21, "PCH MCH", None),
+    source(22, "DIMM 0", None),
+    source(23, "DIMM 1", None),
+    source(24, "DIMM 2", None),
+    source(25, "DIMM 3", None),
+    source(31, "Virtual", None),
 ];
 
 const SOURCES_6796: &[TempSource] = &[
@@ -263,6 +288,18 @@ const SOURCES_6796: &[TempSource] = &[
     source(6, "AUXTIN3", Some(0x495)),
     source(7, "AUXTIN4", None),
     source(16, "PECI 0", None),
+    source(8, "SMBUSMASTER 0", None),
+    source(9, "SMBUSMASTER 1", None),
+    source(17, "PECI 1", None),
+    source(18, "PCH CPU max", None),
+    source(19, "PCH chip", None),
+    source(20, "PCH CPU", None),
+    source(21, "PCH MCH", None),
+    source(22, "DIMM 0", None),
+    source(23, "DIMM 1", None),
+    source(24, "DIMM 2", None),
+    source(25, "DIMM 3", None),
+    source(31, "Virtual", None),
 ];
 
 const SOURCES_6798: &[TempSource] = &[
@@ -275,6 +312,18 @@ const SOURCES_6798: &[TempSource] = &[
     source(7, "AUXTIN4", None),
     source(10, "TSENSOR", Some(0x496)),
     source(16, "PECI 0", None),
+    source(8, "SMBUSMASTER 0", None),
+    source(9, "SMBUSMASTER 1", None),
+    source(17, "PECI 1", None),
+    source(18, "PCH CPU max", None),
+    source(19, "PCH chip", None),
+    source(20, "PCH CPU", None),
+    source(21, "PCH MCH", None),
+    source(22, "DIMM 0", None),
+    source(23, "DIMM 1", None),
+    source(24, "DIMM 2", None),
+    source(25, "DIMM 3", None),
+    source(31, "Virtual", None),
 ];
 
 const EC_DONE: u8 = 0x40;
