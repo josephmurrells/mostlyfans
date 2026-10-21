@@ -1482,6 +1482,7 @@ dependencies = [
  "fanforge-core",
  "fanforge-hw",
  "fanforge-win",
+ "ron",
  "serde",
  "sha2",
  "tempfile",

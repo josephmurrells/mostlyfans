@@ -17,6 +17,7 @@ fanforge-hw.workspace = true
 fanforge-win.workspace = true
 clap.workspace = true
 eframe.workspace = true
+ron.workspace = true
 serde.workspace = true
 sha2.workspace = true
 tracing.workspace = true
