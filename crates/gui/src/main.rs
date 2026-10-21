@@ -31,6 +31,7 @@ mod temperatures;
 mod theme;
 mod tray;
 mod widgets;
+mod window_geometry;
 
 use std::env;
 use std::process::ExitCode;
@@ -55,6 +56,7 @@ use crate::guardian_link::GuardianLink;
 use crate::instance::Claim;
 use crate::notices::{Notices, Topic};
 use crate::prefs::Prefs;
+use crate::window_geometry::LastGoodWindow;
 
 const TITLE: &str = "FanForge";
 const WINDOW_ICON_SIZE: u32 = 64;
@@ -194,6 +196,8 @@ fn run_app(minimized: bool) -> ExitCode {
         Err(error) => return fail(&format!("Session monitoring could not start: {error}")),
     };
 
+    let window_state = paths::data_dir().join("window.ron");
+    window_geometry::repair(&window_state);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
@@ -204,9 +208,9 @@ fn run_app(minimized: bool) -> ExitCode {
                 height: WINDOW_ICON_SIZE,
             }))
             .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([720.0, 520.0])
+            .with_min_inner_size(window_geometry::MIN_SIZE)
             .with_visible(!minimized),
-        persistence_path: Some(paths::data_dir().join("window.ron")),
+        persistence_path: Some(window_state),
         ..Default::default()
     };
     let show_gate = instance.show_gate();
@@ -217,18 +221,22 @@ fn run_app(minimized: bool) -> ExitCode {
             let ctx = &creation.egui_ctx;
             theme::install(ctx);
             let prefs = Prefs::load(creation.storage);
+            let window = LastGoodWindow::load(creation.storage);
             if let Err(error) = show_gate.forward_to(ctx) {
                 tracing::warn!(%error, "a second launch cannot bring this window forward");
             }
-            Ok(Box::new(app::FanForgeApp::new(
-                ctx,
-                Box::new(controller),
-                notices,
-                show_gate,
-                autostart,
-                on_driver_installed,
-                prefs,
-            )))
+            Ok(Box::new(
+                app::FanForgeApp::new(
+                    ctx,
+                    Box::new(controller),
+                    notices,
+                    show_gate,
+                    autostart,
+                    on_driver_installed,
+                    prefs,
+                )
+                .with_window(window),
+            ))
         }),
     );
     drop(instance);
