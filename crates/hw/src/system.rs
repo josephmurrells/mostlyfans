@@ -58,7 +58,10 @@ pub fn force_all_auto<P: PortIo>(
             return Err(error);
         }
     };
-    let empty = BiosSnapshot::for_chip(chip_id);
+    let empty = BiosSnapshot {
+        lost: snapshot.lost && snapshot.owned.is_empty(),
+        ..BiosSnapshot::for_chip(chip_id)
+    };
     let snapshot = if snapshot.chip_id == chip_id {
         snapshot
     } else {
@@ -66,7 +69,7 @@ pub fn force_all_auto<P: PortIo>(
     };
     let deadline = Instant::now() + budget;
     let mut first_error = None;
-    let resettable = chip.chip().forces_auto_without_snapshot();
+    let resettable = chip.fan_control() && chip.chip().forces_auto_without_snapshot();
     for channel in
         (0..chip.fan_count()).filter(|&channel| resettable || snapshot.may_release(channel))
     {
@@ -193,12 +196,14 @@ impl<P: PortIo> Hardware<P> {
         let mut changed = self.snapshot.refresh(&states);
         let result = if take_control {
             let result = self.release_channels(false);
-            self.snapshot.lost = false;
             changed = true;
             result
         } else {
             Ok(())
         };
+        if result.is_ok() {
+            self.snapshot.lost = false;
+        }
         if changed && let Err(error) = self.persist_snapshot() {
             tracing::error!(%error, "failed to persist BIOS snapshot");
         }
@@ -269,11 +274,7 @@ impl<P: PortIo> Hardware<P> {
             Action::SetDuty(_) if !self.fan_control() => {
                 Err(HwError::NoFanControl(self.chip.chip().name))
             }
-            Action::Release
-                if !self.chip.can_release()
-                    || !(self.snapshot.may_release(channel)
-                        || self.chip.chip().forces_auto_without_snapshot()) =>
-            {
+            Action::Release if !self.chip.can_release() || !self.resettable(channel, false) => {
                 Ok(())
             }
             Action::SetDuty(duty) => {
@@ -318,8 +319,7 @@ impl<P: PortIo> Hardware<P> {
     fn release_channels(&mut self, owned_only: bool) -> Result<(), HwError> {
         let mut first_error = None;
         for channel in 0..self.chip.fan_count() {
-            let resettable = !owned_only && self.chip.chip().forces_auto_without_snapshot();
-            if !self.snapshot.may_release(channel) && !resettable {
+            if !self.resettable(channel, owned_only) {
                 continue;
             }
             match self.chip.restore_patiently(
@@ -337,6 +337,14 @@ impl<P: PortIo> Hardware<P> {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn resettable(&self, channel: usize, owned_only: bool) -> bool {
+        self.snapshot.is_owned(channel)
+            || (!owned_only
+                && (self.snapshot.lost
+                    || (self.chip.fan_control()
+                        && self.chip.chip().forces_auto_without_snapshot())))
     }
 
     pub fn release_all(&mut self) -> Result<(), HwError> {
@@ -593,6 +601,60 @@ mod tests {
         fake.with(|chip| chip.set(0x109, 0x30));
         hardware.release_all().unwrap();
         assert_eq!(fake.with(|chip| chip.get(0x109)), 0x30);
+
+        let mut chip =
+            SuperIo::probe(fake.clone(), Slot::Primary, lock("nct-lost-failsafe")).unwrap();
+        force_all_auto(&mut chip, &BiosSnapshot::lost(), RELEASE_BUDGET).unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0xFF);
+    }
+
+    #[test]
+    fn a_lost_snapshot_never_touches_another_tools_headers() {
+        use crate::nuvoton::fake::{FakeNct, SharedNct};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        std::fs::write(&path, "not toml [").unwrap();
+        let mut nct = FakeNct::new(0xC5, 0x62);
+        nct.set(0x102, 0x00);
+        nct.set(0x109, 0x30);
+        let fake = SharedNct::new(nct);
+        let chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("nct-lost-tool")).unwrap();
+        let mut hardware = Hardware::from_parts(
+            chip,
+            Err("no CPU in tests".to_owned()),
+            BoardIdentity::default(),
+            &path,
+        )
+        .unwrap();
+        hardware.initialize_channels(false).unwrap();
+        hardware.release_owned().unwrap();
+        hardware.release_all().unwrap();
+        assert_eq!(fake.with(|chip| chip.get(0x109)), 0x30);
+    }
+
+    #[test]
+    fn a_chip_failing_the_pwm_check_from_the_start_is_never_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8628);
+        ite.banks[0][0x14] = 0x00;
+        ite.banks[0][0x16] = 0x00;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("polarity-start", &fake, &path);
+        assert!(!hardware.fan_control());
+        hardware.initialize_channels(true).unwrap();
+        hardware.apply(&release("pwm2"), &RUNNING).unwrap();
+        hardware.release_all().unwrap();
+        let snapshot = hardware.snapshot.clone();
+        force_all_auto(&mut hardware.chip, &snapshot, RELEASE_BUDGET).unwrap();
+        fake.with(|chip| {
+            assert_eq!(chip.reg(0x16), 0x00);
+            assert!(
+                chip.writes
+                    .iter()
+                    .all(|&(port, _, index)| port != chip.base + 6 || index == 0x06)
+            );
+        });
     }
 
     #[test]
