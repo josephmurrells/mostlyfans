@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(config.version, 0x2B);
         assert_eq!(config.slot, Slot::Primary);
         assert_eq!(config.base_address, 0x290);
-        assert!(!chip.fan_control());
+        assert!(chip.fan_control());
         assert_eq!(chip.fan_count(), 7);
         assert!(!chip.io.config_mode);
         assert_eq!(chip.io.exits, 1);
@@ -924,12 +924,13 @@ mod tests {
     }
 
     #[test]
-    fn unverified_nuvoton_chips_never_write_fan_registers() {
+    fn nuvoton_chips_without_fan_control_never_write_fan_registers() {
         let mut chip = probe(nct6798d(), "gate");
+        chip.config.chip = &MONITOR_ONLY_6798;
         chip.io.set(MODE_REGS[0], 0x00);
         assert!(matches!(
             chip.set_duty(0, 0x20),
-            Err(HwError::Unverified(_))
+            Err(HwError::NoFanControl(_))
         ));
         chip.restore(0, None).unwrap();
         assert_eq!(chip.io.get(COMMAND_REGS[0]), 0x80);
@@ -941,9 +942,28 @@ mod tests {
         );
     }
 
+    static MONITOR_ONLY_6798: ChipSpec = ChipSpec {
+        name: "test NCT6798D",
+        fan_control: false,
+        ident: Ident::Nuvoton {
+            id: 0xD4,
+            revision: 0x2B,
+            mask: 0xFF,
+        },
+        map: ChipMap::Nuvoton(NctMap {
+            fans: 7,
+            tach: Tach::Count {
+                registers: &[0x4B0, 0x4B2, 0x4B4, 0x4B6, 0x4B8, 0x4BA, 0x4CC],
+            },
+            slots: &[],
+            sources: &[],
+            io_lock: true,
+        }),
+    };
+
     static VERIFIED_6798: ChipSpec = ChipSpec {
         name: "test NCT6798D",
-        verified: true,
+        fan_control: true,
         ident: Ident::Nuvoton {
             id: 0xD4,
             revision: 0x2B,

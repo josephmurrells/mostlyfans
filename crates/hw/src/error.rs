@@ -53,8 +53,8 @@ pub enum HwError {
         fanforge_win::paths::data_dir().join("bios_snapshot.toml").display()
     )]
     ForeignSnapshot { owner: u16, found: u16 },
-    #[error("fan control on the {0} is not verified yet; FanForge only monitors it")]
-    Unverified(&'static str),
+    #[error("FanForge doesn't support fan control on the {0}; it only monitors it")]
+    NoFanControl(&'static str),
     #[error("fan channel {0} is in manual mode with no saved BIOS state to return to")]
     UnknownBiosMode(usize),
     #[error("environment controller did not acknowledge register {0:#04x}")]

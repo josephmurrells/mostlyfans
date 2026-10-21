@@ -170,7 +170,7 @@ pub fn collect(
         if state.monitor_only {
             let text = if let Some(board) = unverified {
                 format!(
-                    "Monitor-only mode: fan control on the {} hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                    "Monitor-only mode: FanForge doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
                     board.chip_name
                 )
             } else if state.conflicts.is_empty() {
@@ -415,7 +415,7 @@ mod tests {
         let texts: Vec<&str> = alerts.iter().map(|alert| alert.text.as_str()).collect();
         assert!(texts.contains(&"Critical temperature: the fans are under BIOS control"));
         assert!(texts.contains(
-            &"Monitor-only mode: fan control on the Nuvoton NCT6798D hasn't been verified yet, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
+            &"Monitor-only mode: FanForge doesn't support fan control on the Nuvoton NCT6798D, so it only reads temperatures and fan speeds and leaves the fans to the BIOS."
         ));
         assert!(!texts.iter().any(|text| text.contains("100%")));
 

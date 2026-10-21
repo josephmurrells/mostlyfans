@@ -1,7 +1,7 @@
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChipSpec {
     pub name: &'static str,
-    pub verified: bool,
+    pub fan_control: bool,
     pub ident: Ident,
     pub map: ChipMap,
 }
@@ -145,7 +145,7 @@ const ITE: IteMap = IteMap {
 const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
     ChipSpec {
         name,
-        verified: false,
+        fan_control: false,
         ident: Ident::Ite(chip_id),
         map: ChipMap::Ite(map),
     }
@@ -275,7 +275,7 @@ const fn nuvoton(
 ) -> ChipSpec {
     ChipSpec {
         name,
-        verified: false,
+        fan_control: true,
         ident: Ident::Nuvoton { id, revision, mask },
         map: ChipMap::Nuvoton(NctMap {
             fans,
@@ -293,7 +293,7 @@ const FAMILY: u8 = 0xF0;
 pub static CHIPS: [ChipSpec; 24] = [
     ChipSpec {
         name: "ITE IT8655E",
-        verified: true,
+        fan_control: true,
         ident: Ident::Ite(0x8655),
         map: ChipMap::Ite(IteMap {
             temps: 6,
@@ -360,7 +360,7 @@ pub static CHIPS: [ChipSpec; 24] = [
     ),
     ChipSpec {
         name: "ITE IT8689E",
-        verified: true,
+        fan_control: true,
         ident: Ident::Ite(0x8689),
         map: ChipMap::Ite(IteMap {
             fans: 6,

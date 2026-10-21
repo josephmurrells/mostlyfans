@@ -181,7 +181,7 @@ impl<P: PortIo> Hardware<P> {
         let states = self.chip.channel_states()?;
         let mut changed = self.snapshot.refresh(&states);
         let result = if take_control {
-            let result = self.release_all_channels();
+            let result = self.release_channels(false);
             changed = true;
             result
         } else {
@@ -255,7 +255,7 @@ impl<P: PortIo> Hardware<P> {
             .ok_or_else(|| HwError::UnknownFan(command.fan.to_string()))?;
         if !self.fan_control() {
             return match command.action {
-                Action::SetDuty(_) => Err(HwError::Unverified(self.chip.chip().name)),
+                Action::SetDuty(_) => Err(HwError::NoFanControl(self.chip.chip().name)),
                 Action::Release => Ok(()),
             };
         }
@@ -299,9 +299,12 @@ impl<P: PortIo> Hardware<P> {
         }
     }
 
-    fn release_all_channels(&mut self) -> Result<(), HwError> {
+    fn release_channels(&mut self, owned_only: bool) -> Result<(), HwError> {
         let mut first_error = None;
         for channel in 0..self.chip.fan_count() {
+            if owned_only && !self.snapshot.is_owned(channel) {
+                continue;
+            }
             match self.chip.restore_patiently(
                 channel,
                 self.snapshot.channel(channel),
@@ -320,6 +323,14 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn release_all(&mut self) -> Result<(), HwError> {
+        self.release(false)
+    }
+
+    pub fn release_owned(&mut self) -> Result<(), HwError> {
+        self.release(true)
+    }
+
+    fn release(&mut self, owned_only: bool) -> Result<(), HwError> {
         if let Some(owner) = self.foreign_owner.filter(|_| !self.fan_control()) {
             return Err(HwError::ForeignSnapshot {
                 owner,
@@ -329,7 +340,7 @@ impl<P: PortIo> Hardware<P> {
         if !self.fan_control() {
             return Ok(());
         }
-        let result = self.release_all_channels();
+        let result = self.release_channels(owned_only);
         if let Err(error) = self.persist_snapshot() {
             tracing::warn!(%error, "failed to persist BIOS snapshot after release");
         }
@@ -508,6 +519,26 @@ mod tests {
     }
 
     #[test]
+    fn releasing_owned_fans_leaves_the_others_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let fake = SharedFake::new(FakeIte::new());
+        let mut hardware = hardware("owned-only", &fake, &path);
+        hardware.initialize_channels(false).unwrap();
+        hardware.apply(&set("pwm1", 60.0), &RUNNING).unwrap();
+        fake.with(|chip| {
+            chip.banks[0][0x16] = 0x01;
+            chip.banks[0][0x6B] = 0x99;
+        });
+        hardware.release_owned().unwrap();
+        fake.with(|chip| {
+            assert_eq!((chip.reg(0x15), chip.reg(0x63)), (0x80, 0x40));
+            assert_eq!((chip.reg(0x16), chip.reg(0x6B)), (0x01, 0x99));
+        });
+        assert!(!hardware.owns_any());
+    }
+
+    #[test]
     fn the_it8655e_still_claims_a_manual_header_without_a_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
@@ -590,7 +621,7 @@ mod tests {
         assert_eq!(readings.fans.len(), 5);
         assert!(matches!(
             hardware.apply(&set("pwm1", 60.0), &RUNNING),
-            Err(HwError::Unverified(_))
+            Err(HwError::NoFanControl(_))
         ));
         hardware.apply(&release("pwm1"), &RUNNING).unwrap();
         hardware.release_all().unwrap();
@@ -674,7 +705,7 @@ mod tests {
 
     static VERIFIED_NCT: crate::chips::ChipSpec = crate::chips::ChipSpec {
         name: "test NCT6779D",
-        verified: true,
+        fan_control: true,
         ident: crate::chips::Ident::Nuvoton {
             id: 0xC5,
             revision: 0x60,
