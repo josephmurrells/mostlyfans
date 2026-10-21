@@ -74,10 +74,6 @@ impl BiosSnapshot {
         }
     }
 
-    pub fn may_release(&self, index: usize) -> bool {
-        self.lost || self.is_owned(index)
-    }
-
     pub fn is_owned(&self, index: usize) -> bool {
         self.owned.contains(&FanId::for_channel(index))
     }
