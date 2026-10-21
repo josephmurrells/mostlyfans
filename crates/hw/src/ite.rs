@@ -992,7 +992,7 @@ mod tests {
         fake.banks[0][0x0C] = 1 << 4;
         let mut chip = probe(fake, "8686");
         assert_eq!(chip.chip().name, "ITE IT8686E");
-        assert!(!chip.fan_control());
+        assert!(chip.fan_control());
         assert_eq!(chip.fan_count(), 5);
         let readings = chip.read().unwrap();
         assert_eq!(readings.channels.len(), 5);
@@ -1074,8 +1074,9 @@ mod tests {
     }
 
     #[test]
-    fn unverified_chips_refuse_manual_control_without_touching_the_chip() {
+    fn chips_without_fan_control_refuse_it_without_touching_the_chip() {
         let mut chip = probe(FakeIte::chip(0x8686), "unverified");
+        chip.config.chip = &crate::chips::MONITOR_ONLY_8686;
         chip.io.banks[0][0x15] = 0x00;
         let before = chip.io.writes.len();
         assert!(matches!(
