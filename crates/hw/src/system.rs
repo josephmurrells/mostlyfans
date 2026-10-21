@@ -66,7 +66,9 @@ pub fn force_all_auto<P: PortIo>(
     };
     let deadline = Instant::now() + budget;
     let mut first_error = None;
-    for channel in 0..chip.fan_count() {
+    let resettable = chip.chip().forces_auto_without_snapshot();
+    for channel in (0..chip.fan_count()).filter(|&channel| resettable || snapshot.is_owned(channel))
+    {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if let Err(error) = chip.restore_patiently(channel, snapshot.channel(channel), remaining) {
             tracing::error!(channel, %error, "failed to return channel to BIOS control");
@@ -302,7 +304,8 @@ impl<P: PortIo> Hardware<P> {
     fn release_channels(&mut self, owned_only: bool) -> Result<(), HwError> {
         let mut first_error = None;
         for channel in 0..self.chip.fan_count() {
-            if owned_only && !self.snapshot.is_owned(channel) {
+            let resettable = !owned_only && self.chip.chip().forces_auto_without_snapshot();
+            if !self.snapshot.is_owned(channel) && !resettable {
                 continue;
             }
             match self.chip.restore_patiently(
@@ -593,7 +596,7 @@ mod tests {
         let fake = SharedFake::new(ite);
         let mut hardware = hardware("8689-leftover", &fake, &path);
         hardware.initialize_channels(true).unwrap();
-        assert_eq!(fake.with(|chip| chip.reg(0x6B)), 0xFF);
+        assert_eq!(fake.with(|chip| chip.reg(0x6B)), 0x40);
         hardware.apply(&set("pwm2", 60.0), &RUNNING).unwrap();
         assert!(hardware.owns_any());
         assert_eq!(fake.with(|chip| chip.reg(0x6B)), Duty::new(60.0).to_raw());
@@ -751,6 +754,15 @@ mod tests {
         assert_eq!(
             fake.with(|chip| (chip.get(0x202), chip.get(0x209))),
             (0x50, 0x80)
+        );
+        let bios_manual = fake.with(|chip| chip.get(0x109));
+        hardware.initialize_channels(true).unwrap();
+        hardware.release_all().unwrap();
+        let snapshot = hardware.snapshot.clone();
+        force_all_auto(&mut hardware.chip, &snapshot, RELEASE_BUDGET).unwrap();
+        assert_eq!(
+            fake.with(|chip| (chip.get(0x102), chip.get(0x109))),
+            (0x00, bios_manual)
         );
     }
 }
