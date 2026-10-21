@@ -276,7 +276,6 @@ const SOURCES_6779: &[TempSource] = &[
     source(23, "DIMM 1", None),
     source(24, "DIMM 2", None),
     source(25, "DIMM 3", None),
-    source(31, "Virtual", None),
 ];
 
 const SOURCES_6796: &[TempSource] = &[
@@ -299,7 +298,6 @@ const SOURCES_6796: &[TempSource] = &[
     source(23, "DIMM 1", None),
     source(24, "DIMM 2", None),
     source(25, "DIMM 3", None),
-    source(31, "Virtual", None),
 ];
 
 const SOURCES_6798: &[TempSource] = &[
@@ -323,7 +321,6 @@ const SOURCES_6798: &[TempSource] = &[
     source(23, "DIMM 1", None),
     source(24, "DIMM 2", None),
     source(25, "DIMM 3", None),
-    source(31, "Virtual", None),
 ];
 
 const EC_DONE: u8 = 0x40;
@@ -654,3 +651,68 @@ pub(crate) static MONITOR_ONLY_8628: ChipSpec = ChipSpec {
         ..ITE
     }),
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(sources: &[TempSource]) -> Vec<(u8, &'static str)> {
+        sources
+            .iter()
+            .map(|source| (source.id, source.name))
+            .collect()
+    }
+
+    #[test]
+    fn existing_sources_keep_their_positions_so_board_ids_stay_stable() {
+        assert_eq!(
+            ids(&SOURCES_6771[..4]),
+            [(1, "SYSTIN"), (2, "CPUTIN"), (3, "AUXTIN"), (5, "PECI 0")]
+        );
+        assert_eq!(
+            ids(&SOURCES_6776[..4]),
+            [(1, "SYSTIN"), (2, "CPUTIN"), (3, "AUXTIN"), (12, "PECI 0")]
+        );
+        let auxtin = [
+            (1, "SYSTIN"),
+            (2, "CPUTIN"),
+            (3, "AUXTIN0"),
+            (4, "AUXTIN1"),
+            (5, "AUXTIN2"),
+            (6, "AUXTIN3"),
+        ];
+        assert_eq!(
+            ids(&SOURCES_6779[..7]),
+            [&auxtin[..], &[(16, "PECI 0")]].concat()
+        );
+        assert_eq!(
+            ids(&SOURCES_6796[..8]),
+            [&auxtin[..], &[(7, "AUXTIN4"), (16, "PECI 0")]].concat()
+        );
+        assert_eq!(
+            ids(&SOURCES_6798[..9]),
+            [
+                &auxtin[..],
+                &[(7, "AUXTIN4"), (10, "TSENSOR"), (16, "PECI 0")]
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn no_table_names_a_source_twice_or_the_per_fan_virtual_source() {
+        for table in [
+            SOURCES_6771,
+            SOURCES_6776,
+            SOURCES_6779,
+            SOURCES_6796,
+            SOURCES_6798,
+        ] {
+            let mut seen: Vec<u8> = table.iter().map(|source| source.id).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), table.len());
+            assert!(!seen.contains(&31));
+        }
+    }
+}

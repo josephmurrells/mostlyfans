@@ -228,21 +228,23 @@ pub fn parse_temperature_entries(buffer: &[u8]) -> Vec<(u16, i16)> {
 pub fn parse_nvme_health(buffer: &[u8]) -> Option<Vec<(u16, i16)>> {
     let offset = u32_at(buffer, QUERY_HEADER_LEN + 16)? as usize;
     let log = buffer.get(QUERY_HEADER_LEN + offset..)?;
-    (1..=HEALTH_SENSOR_COUNT)
+    let words = (1..=HEALTH_SENSOR_COUNT)
         .map(|sensor| {
-            let kelvin = u16_at(log, HEALTH_SENSORS_OFFSET + usize::from(sensor - 1) * 2)?;
-            Some((sensor, kelvin))
+            u16_at(log, HEALTH_SENSORS_OFFSET + usize::from(sensor - 1) * 2)
+                .map(|kelvin| (sensor, kelvin))
         })
-        .filter_map(|entry| match entry {
-            Some((_, 0)) => None,
-            Some((sensor, kelvin)) => Some(
+        .collect::<Option<Vec<_>>>()?;
+    Some(
+        words
+            .into_iter()
+            .filter(|(_, kelvin)| *kelvin != 0)
+            .filter_map(|(sensor, kelvin)| {
                 i16::try_from(i32::from(kelvin) - KELVIN_OFFSET)
                     .ok()
-                    .map(|celsius| (sensor, celsius)),
-            ),
-            None => Some(None),
-        })
-        .collect()
+                    .map(|celsius| (sensor, celsius))
+            })
+            .collect(),
+    )
 }
 
 pub fn parse_smart_temperature(buffer: &[u8]) -> Option<i16> {
@@ -337,6 +339,10 @@ mod tests {
         assert_eq!(parse_nvme_health(&health_log(&[])), Some(Vec::new()));
         assert_eq!(
             parse_nvme_health(&health_log(&[318, 0, 314])),
+            Some(vec![(1, 45), (3, 41)])
+        );
+        assert_eq!(
+            parse_nvme_health(&health_log(&[318, 0xFFFF, 314])),
             Some(vec![(1, 45), (3, 41)])
         );
         assert_eq!(parse_nvme_health(&[0u8; 20]), None);
