@@ -202,10 +202,6 @@ fn row(
             if sensor.id == state.config.safety.critical_sensor {
                 widgets::chip(ui, "Safety sensor");
             }
-            if sensor.id.is_display_only() {
-                widgets::chip(ui, "Display only")
-                    .on_hover_text("Per-core readings are for display. Fans and the critical override use the CPU temperature.");
-            }
             for curve in used_by(state, &sensor.id) {
                 widgets::chip(ui, &format!("Used by {curve}"));
             }

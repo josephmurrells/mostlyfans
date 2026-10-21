@@ -747,7 +747,7 @@ fn the_temperatures_page_groups_sensors_and_pins_them() {
     for heading in ["CPU", "Motherboard", "Core2 (CCD1)"] {
         assert!(harness.query_by_label(heading).is_some(), "{heading}");
     }
-    assert!(harness.query_all_by_label("Display only").count() >= 4);
+    assert!(harness.query_by_label("Display only").is_none());
     let pin = widgets::with_icon(icons::PIN, "Pin");
     harness.query_all_by_label(&pin).next().unwrap().click();
     settle(&mut harness);
