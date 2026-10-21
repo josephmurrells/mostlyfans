@@ -163,6 +163,10 @@ pub enum ConfigError {
     InvalidCalibration(FanId),
     #[error("critical temperature settings are invalid")]
     InvalidSafety,
+    #[error(
+        "`{0}` is a per-core temperature, shown for display only; fans and the critical override use the CPU temperature"
+    )]
+    DisplayOnlySensor(SensorId),
     #[error("configuration is too large: {0}")]
     TooLarge(String),
 }
@@ -177,7 +181,10 @@ impl Config {
                 .filter_map(|curve| curve.kind.sensor_mut()),
         );
         let mut changed = false;
-        for sensor in sensors.into_iter().filter(|sensor| **sensor == legacy) {
+        for sensor in sensors
+            .into_iter()
+            .filter(|sensor| **sensor == legacy || sensor.is_display_only())
+        {
             *sensor = SensorId::new(CPU_SENSOR);
             changed = true;
         }
@@ -285,6 +292,11 @@ impl Config {
 
     fn validate_safety(&self) -> Result<(), ConfigError> {
         let safety = &self.safety;
+        if safety.critical_sensor.is_display_only() {
+            return Err(ConfigError::DisplayOnlySensor(
+                safety.critical_sensor.clone(),
+            ));
+        }
         let valid = !safety.critical_sensor.as_str().trim().is_empty()
             && (40.0..=110.0).contains(&safety.critical_c)
             && safety.release_c < safety.critical_c
@@ -328,6 +340,13 @@ impl Config {
             .all(|value| value.is_finite() && *value >= 0.0);
             if !tuning_valid {
                 return Err(ConfigError::InvalidTuning(curve.id.clone()));
+            }
+            if let Some(sensor) = curve
+                .kind
+                .sensor()
+                .filter(|sensor| sensor.is_display_only())
+            {
+                return Err(ConfigError::DisplayOnlySensor(sensor.clone()));
             }
             match &curve.kind {
                 CurveKind::Graph { points, .. } => {
@@ -535,6 +554,49 @@ mod tests {
         let mut config = Config::default();
         config.safety.release_c = 90.0;
         assert_eq!(config.validate(), Err(ConfigError::InvalidSafety));
+    }
+
+    #[test]
+    fn migration_moves_per_core_sensors_to_the_cpu_temperature() {
+        let mut config = Config::default();
+        config.safety.critical_sensor = SensorId::core(2);
+        config.curves.push(curve(
+            "a",
+            CurveKind::Graph {
+                sensor: SensorId::core(5),
+                points: vec![CurvePoint::new(40.0, 30.0)],
+            },
+        ));
+        assert!(config.migrate());
+        assert_eq!(config.safety.critical_sensor.as_str(), CPU_SENSOR);
+        assert_eq!(config.curves[0].kind.sensor().unwrap().as_str(), CPU_SENSOR);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn per_core_sensors_cannot_drive_fans() {
+        let mut config = Config::default();
+        config.safety.critical_sensor = SensorId::core(0);
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::DisplayOnlySensor(SensorId::core(0)))
+        );
+
+        let config = Config {
+            curves: vec![curve(
+                "a",
+                CurveKind::Linear {
+                    sensor: SensorId::core(3),
+                    start: CurvePoint::new(40.0, 30.0),
+                    end: CurvePoint::new(80.0, 100.0),
+                },
+            )],
+            ..Config::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::DisplayOnlySensor(SensorId::core(3)))
+        );
     }
 
     #[test]

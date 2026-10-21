@@ -64,13 +64,15 @@ pub struct FanPage<'a> {
     pub link: &'a dyn ControlLink,
     pub identify_block: Option<&'a str>,
     pub setup_skipped: bool,
+    pub pinned: &'a [FanId],
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FansOutcome {
     pub changed: bool,
     pub skip_setup: bool,
     pub resume_setup: bool,
+    pub pin: Option<(FanId, bool)>,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +136,9 @@ impl FansView {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let detail = self.detail(ui, &page, &fan, &unnamed);
                     outcome.skip_setup |= detail.skip_setup;
+                    if let Some(pinned) = detail.pin {
+                        outcome.pin = Some((fan.clone(), pinned));
+                    }
                     if let Some(next) = detail.next {
                         self.select(next);
                     }
@@ -265,6 +270,29 @@ impl FansView {
                 "duty {}",
                 format::duty(reading.duty)
             )));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let pinned = page.pinned.contains(fan);
+                let (icon, text, hint) = if pinned {
+                    (
+                        icons::UNPIN,
+                        "On Overview",
+                        "Remove this fan from the Overview",
+                    )
+                } else {
+                    (
+                        icons::PIN,
+                        "Pin to Overview",
+                        "Show this fan on the Overview",
+                    )
+                };
+                if ui
+                    .selectable_label(pinned, widgets::with_icon(icon, text))
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    detail.pin = Some(!pinned);
+                }
+            });
         });
         ui.add_space(SPACE_M);
 
@@ -397,6 +425,7 @@ struct Detail {
     next: Option<FanId>,
     settings: Option<FanSettings>,
     mode: Option<FanMode>,
+    pin: Option<bool>,
 }
 
 fn calibrating<'a>(page: &'a FanPage<'_>, fan: &FanId) -> Option<&'a CalibrationProgress> {

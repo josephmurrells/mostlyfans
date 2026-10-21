@@ -14,7 +14,8 @@ use fanforge_hw::HwError;
 use fanforge_hw::amd::AmdCpu;
 use fanforge_hw::board::detect_identity;
 use fanforge_hw::pawnio;
-use fanforge_hw::sensors;
+use fanforge_hw::sensors::cores::CoreTempSource;
+use fanforge_hw::sensors::{self, SensorSource};
 use fanforge_hw::smu::{self, CoreTempLayout, RyzenSmu};
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::superio::RegisterDump;
@@ -169,6 +170,17 @@ fn read() -> DiagResult {
             Some(celsius) => println!("{:<16} {celsius:>6.1} °C", sensor.label),
             None => println!("{:<16} {:>9}", sensor.label, "n/a"),
         }
+    }
+    match CoreTempSource::default().read() {
+        Ok(cores) => {
+            for core in cores {
+                match core.celsius {
+                    Some(celsius) => println!("{:<16} {celsius:>6.1} °C", core.label),
+                    None => println!("{:<16} {:>9}", core.label, "n/a"),
+                }
+            }
+        }
+        Err(error) => println!("per-core temperatures: {error}"),
     }
     for fan in &readings.fans {
         let rpm = fan

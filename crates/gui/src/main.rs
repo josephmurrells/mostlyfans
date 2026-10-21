@@ -21,11 +21,13 @@ mod logging;
 mod notices;
 mod overview;
 mod pawnio_setup;
+mod pins;
 mod prefs;
 mod session;
 mod settings;
 mod shell;
 mod status;
+mod temperatures;
 mod theme;
 mod tray;
 mod widgets;
@@ -152,9 +154,9 @@ fn run_app(minimized: bool) -> ExitCode {
     let snapshot = paths::bios_snapshot_path();
     let shared = Arc::new(Shared::default());
     let sink = guardian.sink();
-    let extras = ExtraSensors::start(sensors::default_sources());
+    let extras = ExtraSensors::start(sensors::elevated_sources());
     if !extras.wait_for_first_round(FIRST_SENSOR_ROUND) {
-        tracing::warn!("GPU and drive sensors are slow to report; starting without them");
+        tracing::warn!("GPU, drive and CPU core sensors are slow to report; starting without them");
     }
     let factory = Box::new(move |shared, messages| {
         Runtime::new(

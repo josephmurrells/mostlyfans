@@ -2,11 +2,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fanforge_core::state::ControlState;
+use fanforge_core::state::{ControlState, HardwareStatus};
+use fanforge_core::telemetry::is_plausible;
 use fanforge_core::{FanId, SensorId};
 
 pub const WINDOW: Duration = Duration::from_secs(300);
 const MIN_SPAN: Duration = Duration::from_secs(60);
+const SETTLE: Duration = Duration::from_secs(10);
 
 type Series = VecDeque<(Instant, f32)>;
 
@@ -15,6 +17,8 @@ pub struct History {
     last: Option<Arc<ControlState>>,
     temperatures: BTreeMap<SensorId, Series>,
     rpm: BTreeMap<FanId, Series>,
+    extremes: BTreeMap<SensorId, (f32, f32)>,
+    ready_since: Option<Instant>,
 }
 
 fn push(series: &mut Series, at: Instant, value: f32) {
@@ -57,7 +61,20 @@ impl History {
             return;
         }
         self.last = Some(Arc::clone(state));
+        self.ready_since = match state.hardware {
+            HardwareStatus::Ready => self.ready_since.or(Some(now)),
+            _ => None,
+        };
         for sensor in &state.readings.sensors {
+            if let Some(celsius) = sensor.celsius.filter(|celsius| is_plausible(*celsius)) {
+                self.extremes
+                    .entry(sensor.id.clone())
+                    .and_modify(|(low, high)| {
+                        *low = low.min(celsius);
+                        *high = high.max(celsius);
+                    })
+                    .or_insert((celsius, celsius));
+            }
             if let Some(celsius) = sensor.celsius {
                 push(
                     self.temperatures.entry(sensor.id.clone()).or_default(),
@@ -84,6 +101,20 @@ impl History {
 
     pub fn rpm(&self, fan: &FanId, now: Instant) -> Vec<(f32, f32)> {
         normalised(self.rpm.get(fan), now)
+    }
+
+    pub fn extremes(&self, sensor: &SensorId) -> Option<(f32, f32)> {
+        self.extremes.get(sensor).copied()
+    }
+
+    #[cfg(test)]
+    pub fn mark_settled(&mut self, now: Instant) {
+        self.ready_since = Some(now - SETTLE);
+    }
+
+    pub fn settled(&self, now: Instant) -> bool {
+        self.ready_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= SETTLE)
     }
 
     #[cfg(test)]
@@ -147,6 +178,32 @@ mod tests {
         history.record(&Arc::new(fixtures::state()), now);
         let points = history.temperature(&cpu(), now);
         assert!((points[0].0 - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn extremes_cover_the_whole_session_and_skip_implausible_values() {
+        let mut history = History::default();
+        let start = Instant::now();
+        for (offset, celsius) in [(0, 40.0), (1, 55.0), (2, 400.0), (3, 38.0)] {
+            let mut state = fixtures::state();
+            state.readings.sensors[0].celsius = Some(celsius);
+            history.record(&Arc::new(state), start + WINDOW * 2 * offset);
+        }
+        assert_eq!(history.extremes(&cpu()), Some((38.0, 55.0)));
+        assert_eq!(history.extremes(&SensorId::new("missing")), None);
+    }
+
+    #[test]
+    fn hardware_settles_ten_seconds_after_it_is_ready() {
+        let mut history = History::default();
+        let start = Instant::now();
+        history.record(&Arc::new(fixtures::state()), start);
+        assert!(!history.settled(start + Duration::from_secs(5)));
+        assert!(history.settled(start + SETTLE));
+        let mut state = fixtures::state();
+        state.hardware = HardwareStatus::Suspended;
+        history.record(&Arc::new(state), start + SETTLE);
+        assert!(!history.settled(start + SETTLE * 3));
     }
 
     #[test]
