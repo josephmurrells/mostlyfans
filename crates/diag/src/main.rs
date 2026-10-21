@@ -267,7 +267,7 @@ fn watch(
 fn restore() -> DiagResult {
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
     let mut chip = open_chip()?;
-    if !chip.fan_control() {
+    if !chip.can_release() {
         println!(
             "the {} is monitor-only; FanForge never drives its fans, so there is nothing to restore",
             chip.chip().name

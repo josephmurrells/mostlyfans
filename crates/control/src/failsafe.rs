@@ -13,7 +13,7 @@ const RETRY_PAUSE: Duration = Duration::from_millis(100);
 fn load_snapshot(path: &Path) -> BiosSnapshot {
     BiosSnapshot::load(path).unwrap_or_else(|error| {
         tracing::error!(%error, "BIOS snapshot unreadable; restoring BIOS defaults");
-        BiosSnapshot::default()
+        BiosSnapshot::lost()
     })
 }
 
