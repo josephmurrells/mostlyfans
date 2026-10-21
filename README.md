@@ -1,6 +1,6 @@
 # FanForge
 
-Rust fan control for Windows. Lists every fan header the Super I/O chip exposes, sets fixed speeds, and drives fans from temperature curves. There are no per-motherboard profiles: headers show up as Fan 1, Fan 2, … and you rename them in the Fans tab once you know which is which. (Earlier builds named the PRIME B350-PLUS headers CPU_FAN, CHA_FAN1 and CHA_FAN2; those are now Fan 1–3.) Fan control is supported on the ITE IT8655E (developed on an ASUS PRIME B350-PLUS), where it works from a cold boot without HWiNFO, on the ITE IT8689E, and on every other chip in the table below, from public driver sources; see [Supported chips](#supported-chips). Chips FanForge detects but can't control are monitored only, with a notice.
+Rust fan control for Windows. Lists every fan header the Super I/O chip exposes, sets fixed speeds, and drives fans from temperature curves. There are no per-motherboard profiles: headers show up as Fan 1, Fan 2, … and you rename them in the Fans tab once you know which is which. (Earlier builds named the PRIME B350-PLUS headers CPU_FAN, CHA_FAN1 and CHA_FAN2; those are now Fan 1–3.) Fan control is supported on the ITE IT8655E (developed on an ASUS PRIME B350-PLUS), where it works from a cold boot without HWiNFO, on the ITE IT8689E, and on every other chip in the table below, from public driver sources; see [Supported chips](#supported-chips). Chips FanForge detects but can't control (the NCT6683D) are monitored only, with a notice.
 
 The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: the firmware leaves the IT8655E on the wrong EC bank, and FanForge selects bank 0 before every access.
 
@@ -23,6 +23,8 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 | ITE IT8689E | **Yes** | 6 headers, 6 temperatures. Monitoring is tested on hardware; fan control isn't yet. The register addresses match LibreHardwareMonitor and the Linux `it87` drivers. Manual mode writes `0x7F` to the control register as LibreHardwareMonitor does; the Linux `it87` drivers do it differently |
 | ITE IT8620E, IT8625E, IT8628E, IT8665E, IT8686E, IT8688E, IT8696E, IT8721F, IT8728F, IT8772E | **Yes** | Config port 0x2E. Manual mode clears bit 7 of the control register and keeps the rest, then writes the duty to `0x63`, `0x6B`, …, as LibreHardwareMonitor and the Linux `it87` drivers do; release puts the saved bytes back. The IT8665E and IT8625E use the alternate registers for headers 4–6. As the Linux `it87` drivers do, FanForge leaves a chip monitor only when its PWM configuration register (`0x14`) shows the known broken-BIOS state (`0x14 & 0x87 == 0`); the IT8655E, tested on hardware, skips that check |
 | Nuvoton NCT6771F (NCT6775F), NCT6776F, NCT6779D, NCT6791D, NCT6792D, NCT6792D-A, NCT6793D, NCT6795D, NCT6796D, NCT6796D-R, NCT6797D, NCT6798D, NCT6799D | **Yes** | Config port 0x2E or 0x4E. Manual mode clears bits 7–4 of the fan mode register (`0x102`, `0x202`, …) and writes the duty to `0x109`, `0x209`, …, as the Linux `nct6775` driver and LibreHardwareMonitor do; release puts both saved bytes back |
+| Nuvoton NCT6686D, NCT6687D (MSI) | **Yes** | An embedded controller behind the hardware-monitor base (page, index and data at base + 4, 5, 6). 8 headers and 7 temperatures. Each change goes through the controller's configuration handshake (request `0x80` at `0xA01`, wait for the engine status at `0xCF8`, done `0x40`), sets the header's bit in `0xA00` and writes the duty to `0xA28` + n, as the Linux `nct6687d` driver and LibreHardwareMonitor do. On MSI 800-series boards (B840, B850, B860, X870, Z890) the sources disagree on the system fan registers, so FanForge shows and controls only the CPU and Pump headers there |
+| Nuvoton NCT6683D | Monitor only | Same controller, but the sources disagree on how to finish a fan change |
 
 **When a chip is monitor only:** FanForge supports fan control on a chip when public sources (LibreHardwareMonitor, the Linux drivers and, for Nuvoton, the datasheets) agree on its whole control procedure: how to take a fan over, what to save and how to hand it back. On any chip without it, FanForge reads temperatures, fan speeds and fan modes, and never writes a fan register. That includes quit, crash and sleep, because the BIOS keeps the fans throughout. It doesn't touch `bios_snapshot.toml` either. The app shows a monitor-only notice that names the chip. Each row's `fan_control` flag in `crates/hw/src/chips.rs` decides it.
 
@@ -131,7 +133,8 @@ fanforge-diag diff cold.json after-hwinfo.json
 
 - Testing the AMD GPU (ADL) path on real hardware
 - Fan headers that have a tachometer but no PWM output (e.g. the IT8686E's 6th tach) are not shown
-- ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips, Nuvoton NCT610xD/NCT668xD/NCT6701D, Winbond and Fintek chips
+- ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips, Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips
+- System fan headers on MSI 800-series boards with the NCT6687D
 - Code signing
 - Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes
 

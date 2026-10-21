@@ -65,6 +65,10 @@ pub enum HwError {
         written: u8,
         read: u8,
     },
+    #[error("the fan controller timed out {0}")]
+    FanConfigTimeout(&'static str),
+    #[error("the fan controller rejected the new fan settings")]
+    FanConfigRejected,
     #[error("fan channel {0} does not exist")]
     InvalidChannel(usize),
     #[error("unsupported CPU: {0}")]

@@ -105,7 +105,7 @@ pub(crate) fn read_config<P: PortIo>(
             let revision = space.read(CHIP_REVISION_REG)?;
             let chip_id = u16::from_be_bytes([id, revision]);
             let chip = match chip_matching(|chip| chip.matches_nuvoton(id, revision)) {
-                Some(chip) => chip,
+                Some(chip) => crate::ec::board_variant(chip),
                 None if matches!(id, 0x00 | 0xFF) => return Err(HwError::ChipNotFound(chip_id)),
                 None => return Err(HwError::UnsupportedChip(chip_id)),
             };
@@ -332,21 +332,29 @@ pub(crate) fn io_space_locked<P: PortIo>(
     )
 }
 
+pub(crate) type LdnConfig = (BTreeMap<String, u8>, BTreeMap<String, u8>);
+
+pub(crate) fn ldn_config<P: PortIo>(
+    io: &mut P,
+    lock: &NamedMutex,
+    config: &ChipConfig,
+) -> Result<LdnConfig, HwError> {
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_config_space(
+        io,
+        config.slot.config_port(),
+        &ENTER_KEY,
+        |space| space.dump(HWM_LDN, &LDN_DUMP_REGS),
+        exit_config,
+    )
+}
+
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
     lock: &NamedMutex,
     config: &ChipConfig,
 ) -> Result<RegisterDump, HwError> {
-    let (global_config, ec_ldn_config) = {
-        let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-        with_config_space(
-            io,
-            config.slot.config_port(),
-            &ENTER_KEY,
-            |space| space.dump(HWM_LDN, &LDN_DUMP_REGS),
-            exit_config,
-        )?
-    };
+    let (global_config, ec_ldn_config) = ldn_config(io, lock, config)?;
 
     let locked = matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock)
         && ec_ldn_config
@@ -1039,7 +1047,7 @@ mod tests {
         chip.io.set(VENDOR_LOW_REG, 0x00);
         let map = match &chip.chip().map {
             ChipMap::Nuvoton(map) => map,
-            ChipMap::Ite(_) => unreachable!(),
+            ChipMap::Ite(_) | ChipMap::Ec(_) => unreachable!(),
         };
         let result = Session::open(&mut chip.io, 0x290, map);
         assert!(matches!(

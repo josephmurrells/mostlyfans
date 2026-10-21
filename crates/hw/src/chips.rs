@@ -16,6 +16,14 @@ pub enum Ident {
 pub enum ChipMap {
     Ite(IteMap),
     Nuvoton(NctMap),
+    Ec(EcMap),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct EcMap {
+    pub fans: usize,
+    pub temps: &'static [&'static str],
+    pub done_command: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,6 +81,7 @@ impl ChipSpec {
         match &self.map {
             ChipMap::Ite(map) => map.fans,
             ChipMap::Nuvoton(map) => map.fans,
+            ChipMap::Ec(map) => map.fans,
         }
     }
 
@@ -80,6 +89,7 @@ impl ChipSpec {
         match &self.map {
             ChipMap::Ite(map) => vec![None; map.temps],
             ChipMap::Nuvoton(map) => map.sources.iter().map(|source| Some(source.name)).collect(),
+            ChipMap::Ec(map) => map.temps.iter().copied().map(Some).collect(),
         }
     }
 
@@ -90,7 +100,7 @@ impl ChipSpec {
     pub fn manual_control(&self) -> Option<u8> {
         match &self.map {
             ChipMap::Ite(map) => map.manual_control,
-            ChipMap::Nuvoton(_) => None,
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => None,
         }
     }
 
@@ -267,6 +277,42 @@ const SOURCES_6798: &[TempSource] = &[
     source(16, "PECI 0", None),
 ];
 
+const EC_DONE: u8 = 0x40;
+const EC_TEMPS: &[&str] = &[
+    "CPU",
+    "System",
+    "VRM MOS",
+    "PCH",
+    "CPU Socket",
+    "PCIe x1",
+    "M2_1",
+];
+
+pub static NCT6687D_MSI_800: ChipSpec = ec(
+    "Nuvoton NCT6687D (MSI 800-series)",
+    (0xD5, 0x92, EXACT),
+    true,
+    EcMap {
+        fans: 2,
+        temps: EC_TEMPS,
+        done_command: EC_DONE,
+    },
+);
+
+const fn ec(
+    name: &'static str,
+    (id, revision, mask): (u8, u8, u8),
+    fan_control: bool,
+    map: EcMap,
+) -> ChipSpec {
+    ChipSpec {
+        name,
+        fan_control,
+        ident: Ident::Nuvoton { id, revision, mask },
+        map: ChipMap::Ec(map),
+    }
+}
+
 const fn nuvoton(
     name: &'static str,
     (id, revision, mask): (u8, u8, u8),
@@ -292,7 +338,7 @@ const fn nuvoton(
 const EXACT: u8 = 0xFF;
 const FAMILY: u8 = 0xF0;
 
-pub static CHIPS: [ChipSpec; 25] = [
+pub static CHIPS: [ChipSpec; 28] = [
     ChipSpec {
         name: "ITE IT8655E",
         fan_control: true,
@@ -503,6 +549,36 @@ pub static CHIPS: [ChipSpec; 25] = [
         COUNT_TACH,
         (SLOTS_6798, SOURCES_6798),
         true,
+    ),
+    ec(
+        "Nuvoton NCT6683D",
+        (0xC7, 0x32, EXACT),
+        false,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: 0x00,
+        },
+    ),
+    ec(
+        "Nuvoton NCT6686D",
+        (0xD4, 0x40, 0xFE),
+        true,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: EC_DONE,
+        },
+    ),
+    ec(
+        "Nuvoton NCT6687D",
+        (0xD5, 0x92, EXACT),
+        true,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: EC_DONE,
+        },
     ),
 ];
 

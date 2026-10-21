@@ -23,6 +23,11 @@ Linux k10temp driver
   Reference for AMD family 17h/19h/1Ah temperature register decoding and the
   per-model CCD temperature layouts.
 
+Linux nct6687d driver (out of tree)
+  https://github.com/Fred78290/nct6687d
+  Reference for the NCT6683D/NCT6686D/NCT6687D embedded-controller registers,
+  the MSI board layouts and the fan configuration handshake. No code was copied.
+
 Linux coretemp driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/coretemp.c
   Reference for Intel digital thermal sensor and TjMax decoding.
