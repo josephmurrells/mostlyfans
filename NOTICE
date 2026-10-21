@@ -28,6 +28,12 @@ ryzen_monitor
   Reference for the per-core temperature (CORE_TEMP) positions in the AMD SMU
   PM table versions listed in crates/hw/src/smu.rs. No code was copied.
 
+Linux nct6775 driver
+  https://github.com/torvalds/linux/blob/master/drivers/hwmon/nct6775-core.c
+  Reference for the Nuvoton temperature source numbers (SMBus master, PECI,
+  PCH and DIMM sources) in crates/hw/src/chips.rs, cross-checked with
+  LibreHardwareMonitor where it lists them. No code was copied.
+
 Linux nct6687d driver (out of tree)
   https://github.com/Fred78290/nct6687d
   Reference for the NCT6683D/NCT6686D/NCT6687D embedded-controller registers,

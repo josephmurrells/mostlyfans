@@ -25,6 +25,16 @@ const SMART_ENTRY_LEN: usize = 12;
 const SMART_RAW_OFFSET: usize = 5;
 const TEMPERATURE_HEADER_LEN: usize = 24;
 const TEMPERATURE_INFO_LEN: usize = 16;
+const DEVICE_PROTOCOL_SPECIFIC_PROPERTY: u32 = 50;
+const PROTOCOL_TYPE_NVME: u32 = 3;
+const NVME_DATA_TYPE_LOG_PAGE: u32 = 2;
+const NVME_HEALTH_LOG: u32 = 2;
+const PROTOCOL_DATA_LEN: usize = 40;
+const QUERY_HEADER_LEN: usize = 8;
+const HEALTH_LOG_LEN: usize = 512;
+const HEALTH_SENSORS_OFFSET: usize = 200;
+const HEALTH_SENSOR_COUNT: u16 = 8;
+const KELVIN_OFFSET: i32 = 273;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriveDescriptor {
@@ -81,6 +91,29 @@ impl Drive {
         }
         let smart = self.control(IOCTL_STORAGE_PREDICT_FAILURE, None, 4 + 512)?;
         parse_smart_temperature(&smart).ok_or_else(|| invalid("drive reports no temperature"))
+    }
+
+    pub fn temperature_sensors(&self) -> io::Result<Vec<(u16, i16)>> {
+        let buffer = self.query_property(StorageDeviceTemperatureProperty, 512)?;
+        Ok(parse_temperature_entries(&buffer))
+    }
+
+    pub fn nvme_health_sensors(&self) -> io::Result<Vec<(u16, i16)>> {
+        let mut query = vec![0u8; QUERY_HEADER_LEN + PROTOCOL_DATA_LEN + HEALTH_LOG_LEN];
+        let put = |query: &mut Vec<u8>, offset: usize, value: u32| {
+            query[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put(&mut query, 0, DEVICE_PROTOCOL_SPECIFIC_PROPERTY);
+        put(&mut query, 4, PropertyStandardQuery.0 as u32);
+        let data = QUERY_HEADER_LEN;
+        put(&mut query, data, PROTOCOL_TYPE_NVME);
+        put(&mut query, data + 4, NVME_DATA_TYPE_LOG_PAGE);
+        put(&mut query, data + 8, NVME_HEALTH_LOG);
+        put(&mut query, data + 16, PROTOCOL_DATA_LEN as u32);
+        put(&mut query, data + 20, HEALTH_LOG_LEN as u32);
+        let len = query.len();
+        let output = self.control(IOCTL_STORAGE_QUERY_PROPERTY, Some(&query), len)?;
+        parse_nvme_health(&output).ok_or_else(|| invalid("malformed NVMe health log"))
     }
 
     fn query_property(&self, property: STORAGE_PROPERTY_ID, len: usize) -> io::Result<Vec<u8>> {
@@ -178,6 +211,42 @@ pub fn parse_temperature_descriptor(buffer: &[u8]) -> Option<i16> {
     })
 }
 
+pub fn parse_temperature_entries(buffer: &[u8]) -> Vec<(u16, i16)> {
+    let count = u16_at(buffer, 12).map_or(0, usize::from);
+    (0..count)
+        .map_while(|entry| {
+            let offset = TEMPERATURE_HEADER_LEN + entry * TEMPERATURE_INFO_LEN;
+            let info = buffer.get(offset..offset + TEMPERATURE_INFO_LEN)?;
+            Some((
+                u16::from_le_bytes([info[0], info[1]]),
+                i16::from_le_bytes([info[2], info[3]]),
+            ))
+        })
+        .collect()
+}
+
+pub fn parse_nvme_health(buffer: &[u8]) -> Option<Vec<(u16, i16)>> {
+    let offset = u32_at(buffer, QUERY_HEADER_LEN + 16)? as usize;
+    let log = buffer.get(QUERY_HEADER_LEN + offset..)?;
+    let words = (1..=HEALTH_SENSOR_COUNT)
+        .map(|sensor| {
+            u16_at(log, HEALTH_SENSORS_OFFSET + usize::from(sensor - 1) * 2)
+                .map(|kelvin| (sensor, kelvin))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(
+        words
+            .into_iter()
+            .filter(|(_, kelvin)| *kelvin != 0)
+            .filter_map(|(sensor, kelvin)| {
+                i16::try_from(i32::from(kelvin) - KELVIN_OFFSET)
+                    .ok()
+                    .map(|celsius| (sensor, celsius))
+            })
+            .collect(),
+    )
+}
+
 pub fn parse_smart_temperature(buffer: &[u8]) -> Option<i16> {
     let table =
         buffer.get(SMART_TABLE_OFFSET..SMART_TABLE_OFFSET + SMART_ENTRIES * SMART_ENTRY_LEN)?;
@@ -238,6 +307,45 @@ mod tests {
             buffer[offset + SMART_RAW_OFFSET] = *raw;
         }
         buffer
+    }
+
+    fn health_log(sensors: &[u16]) -> Vec<u8> {
+        let mut buffer = vec![0u8; QUERY_HEADER_LEN + PROTOCOL_DATA_LEN + HEALTH_LOG_LEN];
+        buffer[QUERY_HEADER_LEN + 16..QUERY_HEADER_LEN + 20]
+            .copy_from_slice(&(PROTOCOL_DATA_LEN as u32).to_le_bytes());
+        let log = QUERY_HEADER_LEN + PROTOCOL_DATA_LEN;
+        buffer[log + 1..log + 3].copy_from_slice(&312u16.to_le_bytes());
+        for (slot, kelvin) in sensors.iter().enumerate() {
+            let offset = log + HEALTH_SENSORS_OFFSET + slot * 2;
+            buffer[offset..offset + 2].copy_from_slice(&kelvin.to_le_bytes());
+        }
+        buffer
+    }
+
+    #[test]
+    fn every_temperature_entry_is_kept_with_its_index() {
+        let buffer = temperature_descriptor(&[(0, 39), (2, 47), (1, 44)]);
+        assert_eq!(
+            parse_temperature_entries(&buffer),
+            vec![(0, 39), (2, 47), (1, 44)]
+        );
+        let mut truncated = temperature_descriptor(&[(0, 39), (1, 44)]);
+        truncated.truncate(TEMPERATURE_HEADER_LEN + TEMPERATURE_INFO_LEN);
+        assert_eq!(parse_temperature_entries(&truncated), vec![(0, 39)]);
+    }
+
+    #[test]
+    fn health_log_sensors_skip_unimplemented_slots_and_convert_kelvin() {
+        assert_eq!(parse_nvme_health(&health_log(&[])), Some(Vec::new()));
+        assert_eq!(
+            parse_nvme_health(&health_log(&[318, 0, 314])),
+            Some(vec![(1, 45), (3, 41)])
+        );
+        assert_eq!(
+            parse_nvme_health(&health_log(&[318, 0xFFFF, 314])),
+            Some(vec![(1, 45), (3, 41)])
+        );
+        assert_eq!(parse_nvme_health(&[0u8; 20]), None);
     }
 
     #[test]
