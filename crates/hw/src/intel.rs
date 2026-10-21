@@ -48,7 +48,11 @@ pub struct IntelCpu {
 impl IntelCpu {
     pub fn open() -> Result<Self, HwError> {
         let info = CpuInfo::detect();
-        let thermal = __cpuid(THERMAL_LEAF).eax;
+        let thermal = if __cpuid(0).eax >= THERMAL_LEAF {
+            __cpuid(THERMAL_LEAF).eax
+        } else {
+            0
+        };
         if info.vendor != "GenuineIntel" || thermal & DIGITAL_SENSOR == 0 {
             return Err(HwError::UnsupportedCpu(info.brand));
         }
@@ -87,13 +91,22 @@ impl IntelCpu {
         }
         let cpus = unsafe { GetActiveProcessorCount(0) }.min(MAX_PINNED_CPUS);
         let mut hottest = None;
+        let mut last_error = None;
         for cpu in 0..cpus {
-            let raw = on_cpu(cpu, || self.read_msr(IA32_THERM_STATUS))??;
-            if let Some(celsius) = decode_core(raw, self.tjmax) {
-                hottest = Some(hottest.map_or(celsius, |hot: f32| hot.max(celsius)));
+            match on_cpu(cpu, || self.read_msr(IA32_THERM_STATUS)).and_then(|read| read) {
+                Ok(raw) => {
+                    if let Some(celsius) = decode_core(raw, self.tjmax) {
+                        hottest = Some(hottest.map_or(celsius, |hot: f32| hot.max(celsius)));
+                    }
+                }
+                Err(error) => last_error = Some(error),
             }
         }
-        hottest.ok_or_else(|| HwError::UnsupportedCpu(self.info.brand.clone()))
+        match (hottest, last_error) {
+            (Some(celsius), _) => Ok(celsius),
+            (None, Some(error)) => Err(error),
+            (None, None) => Err(HwError::UnsupportedCpu(self.info.brand.clone())),
+        }
     }
 }
 
