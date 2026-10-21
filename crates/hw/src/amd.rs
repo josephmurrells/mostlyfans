@@ -5,9 +5,6 @@ use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex, PCI_BUS};
 use crate::pawnio::{AMD_FAMILY_17_MODULE, PawnIoModule};
 
 const THM_TCON_CUR_TMP: u32 = 0x0005_9800;
-const CCD_TEMP_BASE_ZEN2_ZEN3: u32 = 0x0005_9954;
-const CCD_TEMP_BASE_ZEN4: u32 = 0x0005_9B08;
-const MAX_CCDS: u32 = 8;
 const CUR_TEMP_SHIFT: u32 = 21;
 const RANGE_SEL_MASK: u32 = 1 << 19;
 const TJ_SEL_MASK: u32 = 0b11 << 16;
@@ -65,18 +62,29 @@ impl CpuInfo {
     }
 
     pub fn tctl_offset(&self) -> f32 {
+        if self.family != 0x17 {
+            return 0.0;
+        }
         TCTL_OFFSETS
             .iter()
             .find(|(needle, _)| self.brand.contains(needle))
             .map_or(0.0, |(_, offset)| *offset)
     }
 
-    fn ccd_base(&self) -> u32 {
-        if self.family == 0x19 && matches!(self.model, 0x61 | 0x44) {
-            CCD_TEMP_BASE_ZEN4
-        } else {
-            CCD_TEMP_BASE_ZEN2_ZEN3
-        }
+    fn ccd_layout(&self) -> Option<(u32, u32)> {
+        let (offset, count) = match (self.family, self.model) {
+            (0x17 | 0x18, 0x01 | 0x08 | 0x11 | 0x18) => (0x154, 4),
+            (0x17 | 0x18, 0x31 | 0x47 | 0x60 | 0x68 | 0x71) => (0x154, 8),
+            (0x17 | 0x18, 0xA0..=0xAF) => (0x300, 8),
+            (0x19, 0x00..=0x01 | 0x08 | 0x21 | 0x50..=0x5F) => (0x154, 8),
+            (0x19, 0x40..=0x4F) => (0x300, 8),
+            (0x19, 0x60..=0x7F) => (0x308, 8),
+            (0x19, 0x10..=0x1F | 0xA0..=0xAF) => (0x300, 12),
+            (0x1A, 0x00..=0x1F) => (0x1F0, 16),
+            (0x1A, 0x40..=0x4F) => (0x308, 8),
+            _ => return None,
+        };
+        Some((THM_TCON_CUR_TMP + offset, count))
     }
 }
 
@@ -105,13 +113,14 @@ pub struct AmdCpu {
     module: PawnIoModule,
     lock: NamedMutex,
     info: CpuInfo,
+    ccd_base: u32,
     ccds: Vec<u32>,
 }
 
 impl AmdCpu {
     pub fn open() -> Result<Self, HwError> {
         let info = CpuInfo::detect();
-        if info.vendor != "AuthenticAMD" || !matches!(info.family, 0x17 | 0x19) {
+        if info.vendor != "AuthenticAMD" || !matches!(info.family, 0x17 | 0x19 | 0x1A) {
             return Err(HwError::UnsupportedCpu(format!(
                 "{} family {:#x}",
                 info.brand, info.family
@@ -119,22 +128,23 @@ impl AmdCpu {
         }
         let module = PawnIoModule::load(AMD_FAMILY_17_MODULE)?;
         let lock = NamedMutex::open(PCI_BUS)?;
+        let (ccd_base, ccd_count) = info.ccd_layout().unwrap_or_default();
         let mut cpu = Self {
             module,
             lock,
             info,
+            ccd_base,
             ccds: Vec::new(),
         };
-        let base = cpu.info.ccd_base();
         let raw = {
             let _guard = cpu.lock.acquire(DEFAULT_TIMEOUT)?;
-            (0..MAX_CCDS)
-                .map(|index| cpu.read_smn(base + index * 4))
-                .collect::<Result<Vec<_>, _>>()?
+            (0..ccd_count)
+                .map(|index| cpu.read_smn(ccd_base + index * 4))
+                .collect::<Vec<_>>()
         };
-        cpu.ccds = (0..MAX_CCDS)
+        cpu.ccds = (0..ccd_count)
             .zip(raw)
-            .filter(|(_, raw)| decode_ccd(*raw).is_some())
+            .filter(|(_, raw)| raw.as_ref().is_ok_and(|raw| decode_ccd(*raw).is_some()))
             .map(|(index, _)| index)
             .collect();
         Ok(cpu)
@@ -155,11 +165,10 @@ impl AmdCpu {
         let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
         let tctl = decode_tctl(self.read_smn(THM_TCON_CUR_TMP)?);
         let offset = self.info.tctl_offset();
-        let base = self.info.ccd_base();
         let ccds = self
             .ccds
             .iter()
-            .filter_map(|&index| match self.read_smn(base + index * 4) {
+            .filter_map(|&index| match self.read_smn(self.ccd_base + index * 4) {
                 Ok(raw) => decode_ccd(raw).map(|celsius| (index, celsius)),
                 Err(error) => {
                     tracing::debug!(index, %error, "CCD temperature read failed");
@@ -206,11 +215,31 @@ mod tests {
         assert_eq!(info.tctl_offset(), 20.0);
         info.brand = "AMD Ryzen 7 5700X3D 8-Core Processor".into();
         assert_eq!(info.tctl_offset(), 0.0);
+        info.brand = "AMD Ryzen 7 1700X Eight-Core Processor".into();
         info.family = 0x19;
-        info.model = 0x21;
-        assert_eq!(info.ccd_base(), CCD_TEMP_BASE_ZEN2_ZEN3);
-        info.model = 0x61;
-        assert_eq!(info.ccd_base(), CCD_TEMP_BASE_ZEN4);
+        assert_eq!(info.tctl_offset(), 0.0);
+    }
+
+    #[test]
+    fn ccd_layouts_follow_k10temp() {
+        let layout = |family, model| {
+            CpuInfo {
+                vendor: "AuthenticAMD".into(),
+                brand: String::new(),
+                family,
+                model,
+            }
+            .ccd_layout()
+        };
+        assert_eq!(layout(0x17, 0x08), Some((0x5_9954, 4)));
+        assert_eq!(layout(0x17, 0x71), Some((0x5_9954, 8)));
+        assert_eq!(layout(0x19, 0x21), Some((0x5_9954, 8)));
+        assert_eq!(layout(0x19, 0x44), Some((0x5_9B00, 8)));
+        assert_eq!(layout(0x19, 0x61), Some((0x5_9B08, 8)));
+        assert_eq!(layout(0x19, 0x11), Some((0x5_9B00, 12)));
+        assert_eq!(layout(0x1A, 0x44), Some((0x5_9B08, 8)));
+        assert_eq!(layout(0x1A, 0x02), Some((0x5_99F0, 16)));
+        assert_eq!(layout(0x19, 0x30), None);
     }
 
     #[test]

@@ -215,7 +215,7 @@ fn a_cpu_fan_or_pump_can_never_be_allowed_to_stop() {
 fn safety_alerts_have_no_dismiss_button() {
     let link = FakeLink::new(fixtures::state());
     link.update(|state| {
-        state.warnings = vec!["critical sensor `cpu/tctl` is not reporting".to_owned()];
+        state.warnings = vec!["critical sensor `cpu/package` is not reporting".to_owned()];
         state.monitor_only = true;
     });
     let shell = shell(&link, Page::Overview);

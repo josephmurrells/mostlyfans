@@ -19,6 +19,8 @@ pub struct BiosSnapshot {
     pub channels: BTreeMap<FanId, ChannelState>,
     #[serde(default)]
     pub owned: BTreeSet<FanId>,
+    #[serde(skip)]
+    pub lost: bool,
 }
 
 fn default_chip_id() -> u16 {
@@ -41,6 +43,7 @@ impl BiosSnapshot {
             chip_id,
             channels: BTreeMap::new(),
             owned: BTreeSet::new(),
+            lost: false,
         }
     }
 
@@ -62,6 +65,13 @@ impl BiosSnapshot {
 
     pub fn channel(&self, index: usize) -> Option<ChannelState> {
         self.channels.get(&FanId::for_channel(index)).copied()
+    }
+
+    pub fn lost() -> Self {
+        Self {
+            lost: true,
+            ..Self::default()
+        }
     }
 
     pub fn is_owned(&self, index: usize) -> bool {

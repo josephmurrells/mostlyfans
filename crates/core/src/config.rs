@@ -18,6 +18,8 @@ pub const MAX_MIX_INPUTS: usize = 16;
 pub const MAX_FAN_ENTRIES: usize = 16;
 pub const MAX_NAME_LEN: usize = 64;
 pub const MAX_SERIALIZED_LEN: usize = 32 * 1024;
+pub const CPU_SENSOR: &str = "cpu/package";
+const LEGACY_CPU_SENSOR: &str = "cpu/tctl";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -78,7 +80,7 @@ pub struct SafetyConfig {
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
-            critical_sensor: SensorId::new("cpu/tctl"),
+            critical_sensor: SensorId::new(CPU_SENSOR),
             critical_enabled: true,
             critical_c: 85.0,
             release_c: 80.0,
@@ -166,6 +168,22 @@ pub enum ConfigError {
 }
 
 impl Config {
+    pub fn migrate(&mut self) -> bool {
+        let legacy = SensorId::new(LEGACY_CPU_SENSOR);
+        let mut sensors: Vec<&mut SensorId> = vec![&mut self.safety.critical_sensor];
+        sensors.extend(
+            self.curves
+                .iter_mut()
+                .filter_map(|curve| curve.kind.sensor_mut()),
+        );
+        let mut changed = false;
+        for sensor in sensors.into_iter().filter(|sensor| **sensor == legacy) {
+            *sensor = SensorId::new(CPU_SENSOR);
+            changed = true;
+        }
+        changed
+    }
+
     pub fn active_modes(&self) -> Option<&BTreeMap<FanId, FanMode>> {
         self.profiles
             .get(&self.active_profile)
@@ -439,7 +457,7 @@ mod tests {
         config.curves.push(curve(
             "cpu",
             CurveKind::Graph {
-                sensor: "cpu/tctl".into(),
+                sensor: "cpu/package".into(),
                 points: vec![CurvePoint::new(40.0, 30.0), CurvePoint::new(80.0, 100.0)],
             },
         ));
@@ -629,7 +647,7 @@ mod tests {
             next.curves.push(curve(
                 &format!("curve-{index}"),
                 CurveKind::Graph {
-                    sensor: "cpu/tctl".into(),
+                    sensor: "cpu/package".into(),
                     points: vec![CurvePoint::new(40.0, 30.0); MAX_CURVE_POINTS],
                 },
             ));
@@ -645,6 +663,35 @@ mod tests {
                 .insert(FanId::for_channel(fan), measured(MAX_POINTS));
         }
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_old_tctl_sensor_migrates_to_the_cpu_package_sensor() {
+        let mut config = Config::default();
+        config.safety.critical_sensor = "cpu/tctl".into();
+        config.curves.push(curve(
+            "cpu",
+            CurveKind::Graph {
+                sensor: "cpu/tctl".into(),
+                points: vec![CurvePoint::new(40.0, 30.0)],
+            },
+        ));
+        config.curves.push(curve(
+            "board",
+            CurveKind::Linear {
+                sensor: "board/temp1".into(),
+                start: CurvePoint::new(30.0, 30.0),
+                end: CurvePoint::new(60.0, 100.0),
+            },
+        ));
+        assert!(config.migrate());
+        assert_eq!(config.safety.critical_sensor.as_str(), CPU_SENSOR);
+        assert_eq!(config.curves[0].kind.sensor().unwrap().as_str(), CPU_SENSOR);
+        assert_eq!(
+            config.curves[1].kind.sensor().unwrap().as_str(),
+            "board/temp1"
+        );
+        assert!(!config.migrate());
     }
 
     #[test]

@@ -445,7 +445,7 @@ mod tests {
         Readings {
             sensors: vec![
                 SensorReading {
-                    id: "cpu/tctl".into(),
+                    id: "cpu/package".into(),
                     label: "Tctl".into(),
                     celsius: Some(50.0),
                 },
@@ -479,7 +479,7 @@ mod tests {
             readings,
             FanLimits::default(),
             settings,
-            &"cpu/tctl".into(),
+            &"cpu/package".into(),
         )
     }
 

@@ -408,14 +408,19 @@ impl<B: Backend> Runtime<B> {
         self.read_failures = 0;
     }
 
+    fn others_in_control(&mut self) -> bool {
+        !self.conflicts.poll().controlling.is_empty()
+    }
+
     fn drop_hardware(&mut self, reason: String) {
         self.cancel_calibration("the hardware stopped responding");
+        let others = self.others_in_control();
         if let Some(mut hardware) = self.hardware.take()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(&mut hardware, others)
         {
             tracing::error!(%error, "could not release fans through the failing handle");
-            let fresh =
-                (self.opener)(&self.paths.snapshot).and_then(|mut fresh| fresh.release_all());
+            let fresh = (self.opener)(&self.paths.snapshot)
+                .and_then(|mut fresh| release(&mut fresh, others));
             if let Err(error) = fresh {
                 tracing::error!(%error, "could not release fans through a fresh handle");
                 self.unreleased = true;
@@ -449,8 +454,9 @@ impl<B: Backend> Runtime<B> {
         self.cancel_calibration("the system is suspending");
         self.suspended = true;
         self.shared.heartbeat.pause();
+        let others = self.others_in_control();
         if let Some(hardware) = self.hardware.as_mut()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(hardware, others)
         {
             tracing::error!(%error, "failed to release fans before suspend");
         }
@@ -505,9 +511,10 @@ impl<B: Backend> Runtime<B> {
         let Ok(ready) = self.reinitialize_after_resume() else {
             return Flow::Stop;
         };
+        let others = self.others_in_control();
         if ready
             && let Some(hardware) = self.hardware.as_mut()
-            && let Err(error) = hardware.release_all()
+            && let Err(error) = release(hardware, others)
         {
             tracing::warn!(%error, "failed to reset channels after resume");
         }
@@ -526,10 +533,11 @@ impl<B: Backend> Runtime<B> {
     fn shutdown(&mut self) -> bool {
         self.cancel_calibration("fan control is stopping");
         self.shared.heartbeat.pause();
+        let others = self.others_in_control();
         let Some(mut hardware) = self.hardware.take() else {
             return !self.unreleased;
         };
-        match hardware.release_all() {
+        match release(&mut hardware, others) {
             Ok(()) => {
                 tracing::info!("all fans returned to BIOS control");
                 self.signal(Signal::Owning(false));
@@ -624,6 +632,14 @@ struct Loaded {
     calibration_warning: Option<String>,
 }
 
+fn release<B: Backend>(hardware: &mut B, others_in_control: bool) -> Result<(), HwError> {
+    if others_in_control {
+        hardware.release_owned()
+    } else {
+        hardware.release_all()
+    }
+}
+
 fn load_config(paths: &Paths) -> Loaded {
     let defaults = |warning: String| Loaded {
         config: Config::default(),
@@ -631,33 +647,38 @@ fn load_config(paths: &Paths) -> Loaded {
         calibration_warning: None,
     };
     match store::load_toml::<Config>(&paths.config) {
-        Ok(Some(config)) => match config.validate() {
-            Ok(()) => Loaded {
-                config,
-                config_warning: None,
-                calibration_warning: None,
-            },
-            Err(error) => {
-                let trimmed = Config {
-                    calibration: Default::default(),
-                    ..config
-                };
-                if trimmed.validate().is_ok() {
-                    tracing::error!(%error, "saved calibration is invalid; dropping it");
-                    return Loaded {
-                        config: trimmed,
-                        config_warning: None,
-                        calibration_warning: Some(format!(
-                            "saved fan calibration is invalid ({error}) and was ignored"
-                        )),
-                    };
-                }
-                tracing::error!(%error, "configuration is invalid; using defaults");
-                defaults(format!(
-                    "saved configuration is invalid ({error}); using defaults"
-                ))
+        Ok(Some(mut config)) => {
+            if config.migrate() {
+                tracing::info!("moved CPU temperature references from `cpu/tctl` to `cpu/package`");
             }
-        },
+            match config.validate() {
+                Ok(()) => Loaded {
+                    config,
+                    config_warning: None,
+                    calibration_warning: None,
+                },
+                Err(error) => {
+                    let trimmed = Config {
+                        calibration: Default::default(),
+                        ..config
+                    };
+                    if trimmed.validate().is_ok() {
+                        tracing::error!(%error, "saved calibration is invalid; dropping it");
+                        return Loaded {
+                            config: trimmed,
+                            config_warning: None,
+                            calibration_warning: Some(format!(
+                                "saved fan calibration is invalid ({error}) and was ignored"
+                            )),
+                        };
+                    }
+                    tracing::error!(%error, "configuration is invalid; using defaults");
+                    defaults(format!(
+                        "saved configuration is invalid ({error}); using defaults"
+                    ))
+                }
+            }
+        }
         Ok(None) => Loaded {
             config: Config::default(),
             config_warning: None,
@@ -1450,7 +1471,8 @@ pub(crate) mod tests {
             )
         });
         let (_messages, rx) = mpsc::channel();
-        let conflicts = ConflictMonitor::with_processes(Box::new(|| Ok(Vec::new())));
+        let conflicts =
+            ConflictMonitor::with_processes(Box::new(|| Ok(vec!["FanControl.exe".to_owned()])));
         let mut runtime = Runtime::new(
             paths.clone(),
             Arc::new(Shared::default()),
@@ -1464,7 +1486,7 @@ pub(crate) mod tests {
         assert!(runtime.engine.is_monitor_only());
         let state = runtime.shared.state().unwrap();
         assert!(state.monitor_only);
-        assert!(!state.board.as_ref().unwrap().fan_control);
+        assert!(state.board.as_ref().unwrap().fan_control);
         assert!(!runtime.owns_any());
         runtime.suspend();
         assert!(matches!(runtime.resume(), Flow::Continue));
@@ -1475,20 +1497,6 @@ pub(crate) mod tests {
         runtime.tick();
         assert!(runtime.shutdown());
         drop(runtime);
-
-        let mut chip = SuperIo::probe(io, Slot::Primary, NamedMutex::open(&name).unwrap()).unwrap();
-        assert!(matches!(
-            chip.set_duty(1, 0x20),
-            Err(HwError::Unverified(_))
-        ));
-        crate::failsafe::release_with(&mut chip, &paths.snapshot, Duration::from_secs(1)).unwrap();
-        crate::failsafe::release_preferring(
-            Some(&mut chip),
-            &paths.snapshot,
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        assert!(!paths.snapshot.exists());
     }
 
     fn ite_write_allowed(
@@ -1506,7 +1514,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unverified_ite_chip_is_never_written_through_the_whole_lifecycle() {
+    fn an_ite_chip_beside_another_fan_tool_is_never_written_through_the_whole_lifecycle() {
         let fake = SharedFake::new(FakeIte::chip(0x8686));
         hands_off_lifecycle("8686", fake.clone());
         fake.with(|chip| {
@@ -1537,7 +1545,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unverified_nuvoton_chip_only_sees_bank_selects() {
+    fn a_nuvoton_chip_beside_another_fan_tool_only_sees_bank_selects() {
         let mut nct = FakeNct::new(0xD4, 0x2B);
         nct.bank_register = 0x04;
         let fake = SharedNct::new(nct);

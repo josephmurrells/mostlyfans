@@ -1,7 +1,7 @@
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChipSpec {
     pub name: &'static str,
-    pub verified: bool,
+    pub fan_control: bool,
     pub ident: Ident,
     pub map: ChipMap,
 }
@@ -16,6 +16,14 @@ pub enum Ident {
 pub enum ChipMap {
     Ite(IteMap),
     Nuvoton(NctMap),
+    Ec(EcMap),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct EcMap {
+    pub fans: usize,
+    pub temps: &'static [&'static str],
+    pub done_command: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +39,7 @@ pub struct IteMap {
     pub index_echo: bool,
     pub config_check: bool,
     pub manual_control: Option<u8>,
+    pub polarity_check: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +81,7 @@ impl ChipSpec {
         match &self.map {
             ChipMap::Ite(map) => map.fans,
             ChipMap::Nuvoton(map) => map.fans,
+            ChipMap::Ec(map) => map.fans,
         }
     }
 
@@ -79,6 +89,18 @@ impl ChipSpec {
         match &self.map {
             ChipMap::Ite(map) => vec![None; map.temps],
             ChipMap::Nuvoton(map) => map.sources.iter().map(|source| Some(source.name)).collect(),
+            ChipMap::Ec(map) => map.temps.iter().copied().map(Some).collect(),
+        }
+    }
+
+    pub fn forces_auto_without_snapshot(&self) -> bool {
+        matches!(&self.map, ChipMap::Ite(map) if map.manual_control.is_none())
+    }
+
+    pub fn manual_control(&self) -> Option<u8> {
+        match &self.map {
+            ChipMap::Ite(map) => map.manual_control,
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => None,
         }
     }
 
@@ -129,12 +151,13 @@ const ITE: IteMap = IteMap {
     index_echo: true,
     config_check: true,
     manual_control: None,
+    polarity_check: true,
 };
 
 const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
     ChipSpec {
         name,
-        verified: false,
+        fan_control: true,
         ident: Ident::Ite(chip_id),
         map: ChipMap::Ite(map),
     }
@@ -254,6 +277,42 @@ const SOURCES_6798: &[TempSource] = &[
     source(16, "PECI 0", None),
 ];
 
+const EC_DONE: u8 = 0x40;
+const EC_TEMPS: &[&str] = &[
+    "CPU",
+    "System",
+    "VRM MOS",
+    "PCH",
+    "CPU Socket",
+    "PCIe x1",
+    "M2_1",
+];
+
+pub static NCT6687D_MSI_800: ChipSpec = ec(
+    "Nuvoton NCT6687D (MSI 800-series)",
+    (0xD5, 0x92, EXACT),
+    true,
+    EcMap {
+        fans: 2,
+        temps: EC_TEMPS,
+        done_command: EC_DONE,
+    },
+);
+
+const fn ec(
+    name: &'static str,
+    (id, revision, mask): (u8, u8, u8),
+    fan_control: bool,
+    map: EcMap,
+) -> ChipSpec {
+    ChipSpec {
+        name,
+        fan_control,
+        ident: Ident::Nuvoton { id, revision, mask },
+        map: ChipMap::Ec(map),
+    }
+}
+
 const fn nuvoton(
     name: &'static str,
     (id, revision, mask): (u8, u8, u8),
@@ -264,7 +323,7 @@ const fn nuvoton(
 ) -> ChipSpec {
     ChipSpec {
         name,
-        verified: false,
+        fan_control: true,
         ident: Ident::Nuvoton { id, revision, mask },
         map: ChipMap::Nuvoton(NctMap {
             fans,
@@ -279,16 +338,17 @@ const fn nuvoton(
 const EXACT: u8 = 0xFF;
 const FAMILY: u8 = 0xF0;
 
-pub static CHIPS: [ChipSpec; 24] = [
+pub static CHIPS: [ChipSpec; 28] = [
     ChipSpec {
         name: "ITE IT8655E",
-        verified: true,
+        fan_control: true,
         ident: Ident::Ite(0x8655),
         map: ChipMap::Ite(IteMap {
             temps: 6,
             bank_select: true,
             dump_banks: 4,
             config_check: false,
+            polarity_check: false,
             ..ITE
         }),
     },
@@ -312,6 +372,8 @@ pub static CHIPS: [ChipSpec; 24] = [
         0x8625,
         IteMap {
             fans: 6,
+            bank_select: true,
+            dump_banks: 4,
             pwm_control: PWM_CONTROL_ALT,
             tach_low: TACH_LOW_ALT,
             tach_high: TACH_HIGH_ALT,
@@ -333,6 +395,8 @@ pub static CHIPS: [ChipSpec; 24] = [
         0x8686,
         IteMap {
             fans: 5,
+            bank_select: true,
+            dump_banks: 4,
             temps: 7,
             ..ITE
         },
@@ -342,19 +406,34 @@ pub static CHIPS: [ChipSpec; 24] = [
         0x8688,
         IteMap {
             fans: 5,
+            bank_select: true,
+            dump_banks: 4,
             temps: 6,
             index_echo: false,
             ..ITE
         },
     ),
-    ite(
-        "ITE IT8689E",
-        0x8689,
-        IteMap {
+    ChipSpec {
+        name: "ITE IT8689E",
+        fan_control: true,
+        ident: Ident::Ite(0x8689),
+        map: ChipMap::Ite(IteMap {
             fans: 6,
             temps: 6,
+            bank_select: true,
             dump_banks: 4,
             manual_control: Some(0x7F),
+            ..ITE
+        }),
+    },
+    ite(
+        "ITE IT8696E",
+        0x8696,
+        IteMap {
+            fans: 6,
+            bank_select: true,
+            dump_banks: 4,
+            temps: 6,
             ..ITE
         },
     ),
@@ -471,4 +550,58 @@ pub static CHIPS: [ChipSpec; 24] = [
         (SLOTS_6798, SOURCES_6798),
         true,
     ),
+    ec(
+        "Nuvoton NCT6683D",
+        (0xC7, 0x32, EXACT),
+        false,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: 0x00,
+        },
+    ),
+    ec(
+        "Nuvoton NCT6686D",
+        (0xD4, 0x40, 0xFE),
+        true,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: EC_DONE,
+        },
+    ),
+    ec(
+        "Nuvoton NCT6687D",
+        (0xD5, 0x92, EXACT),
+        true,
+        EcMap {
+            fans: 8,
+            temps: EC_TEMPS,
+            done_command: EC_DONE,
+        },
+    ),
 ];
+
+#[cfg(test)]
+pub(crate) static MONITOR_ONLY_8686: ChipSpec = ChipSpec {
+    name: "ITE IT8686E",
+    fan_control: false,
+    ident: Ident::Ite(0x8686),
+    map: ChipMap::Ite(IteMap {
+        fans: 5,
+        temps: 7,
+        ..ITE
+    }),
+};
+
+#[cfg(test)]
+pub(crate) static MONITOR_ONLY_8628: ChipSpec = ChipSpec {
+    name: "ITE IT8628E",
+    fan_control: false,
+    ident: Ident::Ite(0x8628),
+    map: ChipMap::Ite(IteMap {
+        fans: 6,
+        temps: 6,
+        ..ITE
+    }),
+};
