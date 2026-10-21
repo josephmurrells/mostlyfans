@@ -70,6 +70,11 @@ pub fn force_all_auto<P: PortIo>(
     for channel in (0..chip.fan_count()).filter(|&channel| resettable || snapshot.is_owned(channel))
     {
         let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            tracing::error!(channel, "no time left to return channel to BIOS control");
+            first_error.get_or_insert(HwError::ReleaseOutOfTime(channel));
+            continue;
+        }
         if let Err(error) = chip.restore_patiently(channel, snapshot.channel(channel), remaining) {
             tracing::error!(channel, %error, "failed to return channel to BIOS control");
             first_error.get_or_insert(error);

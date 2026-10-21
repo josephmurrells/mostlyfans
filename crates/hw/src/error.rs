@@ -69,6 +69,8 @@ pub enum HwError {
     FanConfigTimeout(&'static str),
     #[error("the fan controller rejected the new fan settings")]
     FanConfigRejected,
+    #[error("ran out of time before fan channel {0} was returned to BIOS control")]
+    ReleaseOutOfTime(usize),
     #[error("fan channel {0} does not exist")]
     InvalidChannel(usize),
     #[error("unsupported CPU: {0}")]
