@@ -338,6 +338,10 @@ impl<P: PortIo> SuperIo<P> {
         self.config.chip.fan_control && self.usable
     }
 
+    pub fn can_release(&self) -> bool {
+        self.config.chip.fan_control
+    }
+
     fn transaction<T>(
         &mut self,
         action: impl FnOnce(&mut dyn Session) -> Result<T, HwError>,
@@ -421,7 +425,7 @@ impl<P: PortIo> SuperIo<P> {
 
     pub fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError> {
         self.check_channel(channel)?;
-        if !self.fan_control() {
+        if !self.can_release() {
             return Ok(());
         }
         self.transaction(|session| session.restore(channel, saved))
