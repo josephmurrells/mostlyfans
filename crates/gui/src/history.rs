@@ -98,7 +98,7 @@ mod tests {
     use crate::fixtures;
 
     fn cpu() -> SensorId {
-        SensorId::new("cpu/tctl")
+        SensorId::new("cpu/package")
     }
 
     #[test]

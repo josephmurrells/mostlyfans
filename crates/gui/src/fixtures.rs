@@ -27,7 +27,7 @@ pub fn config() -> Config {
         id: CurveId::new("curve-1"),
         name: "Silent CPU".to_owned(),
         kind: CurveKind::Graph {
-            sensor: SensorId::new("cpu/tctl"),
+            sensor: SensorId::new("cpu/package"),
             points: vec![
                 CurvePoint::new(40.0, 30.0),
                 CurvePoint::new(60.0, 45.0),
@@ -99,7 +99,7 @@ pub fn state() -> ControlState {
         }),
         readings: Readings {
             sensors: vec![
-                sensor("cpu/tctl", "CPU Tctl", 52.4),
+                sensor("cpu/package", "CPU Tctl", 52.4),
                 sensor("board/temp1", "Board temp 1", 36.0),
                 sensor("board/temp2", "Board temp 2", 41.5),
             ],

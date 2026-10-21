@@ -631,33 +631,38 @@ fn load_config(paths: &Paths) -> Loaded {
         calibration_warning: None,
     };
     match store::load_toml::<Config>(&paths.config) {
-        Ok(Some(config)) => match config.validate() {
-            Ok(()) => Loaded {
-                config,
-                config_warning: None,
-                calibration_warning: None,
-            },
-            Err(error) => {
-                let trimmed = Config {
-                    calibration: Default::default(),
-                    ..config
-                };
-                if trimmed.validate().is_ok() {
-                    tracing::error!(%error, "saved calibration is invalid; dropping it");
-                    return Loaded {
-                        config: trimmed,
-                        config_warning: None,
-                        calibration_warning: Some(format!(
-                            "saved fan calibration is invalid ({error}) and was ignored"
-                        )),
-                    };
-                }
-                tracing::error!(%error, "configuration is invalid; using defaults");
-                defaults(format!(
-                    "saved configuration is invalid ({error}); using defaults"
-                ))
+        Ok(Some(mut config)) => {
+            if config.migrate() {
+                tracing::info!("moved CPU temperature references from `cpu/tctl` to `cpu/package`");
             }
-        },
+            match config.validate() {
+                Ok(()) => Loaded {
+                    config,
+                    config_warning: None,
+                    calibration_warning: None,
+                },
+                Err(error) => {
+                    let trimmed = Config {
+                        calibration: Default::default(),
+                        ..config
+                    };
+                    if trimmed.validate().is_ok() {
+                        tracing::error!(%error, "saved calibration is invalid; dropping it");
+                        return Loaded {
+                            config: trimmed,
+                            config_warning: None,
+                            calibration_warning: Some(format!(
+                                "saved fan calibration is invalid ({error}) and was ignored"
+                            )),
+                        };
+                    }
+                    tracing::error!(%error, "configuration is invalid; using defaults");
+                    defaults(format!(
+                        "saved configuration is invalid ({error}); using defaults"
+                    ))
+                }
+            }
+        }
         Ok(None) => Loaded {
             config: Config::default(),
             config_warning: None,
