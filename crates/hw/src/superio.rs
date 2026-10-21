@@ -9,7 +9,7 @@ use crate::HwError;
 use crate::chips::{CHIPS, ChipMap, ChipSpec};
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
 use crate::port::PortIo;
-use crate::{ite, nuvoton};
+use crate::{ec, ite, nuvoton};
 
 pub(crate) const LDN_SELECT_REG: u8 = 0x07;
 pub(crate) const CHIP_ID_REG: u8 = 0x20;
@@ -44,6 +44,7 @@ pub enum ControlKind {
     #[default]
     Ite,
     Nuvoton,
+    Ec,
 }
 
 impl ControlKind {
@@ -66,6 +67,7 @@ impl ChannelState {
         match self.kind {
             ControlKind::Ite => self.control & ite::AUTO_MODE_BIT != 0,
             ControlKind::Nuvoton => self.control & nuvoton::MODE_MASK != 0,
+            ControlKind::Ec => self.control == 0,
         }
     }
 }
@@ -215,7 +217,7 @@ fn reread_config<P: PortIo>(
     };
     let config = match current.chip.map {
         ChipMap::Ite(_) => ite::read_config(io, false),
-        ChipMap::Nuvoton(_) => nuvoton::read_config(io, current.slot, unlock),
+        ChipMap::Nuvoton(_) | ChipMap::Ec(_) => nuvoton::read_config(io, current.slot, unlock),
     }
     .map_err(|error| match error {
         HwError::UnsupportedChip(found) => changed(found),
@@ -355,6 +357,7 @@ impl<P: PortIo> SuperIo<P> {
                 }
                 action(&mut session)
             }
+            ChipMap::Ec(map) => action(&mut ec::Session::open(&mut self.io, base, map)),
             ChipMap::Nuvoton(map) => {
                 let mut session = nuvoton::Session::open(&mut self.io, base, map)?;
                 let result = action(&mut session);
@@ -432,6 +435,7 @@ impl<P: PortIo> SuperIo<P> {
         match &self.config.chip.map {
             ChipMap::Ite(map) => ite::dump(&mut self.io, &self.lock, &self.config, map),
             ChipMap::Nuvoton(_) => nuvoton::dump(&mut self.io, &self.lock, &self.config),
+            ChipMap::Ec(_) => ec::dump(&mut self.io, &self.lock, &self.config),
         }
     }
 
@@ -597,6 +601,10 @@ mod tests {
             (0xD4, 0x51, "Nuvoton NCT6797D"),
             (0xD4, 0x2B, "Nuvoton NCT6798D"),
             (0xD8, 0x02, "Nuvoton NCT6799D or NCT6796D-S"),
+            (0xC7, 0x32, "Nuvoton NCT6683D"),
+            (0xD4, 0x40, "Nuvoton NCT6686D"),
+            (0xD4, 0x41, "Nuvoton NCT6686D"),
+            (0xD5, 0x92, "Nuvoton NCT6687D"),
         ];
         for (id, revision, name) in nuvoton_rows {
             assert_eq!(
@@ -608,8 +616,9 @@ mod tests {
         for (id, revision) in [
             (0xB4, 0x60),
             (0xC8, 0x13),
-            (0xD4, 0x40),
-            (0xD5, 0x92),
+            (0xD4, 0x42),
+            (0xD5, 0x93),
+            (0xC7, 0x30),
             (0xD8, 0x06),
             (0xC4, 0x52),
             (0xFF, 0xFF),
@@ -619,13 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn every_listed_chip_has_fan_control() {
+    fn only_the_nct6683d_is_monitor_only() {
         let monitor_only: Vec<&str> = CHIPS
             .iter()
             .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert!(monitor_only.is_empty(), "{monitor_only:?}");
+        assert_eq!(monitor_only, ["Nuvoton NCT6683D"]);
     }
 
     #[test]
@@ -652,6 +661,9 @@ mod tests {
                     };
                     assert!(tachs >= map.fans);
                     assert!(!map.slots.is_empty() && !map.sources.is_empty());
+                }
+                (Ident::Nuvoton { .. }, ChipMap::Ec(map)) => {
+                    assert!(map.fans <= 8 && map.temps.len() <= 7);
                 }
                 _ => panic!("{} mixes vendors", chip.name),
             }
