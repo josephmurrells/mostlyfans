@@ -18,12 +18,14 @@ const MODE_REG: u16 = 0xA00;
 const REQUEST_REG: u16 = 0xA01;
 const COMMAND_BASE: u16 = 0xA28;
 const ENGINE_STATUS_REG: u16 = 0xCF8;
+const MONITOR_CONFIG_REG: u16 = 0x180;
+const MONITOR_START: u8 = 0x80;
 const CONFIG_REQUEST: u8 = 0x80;
 const PHASE: u8 = 1 << 3;
 const INVALID: u8 = 1 << 4;
 const CHECK_DONE: u8 = 1 << 5;
 const LOCKED: u8 = 1 << 6;
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FULL_SPEED: u8 = 0xFF;
 const DUMP_PAGES: [u8; 3] = [0x01, 0x0A, 0x0C];
@@ -193,6 +195,10 @@ impl<'a, P: PortIo> Session<'a, P> {
 
 impl<P: PortIo> crate::superio::Session for Session<'_, P> {
     fn verify_vendor(&mut self) -> Result<(), HwError> {
+        let config = self.ec.read(MONITOR_CONFIG_REG)?;
+        if config & MONITOR_START == 0 {
+            self.ec.write(MONITOR_CONFIG_REG, config | MONITOR_START)?;
+        }
         Ok(())
     }
 
@@ -247,9 +253,11 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         let manual = self.ec.read(MODE_REG)? & (1 << channel) != 0;
         match saved.filter(|state| state.kind == ControlKind::Ec) {
             Some(state) => {
-                self.ec
-                    .configure(done, |ec| ec.write_verified(register, state.duty))?;
-                self.set_mode_bit(channel, state.control != 0)
+                let duty = self
+                    .ec
+                    .configure(done, |ec| ec.write_verified(register, state.duty));
+                let mode = self.set_mode_bit(channel, state.control != 0);
+                duty.and(mode)
             }
             None if manual => self
                 .ec
@@ -473,6 +481,25 @@ mod tests {
         chip.restore(1, None).unwrap();
         assert_eq!(chip.io.get(COMMAND_BASE + 1), FULL_SPEED);
         assert_eq!(chip.io.get(MODE_REG), 0b10);
+    }
+
+    #[test]
+    fn a_failed_duty_restore_still_hands_the_header_back() {
+        let mut chip = nct6687d("restore-stuck");
+        let saved = chip.channel_states().unwrap()[3];
+        chip.set_duty(3, 0x40).unwrap();
+        chip.io.refuse_phase = true;
+        assert!(matches!(
+            chip.restore(3, Some(saved)),
+            Err(HwError::FanConfigTimeout(_))
+        ));
+        assert_eq!(chip.io.get(MODE_REG), 0);
+    }
+
+    #[test]
+    fn probing_starts_monitoring() {
+        let chip = nct6687d("start");
+        assert_eq!(chip.io.get(MONITOR_CONFIG_REG), MONITOR_START);
     }
 
     #[test]
