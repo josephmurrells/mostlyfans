@@ -16,6 +16,7 @@ use crate::settings::AutostartPanel;
 use crate::shell::Shell;
 use crate::status::{self, Overall};
 use crate::tray::{Tray, TrayAction, reveal};
+use crate::window_geometry::LastGoodWindow;
 
 const VISIBLE_REFRESH: Duration = Duration::from_millis(500);
 const HIDDEN_REFRESH: Duration = Duration::from_secs(2);
@@ -24,6 +25,7 @@ pub struct FanForgeApp {
     show_gate: ShowGate,
     tray: Option<Tray>,
     shell: Shell,
+    window: LastGoodWindow,
 }
 
 fn tint(overall: &Overall) -> [u8; 3] {
@@ -80,7 +82,13 @@ impl FanForgeApp {
                 PawnIoPanel::new(on_driver_installed),
                 prefs,
             ),
+            window: LastGoodWindow::default(),
         }
+    }
+
+    pub fn with_window(mut self, window: LastGoodWindow) -> Self {
+        self.window = window;
+        self
     }
 
     fn handle_tray(&mut self, ctx: &egui::Context) {
@@ -156,6 +164,7 @@ impl eframe::App for FanForgeApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window.guard(storage);
         self.shell.prefs.save(storage);
     }
 }
