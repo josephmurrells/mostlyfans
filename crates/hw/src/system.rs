@@ -69,10 +69,8 @@ pub fn force_all_auto<P: PortIo>(
     };
     let deadline = Instant::now() + budget;
     let mut first_error = None;
-    let resettable = chip.fan_control() && chip.chip().forces_auto_without_snapshot();
-    for channel in
-        (0..chip.fan_count()).filter(|&channel| resettable || snapshot.may_release(channel))
-    {
+    let widen = chip.fan_control() && (snapshot.lost || chip.chip().forces_auto_without_snapshot());
+    for channel in (0..chip.fan_count()).filter(|&channel| widen || snapshot.is_owned(channel)) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             tracing::error!(channel, "no time left to return channel to BIOS control");
@@ -201,8 +199,9 @@ impl<P: PortIo> Hardware<P> {
         } else {
             Ok(())
         };
-        if result.is_ok() {
+        if result.is_ok() && self.snapshot.lost {
             self.snapshot.lost = false;
+            changed = true;
         }
         if changed && let Err(error) = self.persist_snapshot() {
             tracing::error!(%error, "failed to persist BIOS snapshot");
@@ -342,9 +341,8 @@ impl<P: PortIo> Hardware<P> {
     fn resettable(&self, channel: usize, owned_only: bool) -> bool {
         self.snapshot.is_owned(channel)
             || (!owned_only
-                && (self.snapshot.lost
-                    || (self.chip.fan_control()
-                        && self.chip.chip().forces_auto_without_snapshot())))
+                && self.chip.fan_control()
+                && (self.snapshot.lost || self.chip.chip().forces_auto_without_snapshot()))
     }
 
     pub fn release_all(&mut self) -> Result<(), HwError> {
