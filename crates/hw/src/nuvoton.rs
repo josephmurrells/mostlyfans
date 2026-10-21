@@ -723,12 +723,8 @@ mod tests {
         let mut chip = probe(fake, "6776-smbus");
         let readings = chip.read().unwrap();
         let names = chip.temp_names();
-        let index = names
-            .iter()
-            .position(|name| *name == Some("SMBUSMASTER 0"))
-            .unwrap();
-        assert!(index >= 4);
-        assert_eq!(readings.temps[index], Some(41.0));
+        assert_eq!(names[4], Some("SMBUSMASTER 0"));
+        assert_eq!(readings.temps[4], Some(41.0));
     }
 
     #[test]

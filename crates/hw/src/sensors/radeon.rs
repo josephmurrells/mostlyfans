@@ -305,7 +305,6 @@ impl Adl {
                         label,
                         celsius: Some(celsius),
                     })
-                    .collect::<Vec<_>>()
             })
             .collect();
         if readings.is_empty() && !self.gpus.is_empty() {

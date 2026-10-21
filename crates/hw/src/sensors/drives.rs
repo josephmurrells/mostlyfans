@@ -1,3 +1,4 @@
+use std::io;
 use std::time::{Duration, Instant};
 
 use fanforge_core::SensorId;
@@ -27,6 +28,7 @@ struct Tracked {
     drive: Option<Drive>,
     failures: u32,
     extras: ExtraSensors,
+    nvme: bool,
 }
 
 pub fn extra_sensor_id(drive: &SensorId, sensor: u16) -> SensorId {
@@ -51,15 +53,35 @@ fn probe_extras(drive: &Drive, bus_type: u32) -> ExtraSensors {
     extra_method(&descriptor, health.as_deref())
 }
 
-fn extra_readings(entry: &Tracked, drive: &Drive) -> Vec<SensorReading> {
-    let sensors = match entry.extras {
-        ExtraSensors::None => return Vec::new(),
-        ExtraSensors::Descriptor => drive.temperature_sensors(),
-        ExtraSensors::HealthLog => drive.nvme_health_sensors(),
-    };
+fn read_drive(entry: &Tracked, drive: &Drive) -> io::Result<(i16, Vec<SensorReading>)> {
+    match entry.extras {
+        ExtraSensors::Descriptor => {
+            let sensors = drive.temperature_sensors()?;
+            let composite = sensors
+                .iter()
+                .find(|(index, _)| *index == 0)
+                .map(|(_, celsius)| *celsius)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "drive reports no temperature")
+                })?;
+            Ok((composite, extra_readings(entry, sensors)))
+        }
+        ExtraSensors::HealthLog => {
+            let composite = drive.temperature()?;
+            let sensors = drive
+                .nvme_health_sensors()
+                .map_err(|error| {
+                    tracing::debug!(id = %entry.id, %error, "extra drive sensors unreadable");
+                })
+                .unwrap_or_default();
+            Ok((composite, extra_readings(entry, sensors)))
+        }
+        ExtraSensors::None => Ok((drive.temperature()?, Vec::new())),
+    }
+}
+
+fn extra_readings(entry: &Tracked, sensors: Vec<(u16, i16)>) -> Vec<SensorReading> {
     sensors
-        .map_err(|error| tracing::debug!(id = %entry.id, %error, "extra drive sensors unreadable"))
-        .unwrap_or_default()
         .into_iter()
         .filter(|(index, _)| *index > 0)
         .map(|(index, celsius)| SensorReading {
@@ -124,6 +146,14 @@ impl DriveSource {
     }
 
     fn discover(&mut self) {
+        for entry in &mut self.tracked {
+            if entry.extras == ExtraSensors::None
+                && let Some(drive) = &entry.drive
+            {
+                let bus_type = if entry.nvme { BUS_TYPE_NVME } else { 0 };
+                entry.extras = probe_extras(drive, bus_type);
+            }
+        }
         for index in 0..MAX_PHYSICAL_DRIVES {
             let Ok(drive) = Drive::open(index) else {
                 continue;
@@ -176,6 +206,7 @@ impl DriveSource {
                         drive: Some(drive),
                         failures: 0,
                         extras,
+                        nvme: bus_type == BUS_TYPE_NVME,
                     });
                 }
                 Placement::Ignore => {}
@@ -207,8 +238,8 @@ impl SensorSource for DriveSource {
             let Some(drive) = &entry.drive else {
                 continue;
             };
-            match drive.temperature() {
-                Ok(celsius) => {
+            match read_drive(entry, drive) {
+                Ok((celsius, extras)) => {
                     if entry.failures > 0 {
                         tracing::info!(id = %entry.id, "drive temperature recovered");
                     }
@@ -218,7 +249,7 @@ impl SensorSource for DriveSource {
                         label: entry.label.clone(),
                         celsius: Some(f32::from(celsius)),
                     });
-                    readings.extend(extra_readings(entry, drive));
+                    readings.extend(extras);
                 }
                 Err(error) => {
                     entry.failures += 1;
