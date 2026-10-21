@@ -14,6 +14,7 @@ use crate::HwError;
 
 pub const LPC_IO_MODULE: &[u8] = include_bytes!("../modules/LpcIO.bin");
 pub const AMD_FAMILY_17_MODULE: &[u8] = include_bytes!("../modules/AMDFamily17.bin");
+pub const INTEL_MSR_MODULE: &[u8] = include_bytes!("../modules/IntelMSR.bin");
 
 const DEVICE_PATH: &str = r"\\?\GLOBALROOT\Device\PawnIO";
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO";
@@ -165,5 +166,6 @@ mod tests {
     fn modules_are_embedded() {
         assert!(LPC_IO_MODULE.len() > 1024);
         assert!(AMD_FAMILY_17_MODULE.len() > 1024);
+        assert!(INTEL_MSR_MODULE.len() > 1024);
     }
 }

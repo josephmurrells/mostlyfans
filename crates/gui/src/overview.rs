@@ -274,7 +274,7 @@ mod tests {
             .iter()
             .map(|sensor| sensor.id.as_str())
             .collect();
-        assert_eq!(order, vec!["board/temp2", "cpu/tctl", "board/temp1"]);
+        assert_eq!(order, vec!["board/temp2", "cpu/package", "board/temp1"]);
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
             celsius: Some(40.0),
         };
         state.readings.sensors = vec![
-            extra("cpu/tctl"),
+            extra("cpu/package"),
             extra("cpu/tdie"),
             extra("cpu/ccd1"),
             extra("board/temp1"),
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(
             order,
             vec![
-                "cpu/tctl",
+                "cpu/package",
                 "gpu/nvidia/gpu-1",
                 "drive/S1",
                 "board/temp1",

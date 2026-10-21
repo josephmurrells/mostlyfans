@@ -10,7 +10,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 |---|---|---|
 | `fanforge-core` | – | Curves, control engine, safety rules, config, published state. Platform independent. |
 | `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts, System32 DLL loading, drive property queries). |
-| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe IT8655E, IT8665E and IT8689E), Ryzen SMN temperatures, GPU and drive temperature sources. |
+| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe IT8655E, IT8665E and IT8689E), AMD (SMN) and Intel (MSR) CPU temperatures, GPU and drive temperature sources. |
 | `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
 | `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
 | `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, dump, diff, guarded set-pwm, restore. |
@@ -76,7 +76,7 @@ Besides the CPU and Super I/O sensors, FanForge reads GPU and drive temperatures
 - **Drives:** NVMe drives through Windows' storage temperature query, SATA drives through their SMART table (attribute 194, else 190). Each drive is identified by its serial number. Drives without a serial, spinning hard disks (polling would keep them from spinning down) and drives that report no temperature are not listed.
 - **Loading:** both GPU libraries are loaded from System32 only, with their dependencies, never from the folder FanForge runs from.
 - **Polling:** GPUs are read every second and drives every 5 s, each on its own thread. They never touch the Super I/O bus, and a slow or hung driver call can't delay the control loop. A missing driver is retried every 30 s.
-- **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual missing-sensor fallback. The critical sensor stays CPU Tctl unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
+- **Failures:** a source that errors, hangs (no fresh value for 3 polls) or reports a value outside 0–125 °C counts as a failed sensor, with the usual missing-sensor fallback. The critical sensor stays the CPU temperature (`cpu/package`) unless you change it; at startup FanForge waits up to 3 s for the first GPU and drive readings so a GPU or drive critical sensor doesn't trip the fallback.
 - `fanforge-diag temps` prints these temperatures without PawnIO or administrator rights.
 
 ## Confirm the root cause on your PC
@@ -115,7 +115,7 @@ fanforge-diag diff cold.json after-hwinfo.json
   - 30% may be too low for a pump, so set a higher minimum duty for it.
   - Until a curve's sensor has read healthy, the fan stays under BIOS control.
   - **Missing-sensor fallback** (on by default): if a curve's sensor keeps failing, that fan goes to 100%, and if the safety sensor stops reporting, every fan does. After a safety-sensor dropout, fans return to normal once it reads below "Back to normal below" for the hold time; those two settings stay editable while either toggle is on. Turned off in Settings, a fan whose sensor fails holds its last speed for the same number of readings, then goes back to BIOS control instead, and a lost safety sensor only raises a warning. Config errors (a missing curve or a follow loop) still go to 100%.
-  - **Critical temperature override** (on by default): a critical Tctl (85 °C by default) drives every fan to 100%. Turned off in Settings, reaching it still raises a red alert, but the fans aren't forced.
+  - **Critical temperature override** (on by default): a critical CPU temperature (85 °C by default) drives every fan to 100%. The CPU temperature (`cpu/package`) is Tctl on AMD Zen 1 to Zen 5 and the package temperature on Intel (the hottest core on CPUs without a package sensor). Configs that named the old `cpu/tctl` sensor are moved to `cpu/package` when they load. Turned off in Settings, reaching it still raises a red alert, but the fans aren't forced.
   - While either is off, a warning that can't be dismissed says so. Floors, the 0 RPM gate, release to BIOS on exit and calibration's 75 °C stop stay on regardless.
 - **Unverified chips:** see [Supported chips](#supported-chips). FanForge stays monitor-only and never writes their fan registers.
 - **Calibration:** **Calibrate** in a fan's detail page finds the duty at which that fan stops and restarts, and records its speed at each step.
@@ -133,10 +133,9 @@ fanforge-diag diff cold.json after-hwinfo.json
 - Fan control on chips other than the IT8655E and IT8689E (they are monitor-only until verified)
 - Fan headers that have a tachometer but no PWM output (e.g. the IT8686E's 6th tach) are not shown
 - ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips, Nuvoton NCT610xD/NCT668xD/NCT6701D, Winbond and Fintek chips
-- A default critical sensor for systems without `cpu/tctl` (Intel, AMD Zen 5)
 - Code signing
 - Checking how Task Manager's "End task" treats the guardian on the target PC, and the scheduled-task guardian fallback if "End task" kills both processes
 
 ## Third-party components
 
-`crates/hw/modules/*.bin` are signed PawnIO modules from [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules), licensed LGPL-2.1. The ITE and Nuvoton register layouts follow LibreHardwareMonitor (MPL-2.0), and the AMD temperatures follow the Linux `k10temp` driver. See [NOTICE](NOTICE).
+`crates/hw/modules/*.bin` are signed PawnIO modules from [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules), licensed LGPL-2.1. The ITE and Nuvoton register layouts follow LibreHardwareMonitor (MPL-2.0), the AMD temperatures follow the Linux `k10temp` driver, and the Intel temperatures follow the Linux `coretemp` driver and LibreHardwareMonitor. See [NOTICE](NOTICE).

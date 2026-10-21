@@ -346,7 +346,7 @@ mod tests {
         let mut state = fixtures::state();
         state.critical = true;
         state.monitor_only = true;
-        state.warnings = vec!["critical sensor `cpu/tctl` is not reporting".to_owned()];
+        state.warnings = vec!["critical sensor `cpu/package` is not reporting".to_owned()];
         let notices = vec![
             (Topic::Guardian, "guardian down".to_owned()),
             (Topic::Autostart, "repair me".to_owned()),

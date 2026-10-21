@@ -11,8 +11,8 @@ use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading
 use fanforge_core::{Duty, FanId, SensorId};
 
 use crate::HwError;
-use crate::amd::AmdCpu;
 use crate::board::detect_identity;
+use crate::cpu::{CPU_SENSOR, Cpu};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
 use crate::snapshot::BiosSnapshot;
@@ -82,7 +82,7 @@ pub fn force_all_auto<P: PortIo>(
 #[derive(Debug)]
 pub struct Hardware<P: PortIo = LpcIo> {
     chip: SuperIo<P>,
-    cpu: Result<AmdCpu, String>,
+    cpu: Result<Cpu, String>,
     identity: BoardIdentity,
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
@@ -93,7 +93,7 @@ impl Hardware<LpcIo> {
     pub fn open(snapshot_path: &Path) -> Result<Self, HwError> {
         let chip = open_chip()?;
         let identity = detect_identity();
-        let cpu = AmdCpu::open().map_err(|error| error.to_string());
+        let cpu = Cpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
             tracing::warn!(%error, "CPU temperature sensors are unavailable");
         }
@@ -104,7 +104,7 @@ impl Hardware<LpcIo> {
 impl<P: PortIo> Hardware<P> {
     pub fn from_parts(
         chip: SuperIo<P>,
-        cpu: Result<AmdCpu, String>,
+        cpu: Result<Cpu, String>,
         identity: BoardIdentity,
         snapshot_path: &Path,
     ) -> Result<Self, HwError> {
@@ -242,20 +242,12 @@ impl<P: PortIo> Hardware<P> {
             Err(_) => Err(()),
         };
         let Ok(temps) = temps else {
-            return vec![sensor("cpu/tctl", "CPU Tctl", None)];
+            return vec![sensor(CPU_SENSOR, "CPU", None)];
         };
-        let mut sensors = vec![sensor("cpu/tctl", "CPU Tctl", Some(temps.tctl))];
-        if let Some(tdie) = temps.tdie {
-            sensors.push(sensor("cpu/tdie", "CPU Tdie", Some(tdie)));
-        }
-        sensors.extend(temps.ccds.into_iter().map(|(index, celsius)| {
-            sensor(
-                &format!("cpu/ccd{}", index + 1),
-                &format!("CPU CCD{}", index + 1),
-                Some(celsius),
-            )
-        }));
-        sensors
+        temps
+            .into_iter()
+            .map(|reading| sensor(&reading.id, &reading.label, Some(reading.celsius)))
+            .collect()
     }
 
     pub fn apply(&mut self, command: &Command, halted: &AtomicBool) -> Result<(), HwError> {

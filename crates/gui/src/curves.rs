@@ -1,5 +1,7 @@
 use eframe::egui::{self, ComboBox, DragValue, Id, Margin, RichText, vec2};
-use fanforge_core::config::{Config, FanMode, MAX_CURVE_POINTS, MAX_CURVES, MAX_NAME_LEN};
+use fanforge_core::config::{
+    CPU_SENSOR, Config, FanMode, MAX_CURVE_POINTS, MAX_CURVES, MAX_NAME_LEN,
+};
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
 use fanforge_core::state::ControlState;
 use fanforge_core::{CurveId, SensorId};
@@ -484,9 +486,9 @@ fn default_sensor(state: &ControlState) -> SensorId {
         .readings
         .sensors
         .iter()
-        .find(|sensor| sensor.id.as_str() == "cpu/tctl")
+        .find(|sensor| sensor.id.as_str() == CPU_SENSOR)
         .or_else(|| state.readings.sensors.first())
-        .map_or_else(|| SensorId::new("cpu/tctl"), |sensor| sensor.id.clone())
+        .map_or_else(|| SensorId::new(CPU_SENSOR), |sensor| sensor.id.clone())
 }
 
 fn sensor_picker(

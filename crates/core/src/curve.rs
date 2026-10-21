@@ -55,6 +55,13 @@ impl CurveKind {
         }
     }
 
+    pub fn sensor_mut(&mut self) -> Option<&mut SensorId> {
+        match self {
+            Self::Graph { sensor, .. } | Self::Linear { sensor, .. } => Some(sensor),
+            Self::Flat { .. } | Self::Mix { .. } => None,
+        }
+    }
+
     pub fn references(&self) -> &[CurveId] {
         match self {
             Self::Mix { curves, .. } => curves,
