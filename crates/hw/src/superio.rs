@@ -548,6 +548,7 @@ mod tests {
             (0x8686, "ITE IT8686E"),
             (0x8688, "ITE IT8688E"),
             (0x8689, "ITE IT8689E"),
+            (0x8696, "ITE IT8696E"),
             (0x8721, "ITE IT8721F"),
             (0x8728, "ITE IT8728F"),
             (0x8772, "ITE IT8772E"),
@@ -598,19 +599,13 @@ mod tests {
     }
 
     #[test]
-    fn fan_control_covers_every_nuvoton_row_and_the_listed_ite_chips() {
-        let ite: Vec<&str> = CHIPS
+    fn every_listed_chip_has_fan_control() {
+        let monitor_only: Vec<&str> = CHIPS
             .iter()
-            .filter(|chip| matches!(chip.map, ChipMap::Ite(_)) && chip.fan_control)
+            .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(ite, ["ITE IT8655E", "ITE IT8689E"]);
-        assert!(
-            CHIPS
-                .iter()
-                .filter(|chip| matches!(chip.map, ChipMap::Nuvoton(_)))
-                .all(|chip| chip.fan_control)
-        );
+        assert!(monitor_only.is_empty(), "{monitor_only:?}");
     }
 
     #[test]

@@ -145,7 +145,7 @@ const ITE: IteMap = IteMap {
 const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
     ChipSpec {
         name,
-        fan_control: false,
+        fan_control: true,
         ident: Ident::Ite(chip_id),
         map: ChipMap::Ite(map),
     }
@@ -290,7 +290,7 @@ const fn nuvoton(
 const EXACT: u8 = 0xFF;
 const FAMILY: u8 = 0xF0;
 
-pub static CHIPS: [ChipSpec; 24] = [
+pub static CHIPS: [ChipSpec; 25] = [
     ChipSpec {
         name: "ITE IT8655E",
         fan_control: true,
@@ -371,6 +371,15 @@ pub static CHIPS: [ChipSpec; 24] = [
             ..ITE
         }),
     },
+    ite(
+        "ITE IT8696E",
+        0x8696,
+        IteMap {
+            fans: 6,
+            temps: 6,
+            ..ITE
+        },
+    ),
     ite("ITE IT8721F", 0x8721, ITE),
     ite("ITE IT8728F", 0x8728, ITE),
     ite("ITE IT8772E", 0x8772, ITE),
@@ -485,3 +494,27 @@ pub static CHIPS: [ChipSpec; 24] = [
         true,
     ),
 ];
+
+#[cfg(test)]
+pub(crate) static MONITOR_ONLY_8686: ChipSpec = ChipSpec {
+    name: "ITE IT8686E",
+    fan_control: false,
+    ident: Ident::Ite(0x8686),
+    map: ChipMap::Ite(IteMap {
+        fans: 5,
+        temps: 7,
+        ..ITE
+    }),
+};
+
+#[cfg(test)]
+pub(crate) static MONITOR_ONLY_8628: ChipSpec = ChipSpec {
+    name: "ITE IT8628E",
+    fan_control: false,
+    ident: Ident::Ite(0x8628),
+    map: ChipMap::Ite(IteMap {
+        fans: 6,
+        temps: 6,
+        ..ITE
+    }),
+};

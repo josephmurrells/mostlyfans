@@ -1444,11 +1444,7 @@ pub(crate) mod tests {
         assert!(loaded.calibration_warning.unwrap().contains("ignored"));
     }
 
-    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(
-        tag: &str,
-        io: P,
-        conflict: bool,
-    ) {
+    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: dir.path().join("config.toml"),
@@ -1475,13 +1471,8 @@ pub(crate) mod tests {
             )
         });
         let (_messages, rx) = mpsc::channel();
-        let conflicts = ConflictMonitor::with_processes(Box::new(move || {
-            Ok(if conflict {
-                vec!["FanControl.exe".to_owned()]
-            } else {
-                Vec::new()
-            })
-        }));
+        let conflicts =
+            ConflictMonitor::with_processes(Box::new(|| Ok(vec!["FanControl.exe".to_owned()])));
         let mut runtime = Runtime::new(
             paths.clone(),
             Arc::new(Shared::default()),
@@ -1495,7 +1486,7 @@ pub(crate) mod tests {
         assert!(runtime.engine.is_monitor_only());
         let state = runtime.shared.state().unwrap();
         assert!(state.monitor_only);
-        assert_eq!(state.board.as_ref().unwrap().fan_control, conflict);
+        assert!(state.board.as_ref().unwrap().fan_control);
         assert!(!runtime.owns_any());
         runtime.suspend();
         assert!(matches!(runtime.resume(), Flow::Continue));
@@ -1506,23 +1497,6 @@ pub(crate) mod tests {
         runtime.tick();
         assert!(runtime.shutdown());
         drop(runtime);
-        if conflict {
-            return;
-        }
-
-        let mut chip = SuperIo::probe(io, Slot::Primary, NamedMutex::open(&name).unwrap()).unwrap();
-        assert!(matches!(
-            chip.set_duty(1, 0x20),
-            Err(HwError::NoFanControl(_))
-        ));
-        crate::failsafe::release_with(&mut chip, &paths.snapshot, Duration::from_secs(1)).unwrap();
-        crate::failsafe::release_preferring(
-            Some(&mut chip),
-            &paths.snapshot,
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        assert!(!paths.snapshot.exists());
     }
 
     fn ite_write_allowed(
@@ -1540,9 +1514,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unverified_ite_chip_is_never_written_through_the_whole_lifecycle() {
+    fn an_ite_chip_beside_another_fan_tool_is_never_written_through_the_whole_lifecycle() {
         let fake = SharedFake::new(FakeIte::chip(0x8686));
-        hands_off_lifecycle("8686", fake.clone(), false);
+        hands_off_lifecycle("8686", fake.clone());
         fake.with(|chip| {
             assert!(!chip.writes.is_empty());
             for write in chip.writes.clone() {
@@ -1557,7 +1531,7 @@ pub(crate) mod tests {
         it8665e.banks[0][0x00] = 0;
         it8665e.bank_register = 0x20;
         let fake = SharedFake::new(it8665e);
-        hands_off_lifecycle("8665", fake.clone(), false);
+        hands_off_lifecycle("8665", fake.clone());
         fake.with(|chip| {
             assert!(
                 chip.writes
@@ -1575,7 +1549,7 @@ pub(crate) mod tests {
         let mut nct = FakeNct::new(0xD4, 0x2B);
         nct.bank_register = 0x04;
         let fake = SharedNct::new(nct);
-        hands_off_lifecycle("6798", fake.clone(), true);
+        hands_off_lifecycle("6798", fake.clone());
         fake.with(|chip| {
             assert_eq!(chip.bank_register, 0x04);
             for (port, value, index) in chip.writes.clone() {

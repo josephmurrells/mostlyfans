@@ -377,6 +377,21 @@ mod tests {
 
     fn hardware(tag: &str, fake: &SharedFake, path: &Path) -> Hardware<SharedFake> {
         let chip = SuperIo::probe(fake.clone(), Slot::Primary, lock(tag)).unwrap();
+        hardware_for(chip, path)
+    }
+
+    fn monitor_only(
+        tag: &str,
+        fake: &SharedFake,
+        path: &Path,
+        spec: &'static crate::chips::ChipSpec,
+    ) -> Hardware<SharedFake> {
+        let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock(tag)).unwrap();
+        chip.config.chip = spec;
+        hardware_for(chip, path)
+    }
+
+    fn hardware_for(chip: SuperIo<SharedFake>, path: &Path) -> Hardware<SharedFake> {
         Hardware::from_parts(
             chip,
             Err("no CPU in tests".to_owned()),
@@ -612,7 +627,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
         let fake = SharedFake::new(FakeIte::chip(0x8686));
-        let mut hardware = hardware("unverified", &fake, &path);
+        let mut hardware =
+            monitor_only("unverified", &fake, &path, &crate::chips::MONITOR_ONLY_8686);
         let info = hardware.board_info();
         assert_eq!(info.chip_name, "ITE IT8686E");
         assert!(!info.fan_control);
@@ -646,7 +662,7 @@ mod tests {
         old.save(&path).unwrap();
         let before = std::fs::read(&path).unwrap();
         let fake = SharedFake::new(FakeIte::chip(0x8628));
-        let mut hardware = hardware("leftover", &fake, &path);
+        let mut hardware = monitor_only("leftover", &fake, &path, &crate::chips::MONITOR_ONLY_8628);
         assert!(!hardware.owns_any());
         hardware.initialize_channels(true).unwrap();
         let error = hardware.release_all().unwrap_err();
@@ -660,6 +676,7 @@ mod tests {
         assert!(error.to_string().contains("delete"));
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock("leftover-chip")).unwrap();
+        chip.config.chip = &crate::chips::MONITOR_ONLY_8628;
         let old = BiosSnapshot::load(&path).unwrap();
         assert!(matches!(
             force_all_auto(&mut chip, &old, RELEASE_BUDGET),
