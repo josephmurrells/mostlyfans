@@ -63,6 +63,7 @@ pub struct TemperaturesPage<'a> {
     pub history: &'a History,
     pub pinned: &'a BTreeSet<SensorId>,
     pub customised: bool,
+    pub live: bool,
 }
 
 fn core_index(id: &SensorId) -> Option<usize> {
@@ -97,11 +98,12 @@ pub fn used_by<'a>(state: &'a ControlState, id: &SensorId) -> Vec<&'a str> {
         .collect()
 }
 
-pub fn unconnected(state: &ControlState, history: &History, sensor: &SensorReading) -> bool {
-    Group::of(&sensor.id) == Group::Motherboard
+pub fn not_reporting(state: &ControlState, history: &History, sensor: &SensorReading) -> bool {
+    let dead_channel = Group::of(&sensor.id) == Group::Motherboard
         && history.extremes(&sensor.id).is_none()
         && sensor.id != state.config.safety.critical_sensor
-        && used_by(state, &sensor.id).is_empty()
+        && used_by(state, &sensor.id).is_empty();
+    dead_channel || (sensor.id.is_display_only() && sensor.celsius.is_none())
 }
 
 pub fn show(ui: &mut egui::Ui, page: &TemperaturesPage<'_>) -> Option<TemperaturesAction> {
@@ -135,18 +137,20 @@ pub fn show(ui: &mut egui::Ui, page: &TemperaturesPage<'_>) -> Option<Temperatur
     for (group, sensors) in groups {
         let (hidden, shown): (Vec<&SensorReading>, Vec<&SensorReading>) = sensors
             .into_iter()
-            .partition(|sensor| unconnected(page.state, page.history, sensor));
+            .partition(|sensor| not_reporting(page.state, page.history, sensor));
         widgets::card(ui, |ui| {
             widgets::card_title(ui, group.title(), None);
             rows(ui, page, group, "shown", &shown, now, &mut action);
             if !hidden.is_empty() {
-                egui::CollapsingHeader::new(format!("Unconnected ({})", hidden.len()))
-                    .id_salt(("unconnected", group.title()))
+                egui::CollapsingHeader::new(format!("Not reporting ({})", hidden.len()))
+                    .id_salt(("not-reporting", group.title()))
                     .show(ui, |ui| {
-                        ui.label(widgets::caption(
-                            ui,
-                            "These channels haven't given a usable reading since FanForge started; usually nothing is plugged in.",
-                        ));
+                        let note = if group == Group::Motherboard {
+                            "These channels haven't given a usable reading since FanForge started; usually nothing is plugged in."
+                        } else {
+                            "These sensors have no usable reading right now."
+                        };
+                        ui.label(widgets::caption(ui, note));
                         rows(ui, page, group, "hidden", &hidden, now, &mut action);
                     });
             }
@@ -207,10 +211,16 @@ fn row(
             }
         });
     });
-    ui.label(widgets::value(
-        format::celsius(sensor.celsius),
-        theme::SECTION,
-    ));
+    let color = if page.live {
+        palette.text
+    } else {
+        palette.text_muted
+    };
+    let value =
+        ui.label(widgets::value(format::celsius(sensor.celsius), theme::SECTION).color(color));
+    if !page.live {
+        value.on_hover_text("Last known value");
+    }
     let extremes = page.history.extremes(&sensor.id).map_or_else(
         || "min – · max –".to_owned(),
         |(low, high)| format!("min {low:.0} · max {high:.0} °C"),
@@ -304,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn dead_board_channels_are_unconnected_unless_something_uses_them() {
+    fn dead_board_channels_and_silent_cores_are_folded_away() {
         let mut state = fixtures::state();
         state.readings.sensors = vec![
             sensor("board/temp1", Some(30.0)),
@@ -312,6 +322,8 @@ mod tests {
             sensor("board/temp3", Some(-55.0)),
             sensor("board/temp4", None),
             sensor("drive/S1", None),
+            sensor("cpu/core0", None),
+            sensor("cpu/core1", Some(40.0)),
         ];
         state.config.safety.critical_sensor = SensorId::new("board/temp4");
         state.config.curves.push(CurveDef {
@@ -330,10 +342,10 @@ mod tests {
             .readings
             .sensors
             .iter()
-            .filter(|sensor| unconnected(&state, &history, sensor))
+            .filter(|sensor| not_reporting(&state, &history, sensor))
             .map(|sensor| sensor.id.as_str())
             .collect();
-        assert_eq!(hidden, vec!["board/temp2"]);
+        assert_eq!(hidden, vec!["board/temp2", "cpu/core0"]);
         assert_eq!(used_by(&state, &SensorId::new("board/temp3")), vec!["Case"]);
     }
 }

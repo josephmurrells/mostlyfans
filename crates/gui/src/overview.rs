@@ -212,6 +212,9 @@ fn absent_tile(ui: &mut egui::Ui, id: &str, missing: bool) -> bool {
         } else {
             ui.label(widgets::value("–", DISPLAY).weak());
             ui.label(widgets::caption(ui, "waiting for a reading"));
+            unpin = ui
+                .small_button(widgets::with_icon(icons::UNPIN, "Unpin"))
+                .clicked();
         }
     });
     unpin

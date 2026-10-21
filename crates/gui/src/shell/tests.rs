@@ -858,3 +858,23 @@ fn fans_pin_from_their_detail_pane() {
     let pinned = harness.state().prefs.pinned_fans.clone().unwrap();
     assert_eq!(pinned.last(), Some(&fixtures::fan(0)));
 }
+
+#[test]
+fn a_pinned_sensor_goes_missing_once_hardware_has_settled() {
+    let link = FakeLink::new(fixtures::state());
+    let mut shell = shell(&link, Page::Overview);
+    shell.prefs.pinned_sensors = Some(vec![
+        SensorId::new("cpu/package"),
+        SensorId::new("drive/gone"),
+    ]);
+    let mut harness = harness_with(shell, SIZE, Theme::Dark);
+    harness.state_mut().history.mark_settled(Instant::now());
+    settle(&mut harness);
+    assert!(harness.query_by_label("Missing").is_some());
+    click(&mut harness, &widgets::with_icon(icons::UNPIN, "Unpin"));
+    assert_eq!(
+        harness.state().prefs.pinned_sensors,
+        Some(vec![SensorId::new("cpu/package")])
+    );
+    assert!(harness.query_by_label("Missing").is_none());
+}

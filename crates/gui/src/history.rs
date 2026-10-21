@@ -107,6 +107,11 @@ impl History {
         self.extremes.get(sensor).copied()
     }
 
+    #[cfg(test)]
+    pub fn mark_settled(&mut self, now: Instant) {
+        self.ready_since = Some(now - SETTLE);
+    }
+
     pub fn settled(&self, now: Instant) -> bool {
         self.ready_since
             .is_some_and(|since| now.saturating_duration_since(since) >= SETTLE)
