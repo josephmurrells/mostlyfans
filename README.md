@@ -33,7 +33,7 @@ The "only works after HWiNFO" bug comes from LibreHardwareMonitor issue #780: th
 
 ## Building
 
-You need Rust 1.88+ and the MSVC toolchain (Visual Studio Build Tools with the C++ workload).
+You need Rust 1.95+ and the MSVC toolchain (Visual Studio Build Tools with the C++ workload).
 
 ```powershell
 cargo build --release
@@ -162,4 +162,10 @@ fanforge-diag diff cold.json after-hwinfo.json
 
 ## Third-party components
 
-`crates/hw/modules/*.bin` are signed PawnIO modules from [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules), licensed LGPL-2.1. The ITE and Nuvoton register layouts follow LibreHardwareMonitor (MPL-2.0), the AMD temperatures follow the Linux `k10temp` driver, and the Intel temperatures follow the Linux `coretemp` driver and LibreHardwareMonitor. See [NOTICE](NOTICE).
+`crates/hw/modules/*.bin` are signed PawnIO modules from [namazso/PawnIO.Modules](https://github.com/namazso/PawnIO.Modules), licensed LGPL-2.1 (text in [crates/hw/modules/LICENSE-LGPL-2.1](crates/hw/modules/LICENSE-LGPL-2.1)). They are redistributed unmodified; their source is the [0.2.11 tag](https://github.com/namazso/PawnIO.Modules/tree/0.2.11). The ITE and Nuvoton register layouts follow LibreHardwareMonitor (MPL-2.0), the AMD temperatures follow the Linux `k10temp` driver, and the Intel temperatures follow the Linux `coretemp` driver and LibreHardwareMonitor. See [NOTICE](NOTICE).
+
+## License
+
+Copyright (C) 2026 Joseph Murrells.
+
+FanForge is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE). `crates/hw/src/chips.rs`, `ite.rs` and `nuvoton.rs` are derived from LibreHardwareMonitor and are also covered by the [Mozilla Public License 2.0](LICENSE-MPL-2.0). Third-party components keep their own licenses, listed in [NOTICE](NOTICE).

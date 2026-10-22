@@ -4,6 +4,7 @@ description = "Small safe wrappers over Win32 APIs shared by FanForge crates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

@@ -4,6 +4,7 @@ description = "Hardware access for FanForge: PawnIO driver bindings, ITE Super I
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license = "GPL-3.0-or-later AND MPL-2.0"
 publish.workspace = true
 
 [features]
