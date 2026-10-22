@@ -35,7 +35,7 @@ Closing the window keeps FanForge running in the tray. To stop it, choose **Quit
 - **Temperatures:** every sensor FanForge can read, grouped by CPU, motherboard, GPU, drives and other. Pin any of them to the Overview, or use **Reset Overview to automatic** to go back to the default selection. Sensors that aren't connected are folded away under "Not reporting".
 - **Fans:** each fan's speed and settings: **Control** (BIOS, fixed, curve, or follow another fan), name, header type, **Minimum duty**, **Allow 0 RPM**, Identify, Calibrate and Pin to Overview. Graphics card fans are listed in their own group, with **Driver** instead of BIOS.
 - **Curves:** create and edit temperature curves, and choose how quickly each one responds (Fast, Smooth or Gentle).
-- **Settings:** profiles, the safety sensor and critical temperature, the safety switches, Start with Windows, and **About** (which fan controller chip you have, and **Open log folder**).
+- **Settings:** **Monitor only**, profiles, the safety sensor and critical temperature, the safety switches, Start with Windows, and **About** (which fan controller chip you have, and **Open log folder**).
 
 ## Safety
 
@@ -44,8 +44,11 @@ FanForge is built so a mistake, a crash or a bad setting can't leave your PC wit
 - **Minimum speeds:** every fan keeps at least 30%, or 20% once you mark it as a case fan. A fan only stops completely if it's a case fan and you turn on **Allow 0 RPM**. A pump may need more than 30%, so give it a higher **Minimum duty**. Graphics card fans keep at least the driver's minimum (and never less than 30%) and never stop while FanForge drives them; set their **Control** to **Driver** to get the card's own quiet mode with 0 RPM at idle back.
 - **Critical temperature:** if the CPU reaches 85 °C (you can change this), every fan goes to full speed until it cools below the "Back to normal below" temperature. That includes graphics card fans left on **Driver**.
 - **Failed sensors:** if a sensor a curve uses stops reporting, that fan goes to full speed. If the safety sensor stops, every fan does.
+- **Fans that don't follow:** if a motherboard fan stops while FanForge asks it to spin, FanForge runs it at full speed for 2 seconds, then hands it back to the BIOS and shows why. It does the same, without the full-speed burst, when a fan's speed doesn't change with its duty (for example a 3-pin fan on a PWM header, or a pump). Fix the cause, then press **Try again**. For a pump or a fixed-speed fan, turn off **Response check** in that fan's **Advanced** settings.
 - **Back to BIOS control:** when you quit, sign out, shut down or sleep, or if FanForge crashes or is stopped with **End task** in Task Manager, every fan goes back to your BIOS fan settings, and graphics card fans go back to the driver. A small watchdog process handles this even if the main app is killed. The one exception is Task Manager's **End process tree**, which stops the watchdog too: fans then stay at their last speed, never below their minimum, until FanForge next starts (or, for graphics card fans, until the PC restarts).
 - **Other fan tools:** if FanControl, SpeedFan, Argus Monitor, Fan Xpert, AI Suite 3 or Armoury Crate is running, FanForge only monitors and never touches the fans, so the two can't fight. If MSI Afterburner, EVGA Precision X1 or ASUS GPU Tweak III is running, only the graphics card fans are left alone. A graphics card fan that another program has already set to a manual speed is never taken over.
+
+To pause fan control without quitting, turn on **Monitor only** in Settings or the tray menu. Every fan goes back to the BIOS (and graphics card fans to the driver) while FanForge keeps showing temperatures and speeds, and the safety overrides don't act, just as if FanForge were closed. **Resume control** in the notice turns it off again, and so does restarting FanForge.
 
 You can turn off the critical-temperature and failed-sensor overrides in Settings. A warning stays on screen while either is off, and reaching the critical temperature still shows a red alert. The minimum speeds and the return to BIOS control are always on.
 
