@@ -383,6 +383,28 @@ impl FansView {
                 }
             });
         });
+        match status.map(|status| &status.state) {
+            Some(FanState::Faulted(reason)) => {
+                let blocked = if gpu {
+                    state.gpus.monitor_only
+                } else {
+                    state.monitor_only
+                };
+                ui.add_space(SPACE_S);
+                ui.label(widgets::caption(ui, crate::alerts::sentence(reason)));
+                if ui
+                    .add_enabled(!blocked, egui::Button::new("Try again"))
+                    .on_hover_text("Give the fan back to FanForge and check it again")
+                    .clicked()
+                {
+                    page.link.send(Request::RetryFan(fan.clone()));
+                }
+            }
+            Some(FanState::LeaderReleased(reason)) => {
+                ui.label(widgets::caption(ui, crate::alerts::sentence(reason)));
+            }
+            _ => {}
+        }
         if gpu && state.gpus.monitor_only && !state.gpus.conflicts.is_empty() {
             ui.label(widgets::caption(
                 ui,
@@ -1021,6 +1043,21 @@ fn advanced_card(
                                     "Only case fans may stop. Mark this header as a case fan first.",
                                 ));
                             }
+                        });
+                        ui.end_row();
+
+                        ui.label("Response check");
+                        ui.vertical(|ui| {
+                            changed |= ui
+                                .checkbox(
+                                    &mut settings.response_check,
+                                    "Hand the fan back to the BIOS if it stops or doesn't follow its duty",
+                                )
+                                .changed();
+                            ui.label(widgets::caption(
+                                ui,
+                                "Turn off for a pump or a fan that runs at a fixed speed.",
+                            ));
                         });
                         ui.end_row();
                     });

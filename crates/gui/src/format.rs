@@ -21,7 +21,8 @@ pub fn fan_state(state: &FanState) -> (String, Tone) {
         FanState::Critical => ("Critical override".to_owned(), Tone::Danger),
         FanState::Identifying => ("Identifying".to_owned(), Tone::Accent),
         FanState::Calibrating => ("Calibrating".to_owned(), Tone::Accent),
-        FanState::Faulted(reason) => (format!("Released after fault: {reason}"), Tone::Danger),
+        FanState::Faulted(_) => ("Released after fault".to_owned(), Tone::Danger),
+        FanState::LeaderReleased(_) => ("BIOS control".to_owned(), Tone::Warn),
         FanState::MonitorOnly => ("Monitor only".to_owned(), Tone::Neutral),
         FanState::Unavailable(reason) => (format!("Not available: {reason}"), Tone::Warn),
     }
@@ -55,8 +56,7 @@ pub fn connected(fan: &FanReading) -> bool {
 }
 
 pub fn nothing_driven(state: &ControlState) -> bool {
-    let unverified = state.board.as_ref().is_some_and(|board| !board.fan_control);
-    state.monitor_only && unverified && (state.gpus.fans.is_empty() || state.gpus.monitor_only)
+    state.monitor_only && (state.gpus.fans.is_empty() || state.gpus.monitor_only)
 }
 
 pub fn auto_name(fan: &FanId) -> &'static str {

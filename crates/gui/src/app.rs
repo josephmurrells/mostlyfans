@@ -107,6 +107,7 @@ impl FanForgeApp {
                 &overall.label(),
                 &tooltip(state, &overall, &active),
                 tint(&overall),
+                state.user_monitor_only,
             );
         }
         for action in actions {
@@ -117,6 +118,7 @@ impl FanForgeApp {
                         reveal(ctx);
                     }
                 }
+                TrayAction::MonitorOnly(on) => self.shell.set_monitor_only(on),
             }
         }
     }
