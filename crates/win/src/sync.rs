@@ -172,7 +172,10 @@ mod tests {
 
     use super::*;
 
-    const TEST_SDDL: &str = "D:P(A;;GA;;;WD)";
+    fn test_sddl() -> String {
+        let level = process_integrity().unwrap();
+        format!("D:P(A;;GA;;;WD)S:(ML;;NW;;;S-1-16-{level})")
+    }
 
     fn unique(tag: &str) -> String {
         format!(r"Local\fanforge-win-{tag}-{}", std::process::id())
@@ -182,12 +185,12 @@ mod tests {
     fn instance_mutex_excludes_other_threads() {
         let name = unique("instance");
         assert!(!InstanceMutex::exists(&name));
-        let mutex = InstanceMutex::create(&name, TEST_SDDL).unwrap();
+        let mutex = InstanceMutex::create(&name, &test_sddl()).unwrap();
         assert!(InstanceMutex::exists(&name));
         assert!(mutex.acquire(Duration::ZERO).unwrap());
         let other = name.clone();
         let blocked = thread::spawn(move || {
-            let mutex = InstanceMutex::create(&other, TEST_SDDL).unwrap();
+            let mutex = InstanceMutex::create(&other, &test_sddl()).unwrap();
             !mutex.acquire(Duration::from_millis(20)).unwrap()
         });
         assert!(blocked.join().unwrap());
@@ -198,12 +201,12 @@ mod tests {
         const LOW_LABEL_SDDL: &str = "D:P(A;;GA;;;WD)S:(ML;;NW;;;LW)";
         let mutex_name = unique("planted-mutex");
         let _planted = InstanceMutex::create(&mutex_name, LOW_LABEL_SDDL).unwrap();
-        let error = InstanceMutex::create(&mutex_name, TEST_SDDL).unwrap_err();
+        let error = InstanceMutex::create(&mutex_name, &test_sddl()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
         let event_name = unique("planted-event");
         let _planted = Event::create(&event_name, LOW_LABEL_SDDL).unwrap();
-        assert!(Event::create(&event_name, TEST_SDDL).is_err());
+        assert!(Event::create(&event_name, &test_sddl()).is_err());
         assert!(Event::open(&event_name).is_err());
     }
 
@@ -211,7 +214,7 @@ mod tests {
     fn events_signal_across_handles() {
         let name = unique("event");
         assert!(Event::open(&name).unwrap().is_none());
-        let event = Event::create(&name, TEST_SDDL).unwrap();
+        let event = Event::create(&name, &test_sddl()).unwrap();
         let opened = Event::open(&name).unwrap().unwrap();
         assert!(!event.wait(Some(Duration::ZERO)).unwrap());
         opened.set().unwrap();
