@@ -7,6 +7,7 @@ use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 
 use super::{SensorSource, unique_labels};
+use crate::gpu_fans::short_name;
 
 pub const LIBRARY: &str = "nvml.dll";
 const CADENCE: Duration = Duration::from_secs(1);
@@ -67,7 +68,9 @@ fn open() -> Result<Session, String> {
     let (uuids, names): (Vec<String>, Vec<String>) = found.into_iter().unzip();
     let gpus = uuids
         .into_iter()
-        .zip(unique_labels(names))
+        .zip(unique_labels(
+            names.iter().map(|name| short_name(name)).collect(),
+        ))
         .map(|(uuid, label)| Gpu {
             id: sensor_id(&uuid),
             uuid,

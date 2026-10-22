@@ -4,7 +4,7 @@ use fanforge_win::SystemLibrary;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvml_wrapper::{Device, Nvml};
 
-use super::{DriverOpener, FanDriver, FanSample, GpuDesc};
+use super::{DriverOpener, FanDriver, FanSample, GpuDesc, short_name};
 use crate::sensors::nvidia::{init, sensor_id};
 use crate::sensors::unique_labels;
 
@@ -50,7 +50,7 @@ impl NvidiaFans {
             };
             found.push((uuid, name, fans, range));
         }
-        let labels = unique_labels(found.iter().map(|(_, name, ..)| name.clone()).collect());
+        let labels = unique_labels(found.iter().map(|(_, name, ..)| short_name(name)).collect());
         let gpus = found
             .into_iter()
             .zip(labels)
