@@ -26,13 +26,11 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
     let Some(state) = state else {
         return Overall::Starting;
     };
-    if !crate::format::nothing_driven(state) {
-        if state.critical {
-            return Overall::Critical;
-        }
-        if state.critical_reached && !state.config.safety.critical_enabled {
-            return Overall::CriticalUnforced;
-        }
+    if state.critical {
+        return Overall::Critical;
+    }
+    if state.critical_reached && !state.config.safety.critical_enabled {
+        return Overall::CriticalUnforced;
     }
     match state.hardware {
         HardwareStatus::DriverMissing => return Overall::DriverMissing,
@@ -162,13 +160,12 @@ mod tests {
         assert_eq!(overall(&running, Some(&state)), Overall::DriverMissing);
 
         state.hardware = HardwareStatus::Ready;
+        state.monitor_only = false;
         state.critical = true;
         assert_eq!(overall(&running, Some(&state)), Overall::Critical);
 
-        if let Some(board) = state.board.as_mut() {
-            board.fan_control = false;
-        }
-        assert_eq!(overall(&running, Some(&state)), Overall::MonitorOnly);
+        state.monitor_only = true;
+        assert_eq!(overall(&running, Some(&state)), Overall::Critical);
 
         state.monitor_only = false;
         state.hardware = HardwareStatus::DriverMissing;

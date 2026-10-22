@@ -13,6 +13,8 @@ pub enum LoopMessage {
     Identify(FanId),
     Calibrate(FanId, SyncSender<Result<(), String>>),
     CancelCalibration,
+    SetMonitorOnly(bool, SyncSender<Result<(), String>>),
+    RetryFan(FanId, SyncSender<Result<(), String>>),
     Suspend(SyncSender<()>),
     Resume,
     RetryHardware,
@@ -76,6 +78,7 @@ pub struct Shared {
     pub state: RwLock<Option<Arc<ControlState>>>,
     pub heartbeat: Heartbeat,
     halted: Arc<AtomicBool>,
+    user_monitor_only: AtomicBool,
 }
 
 impl Default for Shared {
@@ -84,6 +87,7 @@ impl Default for Shared {
             state: RwLock::new(None),
             heartbeat: Heartbeat::new(),
             halted: Arc::new(AtomicBool::new(false)),
+            user_monitor_only: AtomicBool::new(false),
         }
     }
 }
@@ -91,6 +95,14 @@ impl Default for Shared {
 impl Shared {
     pub fn halt(&self) {
         self.halted.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_user_monitor_only(&self, on: bool) {
+        self.user_monitor_only.store(on, Ordering::SeqCst);
+    }
+
+    pub fn user_monitor_only(&self) -> bool {
+        self.user_monitor_only.load(Ordering::SeqCst)
     }
 
     pub fn is_halted(&self) -> bool {

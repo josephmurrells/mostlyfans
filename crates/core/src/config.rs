@@ -45,6 +45,7 @@ pub struct FanSettings {
     pub min_duty: Duty,
     pub allow_stop: bool,
     pub spin_up_duty: Duty,
+    pub response_check: bool,
 }
 
 impl Default for FanSettings {
@@ -55,6 +56,7 @@ impl Default for FanSettings {
             min_duty: Duty::OFF,
             allow_stop: false,
             spin_up_duty: Duty::new(50.0),
+            response_check: true,
         }
     }
 }
