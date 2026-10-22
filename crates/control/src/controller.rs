@@ -36,6 +36,8 @@ pub enum RequestKind {
     Profile,
     Identify,
     Calibrate,
+    MonitorOnly,
+    Retry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub enum Request {
     Identify(FanId),
     Calibrate(FanId),
     CancelCalibration,
+    SetMonitorOnly(bool),
+    RetryFan(FanId),
 }
 
 impl Request {
@@ -60,6 +64,8 @@ impl Request {
             Self::SetActiveProfile(_) => RequestKind::Profile,
             Self::Identify(_) => RequestKind::Identify,
             Self::Calibrate(_) | Self::CancelCalibration => RequestKind::Calibrate,
+            Self::SetMonitorOnly(_) => RequestKind::MonitorOnly,
+            Self::RetryFan(_) => RequestKind::Retry,
         }
     }
 }
@@ -228,6 +234,8 @@ impl<B: Backend + Send + 'static> Controller<B> {
                 reply_tx.send(Ok(())).ok();
                 LoopMessage::CancelCalibration
             }
+            Request::SetMonitorOnly(on) => LoopMessage::SetMonitorOnly(on, reply_tx),
+            Request::RetryFan(fan) => LoopMessage::RetryFan(fan, reply_tx),
         };
         if self.status() != ControlStatus::Running || lock(&self.sender).send(message).is_err() {
             self.push(kind, Err(NOT_RUNNING.to_owned()));

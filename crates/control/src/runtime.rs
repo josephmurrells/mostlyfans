@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use fanforge_core::board::FanLimits;
 use fanforge_core::config::Config;
-use fanforge_core::engine::{Engine, TickOutcome};
+use fanforge_core::engine::{Action, Engine, TickOutcome};
 use fanforge_core::state::{ControlState, GpuState, HardwareStatus};
 use fanforge_core::store::{self, CONFIG_BACKUPS};
 use fanforge_core::telemetry::{Readings, SensorReading};
@@ -247,6 +247,23 @@ impl<B: Backend> Runtime<B> {
                 self.engine.cancel_calibration(None);
                 self.publish();
             }
+            LoopMessage::SetMonitorOnly(on, reply) => {
+                tracing::info!(on, "monitor-only switch changed");
+                self.shared.set_user_monitor_only(on);
+                self.tick();
+                reply.send(Ok(())).ok();
+            }
+            LoopMessage::RetryFan(fan, reply) => {
+                let result = if self.engine.is_monitor_only_for(fan.kind()) {
+                    Err("FanForge is in monitor-only mode".to_owned())
+                } else {
+                    tracing::info!(%fan, "retrying a fan after a fault");
+                    self.engine.clear_fault(&fan);
+                    self.tick();
+                    Ok(())
+                };
+                reply.send(result).ok();
+            }
             LoopMessage::Suspend(done) => {
                 self.suspend();
                 done.send(()).ok();
@@ -358,11 +375,12 @@ impl<B: Backend> Runtime<B> {
             .as_ref()
             .is_some_and(|hardware| !hardware.fan_control());
         let fan_tools = !findings.controlling.is_empty();
+        let paused = self.shared.user_monitor_only();
         self.engine
-            .set_monitor_only(FanKind::Header, fan_tools || unverified);
+            .set_monitor_only(FanKind::Header, paused || fan_tools || unverified);
         self.engine.set_monitor_only(
             FanKind::Gpu,
-            fan_tools || !findings.gpu_controlling.is_empty(),
+            paused || fan_tools || !findings.gpu_controlling.is_empty(),
         );
 
         self.beat();
@@ -458,8 +476,12 @@ impl<B: Backend> Runtime<B> {
                 Ok(()) | Err(HwError::Halted) => {}
                 Err(error) => {
                     tracing::warn!(fan = %command.fan, %error, "failed to apply fan command");
-                    self.engine
-                        .record_apply_error(&command.fan, &error.to_string());
+                    if command.action == Action::Release {
+                        self.engine.record_release_error(&command.fan);
+                    } else {
+                        self.engine
+                            .record_apply_error(&command.fan, &error.to_string());
+                    }
                 }
             }
         }
@@ -734,6 +756,7 @@ impl<B: Backend> Runtime<B> {
             critical: self.last_outcome.critical,
             critical_reached: self.last_outcome.critical_reached,
             monitor_only: self.engine.is_monitor_only(),
+            user_monitor_only: self.shared.user_monitor_only(),
             gpus: GpuState {
                 fans: self.gpu_readings.info.clone(),
                 monitor_only: self.engine.is_monitor_only_for(FanKind::Gpu),
@@ -1617,6 +1640,90 @@ pub(crate) mod tests {
         (rig, fake)
     }
 
+    fn switch(rig: &mut Rig, on: bool) -> Result<(), String> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        rig.runtime.handle(LoopMessage::SetMonitorOnly(on, reply));
+        answer.recv().unwrap()
+    }
+
+    #[test]
+    fn the_monitor_only_switch_releases_every_fan_at_once_and_resumes() {
+        let (mut rig, fake) = gpu_rig("switch", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(60.0).to_raw());
+
+        switch(&mut rig, true).unwrap();
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+        wait_until(|| !fake.fan(0).manual);
+        let state = rig.runtime.shared.state().unwrap();
+        assert!(state.monitor_only && state.user_monitor_only && state.gpus.monitor_only);
+        rig.runtime.tick();
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+
+        switch(&mut rig, false).unwrap();
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(60.0).to_raw());
+        thread::sleep(Duration::from_millis(100));
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        let state = rig.runtime.shared.state().unwrap();
+        assert!(!state.monitor_only && !state.user_monitor_only);
+    }
+
+    #[test]
+    fn a_conflict_keeps_monitor_only_after_the_switch_is_turned_off() {
+        let mut rig = rig(
+            "switch-conflict",
+            &[("pwm2", manual(60.0))],
+            vec!["FanControl.exe".to_owned()],
+        );
+        rig.runtime.open_hardware();
+        switch(&mut rig, true).unwrap();
+        switch(&mut rig, false).unwrap();
+        assert!(rig.runtime.engine.is_monitor_only());
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+    }
+
+    #[test]
+    fn the_switch_outlives_the_runtime() {
+        let mut rig = rig("switch-restart", &[("pwm2", manual(60.0))], Vec::new());
+        rig.runtime.open_hardware();
+        switch(&mut rig, true).unwrap();
+        assert!(rig.runtime.shutdown());
+        let (_messages, receiver) = mpsc::channel();
+        let mut again = Runtime::new(
+            Paths {
+                config: rig._dir.path().join("config.toml"),
+                snapshot: rig._dir.path().join("snapshot.toml"),
+            },
+            Arc::clone(&rig.runtime.shared),
+            receiver,
+            opener(rig.fake.clone(), "switch-restart-again"),
+            ConflictMonitor::with_processes(Box::new(|| Ok(Vec::new()))),
+        );
+        again.open_hardware();
+        again.tick();
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+        assert!(again.engine.is_monitor_only());
+    }
+
+    #[test]
+    fn retrying_a_fan_is_refused_while_monitor_only() {
+        let mut rig = rig("retry", &[("pwm2", manual(60.0))], Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        let (reply, answer) = mpsc::sync_channel(1);
+        rig.runtime
+            .handle(LoopMessage::RetryFan("pwm2".into(), reply));
+        assert_eq!(answer.recv().unwrap(), Ok(()));
+        switch(&mut rig, true).unwrap();
+        let (reply, answer) = mpsc::sync_channel(1);
+        rig.runtime
+            .handle(LoopMessage::RetryFan("pwm2".into(), reply));
+        assert!(answer.recv().unwrap().is_err());
+    }
+
     #[test]
     fn gpu_fans_are_driven_and_released_alongside_the_board() {
         let (mut rig, fake) = gpu_rig("gpu-both", Vec::new());
@@ -1796,10 +1903,11 @@ pub(crate) mod tests {
         rig.runtime.open_hardware();
         rig.runtime.tick();
         wait_until(|| fake.fan(0).manual);
-        rig.runtime.gpus.as_ref().unwrap().request(
-            &gpu_fan(),
-            fanforge_core::engine::Action::SetDuty(Duty::new(80.0)),
-        );
+        rig.runtime
+            .gpus
+            .as_ref()
+            .unwrap()
+            .request(&gpu_fan(), Action::SetDuty(Duty::new(80.0)));
         let worker = rig.runtime.gpus.take().unwrap();
         drop(worker);
         rig.runtime.gpus = Some(
