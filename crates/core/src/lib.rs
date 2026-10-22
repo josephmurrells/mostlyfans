@@ -5,6 +5,7 @@ pub mod curve;
 pub mod duty;
 pub mod engine;
 pub mod ids;
+pub mod response;
 pub mod safety;
 pub mod state;
 pub mod store;

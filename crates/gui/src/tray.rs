@@ -15,6 +15,7 @@ const PROFILE_OFFSET: usize = 3;
 pub enum TrayAction {
     Show,
     SelectProfile(String),
+    MonitorOnly(bool),
 }
 
 pub struct Tray {
@@ -23,6 +24,7 @@ pub struct Tray {
     status: MenuItem,
     tint: [u8; 3],
     show_id: MenuId,
+    monitor_only: CheckMenuItem,
     profiles: Vec<(MenuId, CheckMenuItem, String)>,
     profile_names: Vec<String>,
     events: Receiver<MenuEvent>,
@@ -35,11 +37,14 @@ impl Tray {
         let menu = Menu::new();
         let status = MenuItem::new("Starting…", false, None);
         let show = MenuItem::new("Open FanForge", true, None);
+        let monitor_only = CheckMenuItem::new("Monitor only", true, false, None);
         let exit = MenuItem::new("Quit FanForge", true, None);
         menu.append_items(&[
             &status,
             &PredefinedMenuItem::separator(),
             &show,
+            &PredefinedMenuItem::separator(),
+            &monitor_only,
             &PredefinedMenuItem::separator(),
             &exit,
         ])?;
@@ -84,6 +89,7 @@ impl Tray {
             status,
             tint: glyph::BLUE,
             show_id,
+            monitor_only,
             profiles: Vec::new(),
             profile_names: Vec::new(),
             events,
@@ -101,6 +107,8 @@ impl Tray {
         while let Ok(event) = self.events.try_recv() {
             if event.id == self.show_id {
                 actions.push(TrayAction::Show);
+            } else if event.id == *self.monitor_only.id() {
+                actions.push(TrayAction::MonitorOnly(self.monitor_only.is_checked()));
             } else if let Some((_, _, name)) =
                 self.profiles.iter().find(|(id, _, _)| *id == event.id)
             {
@@ -117,7 +125,11 @@ impl Tray {
         status: &str,
         tooltip: &str,
         tint: [u8; 3],
+        monitor_only: bool,
     ) {
+        if self.monitor_only.is_checked() != monitor_only {
+            self.monitor_only.set_checked(monitor_only);
+        }
         if self.profile_names != profiles {
             for (_, item, _) in self.profiles.drain(..) {
                 if let Err(error) = self.menu.remove(&item) {

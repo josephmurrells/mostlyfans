@@ -120,6 +120,7 @@ pub fn state() -> ControlState {
         critical: false,
         critical_reached: false,
         monitor_only: false,
+        user_monitor_only: false,
         conflicts: Vec::new(),
         warnings: Vec::new(),
         calibration: CalibrationView::default(),
@@ -183,6 +184,8 @@ pub enum Sent {
     Identify(FanId),
     Calibrate(FanId),
     CancelCalibration,
+    MonitorOnly(bool),
+    Retry(FanId),
 }
 
 pub struct Inner {
@@ -244,6 +247,8 @@ impl FakeLink {
                 Sent::Identify(fan) => format!("identify:{fan}"),
                 Sent::Calibrate(fan) => format!("calibrate:{fan}"),
                 Sent::CancelCalibration => "cancel-calibration".to_owned(),
+                Sent::MonitorOnly(on) => format!("monitor-only:{on}"),
+                Sent::Retry(fan) => format!("retry:{fan}"),
             })
             .collect()
     }
@@ -321,6 +326,25 @@ impl ControlLink for FakeLink {
                     }
                 });
                 (Sent::CancelCalibration, RequestKind::Calibrate)
+            }
+            Request::SetMonitorOnly(on) => {
+                self.update(|state| {
+                    state.user_monitor_only = on;
+                    state.monitor_only = on;
+                    state.gpus.monitor_only = on;
+                });
+                (Sent::MonitorOnly(on), RequestKind::MonitorOnly)
+            }
+            Request::RetryFan(fan) => {
+                let target = fan.clone();
+                self.update(|state| {
+                    for status in &mut state.fans {
+                        if status.id == target {
+                            status.state = FanState::Controlled;
+                        }
+                    }
+                });
+                (Sent::Retry(fan), RequestKind::Retry)
             }
         };
         let mut inner = self.0.borrow_mut();

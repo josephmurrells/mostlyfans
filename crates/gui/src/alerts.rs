@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Margin, RichText, Stroke};
+use fanforge_core::engine::FanState;
 use fanforge_core::state::{ControlState, HardwareStatus};
+use fanforge_core::{FanId, FanKind};
 
 use crate::connection::ControlStatus;
 use crate::icons;
@@ -35,19 +37,23 @@ impl Severity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     RestartControl,
     InstallPawnIo,
     RepairAutostart,
+    ResumeControl,
+    RetryFan(FanId),
 }
 
 impl Action {
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
             Self::RestartControl => "Restart control",
             Self::InstallPawnIo => "Install PawnIO",
             Self::RepairAutostart => "Repair autostart",
+            Self::ResumeControl => "Resume control",
+            Self::RetryFan(_) => "Try again",
         }
     }
 }
@@ -94,7 +100,7 @@ impl Alert {
     }
 }
 
-fn sentence(text: &str) -> String {
+pub fn sentence(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
@@ -167,7 +173,25 @@ pub fn collect(
                 format!("Hardware unavailable: {reason}"),
             ));
         }
-        if state.monitor_only {
+        if state.user_monitor_only {
+            let mut alert = Alert::new(
+                Severity::MonitorOnly,
+                "Monitor-only mode is on: all fans are left to the BIOS and the graphics driver.",
+            )
+            .action(Action::ResumeControl);
+            if let Some(board) = unverified {
+                alert = alert.detail(format!(
+                    "FanForge doesn't support fan control on the {}, so the motherboard fans stay with the BIOS after you resume.",
+                    board.chip_name
+                ));
+            } else if !state.conflicts.is_empty() {
+                alert = alert.detail(format!(
+                    "{} is running, so FanForge stays monitor-only after you resume until it closes.",
+                    state.conflicts.join(", ")
+                ));
+            }
+            alerts.push(alert);
+        } else if state.monitor_only {
             let text = if let Some(board) = unverified {
                 format!(
                     "Monitor-only mode: FanForge doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
@@ -188,17 +212,40 @@ pub fn collect(
             };
             alerts.push(Alert::new(Severity::MonitorOnly, text));
         }
-        if state.gpus.monitor_only
+        if !state.user_monitor_only
+            && state.gpus.monitor_only
             && !state.gpus.conflicts.is_empty()
             && !state.gpus.fans.is_empty()
         {
             alerts.push(Alert::new(
                 Severity::MonitorOnly,
                 format!(
-                    "Graphics card fans: {} is running, so they are left to it and the graphics driver. The other fans are still controlled.",
+                    "{} is running, so FanForge isn't controlling the graphics card fans. Your other fans are still controlled.",
                     state.gpus.conflicts.join(", ")
                 ),
             ));
+        }
+        for status in &state.fans {
+            let FanState::Faulted(reason) = &status.state else {
+                continue;
+            };
+            let owner = match status.id.kind() {
+                FanKind::Header => "the BIOS",
+                FanKind::Gpu => "the graphics driver",
+            };
+            let name = crate::format::fan_name(&state.config, state, &status.id);
+            let mut alert = Alert::new(
+                Severity::Warning,
+                format!("{name} was handed back to {owner}: {reason}"),
+            );
+            let blocked = match status.id.kind() {
+                FanKind::Header => state.monitor_only,
+                FanKind::Gpu => state.gpus.monitor_only,
+            };
+            if !blocked {
+                alert = alert.action(Action::RetryFan(status.id.clone()));
+            }
+            alerts.push(alert);
         }
         for warning in &state.warnings {
             alerts.push(Alert::new(Severity::Warning, sentence(warning)));
@@ -320,10 +367,10 @@ impl AlertArea {
                         }
                         if alert.busy {
                             ui.spinner();
-                        } else if let Some(chosen) = alert.action
+                        } else if let Some(chosen) = &alert.action
                             && ui.button(chosen.label()).clicked()
                         {
-                            action = Some(chosen);
+                            action = Some(chosen.clone());
                         }
                     },
                 );
@@ -439,6 +486,13 @@ mod tests {
         let mut conflict = fixtures::state();
         conflict.monitor_only = true;
         conflict.critical = true;
+        let alerts = collect(&ControlStatus::Running, Some(&conflict), &[], None);
+        assert_eq!(
+            alerts[0].text,
+            "Critical temperature: the fans are under BIOS control"
+        );
+
+        conflict.monitor_only = false;
         let alerts = collect(&ControlStatus::Running, Some(&conflict), &[], None);
         assert_eq!(alerts[0].text, "Critical temperature: every fan is at 100%");
     }
