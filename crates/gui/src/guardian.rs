@@ -13,6 +13,7 @@ use fanforge_control::guardian::{
     self, LinkEvent, NO_HARDWARE_EXIT_CODE, Outcome, ParentLink, Releaser, Signal,
     TERMINATE_EXIT_CODE,
 };
+use fanforge_hw::gpu_fans::{GpuReleaser, nvidia};
 use fanforge_hw::system::{Chip, open_chip};
 use fanforge_win::paths;
 use fanforge_win::{PowerEvent, PowerSubscription, Process};
@@ -35,17 +36,24 @@ pub struct GuardianArgs {
 }
 
 enum GuardianReleaser {
-    Chip { chip: Chip, snapshot: PathBuf },
+    Fans {
+        chip: Option<Chip>,
+        snapshot: PathBuf,
+        gpus: GpuReleaser,
+    },
     DryRun(PathBuf),
 }
 
 impl Releaser for GuardianReleaser {
     fn release(&mut self, budget: Duration) -> Result<(), String> {
         match self {
-            Self::Chip { chip, snapshot } => {
-                failsafe::release_preferring(Some(chip), snapshot, budget)
-                    .map_err(|error| error.to_string())
-            }
+            Self::Fans {
+                chip,
+                snapshot,
+                gpus,
+            } => failsafe::release_with_gpus(Some(gpus), budget, |budget| {
+                failsafe::release_preferring(chip.as_mut(), snapshot, budget)
+            }),
             Self::DryRun(marker) => {
                 fs::write(marker, b"released").map_err(|error| error.to_string())
             }
@@ -172,16 +180,23 @@ fn run(args: &GuardianArgs) -> ExitCode {
     };
     let mut releaser = match &args.dry_run {
         Some(marker) => GuardianReleaser::DryRun(marker.clone()),
-        None => match open_chip() {
-            Ok(chip) => GuardianReleaser::Chip {
-                chip,
-                snapshot: paths::bios_snapshot_path(),
-            },
-            Err(error) => {
-                tracing::error!(%error, "guardian could not open the fan controller");
+        None => {
+            let chip = open_chip()
+                .map_err(
+                    |error| tracing::warn!(%error, "guardian could not open the fan controller"),
+                )
+                .ok();
+            let gpus = GpuReleaser::open(nvidia::opener(), paths::gpu_ownership_path());
+            if chip.is_none() && !gpus.has_session() {
+                tracing::error!("guardian found neither a fan controller nor a GPU driver");
                 return ExitCode::from(NO_HARDWARE_EXIT_CODE as u8);
             }
-        },
+            GuardianReleaser::Fans {
+                chip,
+                snapshot: paths::bios_snapshot_path(),
+                gpus,
+            }
+        }
     };
     let mut link = match ProcessLink::start(parent, pipe) {
         Ok(link) => link,

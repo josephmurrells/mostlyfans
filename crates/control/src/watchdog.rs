@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use fanforge_hw::gpu_fans::GpuReleaser;
+
 use crate::failsafe;
 use crate::shared::Shared;
 
@@ -30,6 +32,7 @@ pub fn install_panic_hook() {
 pub fn spawn(
     shared: Arc<Shared>,
     snapshot_path: PathBuf,
+    gpus: Option<GpuReleaser>,
     before_exit: fn(),
 ) -> std::io::Result<()> {
     thread::Builder::new()
@@ -43,7 +46,10 @@ pub fn spawn(
                         "control loop stalled; forcing BIOS fan control and exiting"
                     );
                     shared.halt();
-                    failsafe::release_from_disk(&snapshot_path, RELEASE_BUDGET).ok();
+                    failsafe::release_with_gpus(gpus.as_ref(), RELEASE_BUDGET, |budget| {
+                        failsafe::release_from_disk(&snapshot_path, budget)
+                    })
+                    .ok();
                     before_exit();
                     process::exit(EXIT_CODE);
                 }

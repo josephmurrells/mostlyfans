@@ -6,7 +6,7 @@ use fanforge_core::config::{Config, FanMode, FanSettings, MAX_NAME_LEN};
 use fanforge_core::engine::FanState;
 use fanforge_core::state::ControlState;
 use fanforge_core::telemetry::FanReading;
-use fanforge_core::{Duty, FanId};
+use fanforge_core::{Duty, FanId, FanKind};
 
 use crate::connection::{ControlLink, Request};
 use crate::curve_plot::{self, Live};
@@ -41,6 +41,44 @@ impl ModeKind {
 pub enum HeaderType {
     CpuOrPump,
     Case,
+}
+
+fn group_name(kind: FanKind) -> &'static str {
+    match kind {
+        FanKind::Header => "Motherboard",
+        FanKind::Gpu => "Graphics card",
+    }
+}
+
+pub fn absent_gpu_fans(config: &Config, state: &ControlState) -> Vec<FanId> {
+    let mut absent: Vec<FanId> = config
+        .fans
+        .keys()
+        .chain(
+            config
+                .profiles
+                .values()
+                .flat_map(|profile| profile.fans.keys()),
+        )
+        .filter(|fan| fan.kind() == FanKind::Gpu && state.readings.fan(fan).is_none())
+        .cloned()
+        .collect();
+    absent.sort();
+    absent.dedup();
+    absent
+}
+
+pub fn forget(config: &mut Config, fan: &FanId) {
+    config.fans.remove(fan);
+    config.calibration.remove(fan);
+    for profile in config.profiles.values_mut() {
+        profile.fans.remove(fan);
+        for mode in profile.fans.values_mut() {
+            if matches!(mode, FanMode::Sync { fan: leader } if leader == fan) {
+                *mode = FanMode::Auto;
+            }
+        }
+    }
 }
 
 impl HeaderType {
@@ -113,8 +151,42 @@ impl FansView {
             .show(ui, |ui| {
                 widgets::page_title(ui, "Fans", None);
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let grouped = state
+                        .readings
+                        .fans
+                        .iter()
+                        .any(|reading| reading.id.kind() == FanKind::Gpu);
+                    let mut group = None;
                     for reading in &state.readings.fans {
+                        let kind = reading.id.kind();
+                        if grouped && group != Some(kind) {
+                            if group.is_some() {
+                                ui.add_space(SPACE_S);
+                            }
+                            ui.label(widgets::caption(ui, group_name(kind)));
+                            group = Some(kind);
+                        }
                         self.list_row(ui, page.draft, state, reading);
+                    }
+                    let absent = absent_gpu_fans(page.draft, state);
+                    if !absent.is_empty() {
+                        ui.add_space(SPACE_S);
+                        ui.label(widgets::caption(ui, "Not present"));
+                    }
+                    for fan in absent {
+                        ui.horizontal(|ui| {
+                            ui.label(widgets::muted(format::fan_name(page.draft, state, &fan)));
+                            if ui
+                                .small_button("Forget")
+                                .on_hover_text(
+                                    "Remove this fan's settings; its graphics card is gone",
+                                )
+                                .clicked()
+                            {
+                                forget(page.draft, &fan);
+                                outcome.changed = true;
+                            }
+                        });
                     }
                     if page.setup_skipped && !unnamed.is_empty() {
                         ui.add_space(SPACE_S);
@@ -168,9 +240,13 @@ impl FansView {
         let name = format::fan_name(draft, state, &reading.id);
         let selected = self.selected.as_ref() == Some(&reading.id);
         let connected = format::connected(reading);
-        let subtitle = if !connected {
+        let subtitle = if let Some(reason) = &reading.unavailable {
+            format!("Not available: {reason}")
+        } else if !connected {
             "No fan connected".to_owned()
-        } else if !format::is_named(&state.config, &reading.id) {
+        } else if reading.id.kind() == FanKind::Header
+            && !format::is_named(&state.config, &reading.id)
+        {
             format!("{} · not set up", format::rpm(reading))
         } else {
             format::rpm(reading)
@@ -226,6 +302,7 @@ impl FansView {
         let mut edited = settings.clone();
         let mut touched = false;
         let hardware_limits = state.limits.get(fan).copied().unwrap_or_default();
+        let gpu = fan.kind() == FanKind::Gpu;
 
         ui.horizontal(|ui| {
             let mut name = edited.name.clone().unwrap_or_default();
@@ -251,6 +328,9 @@ impl FansView {
         let mut subtitle = reading.label.clone();
         if likely_cpu {
             subtitle.push_str(" · usually the CPU fan");
+        }
+        if gpu {
+            subtitle.push_str(&format!(" · minimum {} (driver)", hardware_limits.floor));
         }
         ui.label(widgets::muted(subtitle));
         if let Some(reason) = page.identify_block {
@@ -294,6 +374,15 @@ impl FansView {
                 }
             });
         });
+        if gpu && state.gpus.monitor_only && !state.gpus.conflicts.is_empty() {
+            ui.label(widgets::caption(
+                ui,
+                format!(
+                    "Monitor only: {} is running, so FanForge leaves the graphics card fans alone.",
+                    state.gpus.conflicts.join(", ")
+                ),
+            ));
+        }
         ui.add_space(SPACE_M);
 
         if !page.setup_skipped && unnamed.contains(fan) {
@@ -307,17 +396,19 @@ impl FansView {
         }
         ui.add_space(SPACE_M);
 
-        touched |= self.header_card(
-            ui,
-            fan,
-            likely_cpu,
-            hardware_limits,
-            state.config.calibration_for(fan),
-            &mut edited,
-        );
-        ui.add_space(SPACE_M);
-        calibration_card(ui, page, fan, reading);
-        ui.add_space(SPACE_M);
+        if !gpu {
+            touched |= self.header_card(
+                ui,
+                fan,
+                likely_cpu,
+                hardware_limits,
+                state.config.calibration_for(fan),
+                &mut edited,
+            );
+            ui.add_space(SPACE_M);
+            calibration_card(ui, page, fan, reading);
+            ui.add_space(SPACE_M);
+        }
         touched |= advanced_card(ui, fan, hardware_limits, &mut edited);
         if touched {
             detail.settings = Some(edited);
@@ -673,7 +764,7 @@ fn control_card(
             .readings
             .fans
             .iter()
-            .filter(|other| &other.id != fan)
+            .filter(|other| &other.id != fan && other.id.kind() == fan.kind())
             .map(|other| (other.id.clone(), format::fan_name(draft, state, &other.id)))
             .collect();
         let current = ModeKind::of(mode);
@@ -682,7 +773,7 @@ fn control_card(
             ui,
             &mut kind,
             &[
-                Segment::new(ModeKind::Bios, "BIOS"),
+                Segment::new(ModeKind::Bios, format::auto_name(fan)),
                 Segment::new(ModeKind::Fixed, "Fixed"),
                 Segment::new(ModeKind::Curve, "Curve").disabled_because(
                     draft
@@ -725,9 +816,14 @@ fn control_card(
         let floor = format::effective_floor(limits, settings, state.config.calibration_for(fan));
         match &mut mode {
             FanMode::Auto => {
-                ui.label(widgets::muted(
-                    "The motherboard BIOS controls this fan, as if FanForge were not running.",
-                ));
+                ui.label(widgets::muted(match fan.kind() {
+                    FanKind::Header => {
+                        "The motherboard BIOS controls this fan, as if FanForge were not running."
+                    }
+                    FanKind::Gpu => {
+                        "The graphics driver controls this fan with its own curve, including 0 RPM at idle, as if FanForge were not running."
+                    }
+                }));
             }
             FanMode::Manual { duty } => {
                 let mut percent = duty.percent();
@@ -860,10 +956,14 @@ fn advanced_card(
                                 settings.min_duty = Duty::new(percent);
                                 changed = true;
                             }
+                            let source = match fan.kind() {
+                                FanKind::Header => "header floor",
+                                FanKind::Gpu => "driver minimum",
+                            };
                             ui.label(widgets::caption(
                                 ui,
                                 format!(
-                                    "Raises the floor. The header floor of {} always applies.",
+                                    "Raises the floor. The {source} of {} always applies.",
                                     limits.for_header(settings.case_fan).floor
                                 ),
                             ));
@@ -888,6 +988,9 @@ fn advanced_card(
                         });
                         ui.end_row();
 
+                        if fan.kind() == FanKind::Gpu {
+                            return;
+                        }
                         ui.label("Stopping");
                         ui.vertical(|ui| {
                             let permitted = limits.for_header(settings.case_fan).stop_permitted;
@@ -916,6 +1019,37 @@ fn advanced_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_a_gpu_fan_clears_its_settings_and_followers() {
+        let gpu = FanId::for_gpu_fan("gpu/nvidia/gpu-old", 0);
+        let second = FanId::for_gpu_fan("gpu/nvidia/gpu-old", 1);
+        let mut config = Config::default();
+        config.fans.insert(gpu.clone(), FanSettings::default());
+        for profile in config.profiles.values_mut() {
+            profile.fans.insert(
+                gpu.clone(),
+                FanMode::Manual {
+                    duty: Duty::new(50.0),
+                },
+            );
+            profile
+                .fans
+                .insert(second.clone(), FanMode::Sync { fan: gpu.clone() });
+        }
+        let state = crate::fixtures::state();
+        assert_eq!(
+            absent_gpu_fans(&config, &state),
+            vec![gpu.clone(), second.clone()]
+        );
+        forget(&mut config, &gpu);
+        assert!(!config.fans.contains_key(&gpu));
+        for profile in config.profiles.values() {
+            assert!(!profile.fans.contains_key(&gpu));
+            assert_eq!(profile.fans[&second], FanMode::Auto);
+        }
+        config.validate().unwrap();
+    }
 
     #[test]
     fn the_header_type_round_trips_through_the_case_fan_flag() {
