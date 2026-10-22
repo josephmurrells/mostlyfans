@@ -409,7 +409,7 @@ impl FansView {
             ui.label(widgets::caption(
                 ui,
                 format!(
-                    "Monitor only: {} is running, so FanForge leaves the graphics card fans alone.",
+                    "{} is running, so FanForge isn't controlling the graphics card fans.",
                     state.gpus.conflicts.join(", ")
                 ),
             ));

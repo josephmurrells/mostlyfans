@@ -566,7 +566,9 @@ fn a_gpu_tool_is_named_in_its_own_alert() {
     let harness = harness(&link, Page::Overview);
     assert!(
         harness
-            .query_by_label_contains("Graphics card fans: MSI Afterburner is running")
+            .query_by_label_contains(
+                "MSI Afterburner is running, so FanForge isn't controlling the graphics card fans"
+            )
             .is_some()
     );
     assert!(

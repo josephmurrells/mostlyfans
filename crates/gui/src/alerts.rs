@@ -220,7 +220,7 @@ pub fn collect(
             alerts.push(Alert::new(
                 Severity::MonitorOnly,
                 format!(
-                    "Graphics card fans: {} is running, so they are left to it and the graphics driver. The other fans are still controlled.",
+                    "{} is running, so FanForge isn't controlling the graphics card fans. Your other fans are still controlled.",
                     state.gpus.conflicts.join(", ")
                 ),
             ));
