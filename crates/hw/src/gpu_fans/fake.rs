@@ -28,6 +28,8 @@ pub struct FakeGpus {
     pub fail_writes: bool,
     pub fail_samples: bool,
     pub panic_on_sample: bool,
+    pub no_target: bool,
+    pub expired_before: u32,
     pub held: bool,
 }
 
@@ -48,6 +50,8 @@ impl Default for FakeGpus {
             fail_writes: false,
             fail_samples: false,
             panic_on_sample: false,
+            no_target: false,
+            expired_before: 0,
             held: false,
         }
     }
@@ -105,6 +109,7 @@ impl SharedGpus {
             }
             Ok(Box::new(FakeDriver {
                 shared: shared.clone(),
+                generation: gpus.opens,
             }) as Box<dyn FanDriver>)
         })
     }
@@ -112,6 +117,17 @@ impl SharedGpus {
 
 struct FakeDriver {
     shared: SharedGpus,
+    generation: u32,
+}
+
+impl FakeDriver {
+    fn enter(&self) -> Result<MutexGuard<'_, FakeGpus>, String> {
+        let gpus = self.shared.enter();
+        if self.generation < gpus.expired_before {
+            return Err("the driver was reloaded".to_owned());
+        }
+        Ok(gpus)
+    }
 }
 
 impl FanDriver for FakeDriver {
@@ -120,7 +136,7 @@ impl FanDriver for FakeDriver {
     }
 
     fn sample(&self, _gpu: &GpuDesc, fan: u32) -> Result<FanSample, String> {
-        let gpus = self.shared.enter();
+        let gpus = self.enter()?;
         if gpus.panic_on_sample {
             drop(gpus);
             panic!("fake NVML panicked");
@@ -131,14 +147,14 @@ impl FanDriver for FakeDriver {
         let state = gpus.fans.get(&fan).copied().ok_or("no such fan")?;
         Ok(FanSample {
             percent: Some(state.target),
-            target: Some(state.target),
+            target: (!gpus.no_target).then_some(state.target),
             rpm: Some(state.target * 30),
             manual: Some(state.manual),
         })
     }
 
     fn set_speed(&self, _gpu: &GpuDesc, fan: u32, percent: u32) -> Result<(), String> {
-        let mut gpus = self.shared.enter();
+        let mut gpus = self.enter()?;
         if gpus.fail_writes {
             return Err("insufficient permissions".to_owned());
         }
@@ -150,7 +166,7 @@ impl FanDriver for FakeDriver {
     }
 
     fn restore(&self, _gpu: &GpuDesc, fan: u32) -> Result<(), String> {
-        let mut gpus = self.shared.enter();
+        let mut gpus = self.enter()?;
         if gpus.fail_writes {
             return Err("insufficient permissions".to_owned());
         }

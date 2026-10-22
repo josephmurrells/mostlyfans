@@ -12,7 +12,7 @@ use fanforge_core::store::{self, CONFIG_BACKUPS};
 use fanforge_core::telemetry::{Readings, SensorReading};
 use fanforge_core::{FanId, FanKind};
 use fanforge_hw::HwError;
-use fanforge_hw::gpu_fans::{GpuFans, GpuReadings};
+use fanforge_hw::gpu_fans::{GpuFans, GpuReadings, GpuReleaser};
 use fanforge_hw::sensors::ExtraSensors;
 use fanforge_win::paths;
 
@@ -24,6 +24,7 @@ use crate::shared::{LoopMessage, Shared};
 pub const IDENTIFY_DURATION: Duration = Duration::from_secs(3);
 pub const RESUME_BUDGET: Duration = Duration::from_secs(5);
 pub const GPU_RELEASE_BUDGET: Duration = Duration::from_secs(2);
+pub const GPU_SUSPEND_BUDGET: Duration = Duration::from_secs(1);
 const HARDWARE_RETRY: Duration = Duration::from_secs(10);
 const RESUME_FIRST_BACKOFF: Duration = Duration::from_millis(500);
 const READ_FAILURES_BEFORE_REINIT: u32 = 3;
@@ -77,6 +78,7 @@ pub struct Runtime<B: Backend> {
     conflicts: ConflictMonitor,
     extras: ExtraSensors,
     gpus: Option<GpuFans>,
+    gpu_releaser: Option<GpuReleaser>,
     gpu_readings: GpuReadings,
     board_limits: BTreeMap<FanId, FanLimits>,
     last_board: Readings,
@@ -120,6 +122,7 @@ impl<B: Backend> Runtime<B> {
             conflicts,
             extras: ExtraSensors::none(),
             gpus: None,
+            gpu_releaser: None,
             gpu_readings: GpuReadings::default(),
             board_limits: BTreeMap::new(),
             last_board: Readings::default(),
@@ -144,6 +147,27 @@ impl<B: Backend> Runtime<B> {
     pub fn with_gpu_fans(mut self, gpus: GpuFans) -> Self {
         self.gpus = Some(gpus);
         self
+    }
+
+    pub fn with_gpu_releaser(mut self, releaser: GpuReleaser) -> Self {
+        self.gpu_releaser = Some(releaser);
+        self
+    }
+
+    fn release_gpus(&self, budget: Duration) -> Result<(), String> {
+        let Some(gpus) = &self.gpus else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        let error = match gpus.release(budget / 2) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        tracing::warn!(%error, "the GPU fan worker could not release; using the spare session");
+        match &self.gpu_releaser {
+            Some(releaser) => releaser.release(budget.saturating_sub(started.elapsed())),
+            None => Err(error),
+        }
     }
 
     fn with_extras(&self, mut readings: Readings) -> Readings {
@@ -548,16 +572,14 @@ impl<B: Backend> Runtime<B> {
         self.cancel_calibration("the system is suspending");
         self.suspended = true;
         self.shared.heartbeat.pause();
+        if let Err(error) = self.release_gpus(GPU_SUSPEND_BUDGET) {
+            tracing::error!(%error, "failed to return GPU fans to the driver before suspend");
+        }
         let others = self.others_in_control();
         if let Some(hardware) = self.hardware.as_mut()
             && let Err(error) = release(hardware, others)
         {
             tracing::error!(%error, "failed to release fans before suspend");
-        }
-        if let Some(gpus) = &self.gpus
-            && let Err(error) = gpus.release(GPU_RELEASE_BUDGET)
-        {
-            tracing::error!(%error, "failed to return GPU fans to the driver before suspend");
         }
         self.engine.forget_hardware_state();
         self.signal(Signal::Suspended);
@@ -633,28 +655,26 @@ impl<B: Backend> Runtime<B> {
         self.cancel_calibration("fan control is stopping");
         self.shared.heartbeat.pause();
         let others = self.others_in_control();
-        let gpus = self
-            .gpus
-            .as_ref()
-            .map_or(Ok(()), |gpus| gpus.release(GPU_RELEASE_BUDGET));
+        let board = match self.hardware.take() {
+            None => !self.unreleased,
+            Some(mut hardware) => match release(&mut hardware, others) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::error!(%error, "failed to release every fan during shutdown");
+                    false
+                }
+            },
+        };
+        let gpus = self.release_gpus(GPU_RELEASE_BUDGET);
         if let Err(error) = &gpus {
             tracing::error!(%error, "failed to return every GPU fan to the driver during shutdown");
         }
-        let Some(mut hardware) = self.hardware.take() else {
-            return !self.unreleased && gpus.is_ok();
-        };
-        match release(&mut hardware, others) {
-            Ok(()) if gpus.is_ok() => {
-                tracing::info!("all fans returned to BIOS control");
-                self.signal(Signal::Owning(false));
-                true
-            }
-            Ok(()) => false,
-            Err(error) => {
-                tracing::error!(%error, "failed to release every fan during shutdown");
-                false
-            }
+        let released = board && gpus.is_ok();
+        if released {
+            tracing::info!("all fans returned to BIOS control");
+            self.signal(Signal::Owning(false));
         }
+        released
     }
 
     fn publish(&mut self) {
@@ -1734,7 +1754,6 @@ pub(crate) mod tests {
         rig.runtime.tick();
         wait_until(|| fake.fan(0).manual);
         fake.hold();
-        let started = Instant::now();
         let mut config = rig.runtime.engine.config().clone();
         config
             .profiles
@@ -1743,9 +1762,11 @@ pub(crate) mod tests {
             .fans
             .insert("pwm2".into(), manual(70.0));
         rig.runtime.replace_config(config).unwrap();
+        let started = Instant::now();
         rig.runtime.tick();
         assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(70.0).to_raw());
         assert!(started.elapsed() < Duration::from_secs(1));
+        let started = Instant::now();
         assert!(!rig.runtime.shutdown());
         assert!(started.elapsed() < GPU_RELEASE_BUDGET + Duration::from_secs(1));
         assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
@@ -1766,6 +1787,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn suspend_falls_back_to_the_spare_session_when_the_worker_is_stuck() {
+        let (mut rig, fake) = gpu_rig("gpu-suspend-hung", Vec::new());
+        rig.runtime.gpu_releaser = Some(GpuReleaser::open(
+            fake.opener(),
+            rig._dir.path().join("gpu_owned.toml"),
+        ));
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        rig.runtime.gpus.as_ref().unwrap().request(
+            &gpu_fan(),
+            fanforge_core::engine::Action::SetDuty(Duty::new(80.0)),
+        );
+        let worker = rig.runtime.gpus.take().unwrap();
+        drop(worker);
+        rig.runtime.gpus = Some(
+            GpuFans::start(
+                Arc::new(|| Err("the driver is restarting".to_owned())),
+                rig._dir.path().join("gpu_owned.toml"),
+                rig.runtime.shared.halt_handle(),
+            )
+            .unwrap(),
+        );
+        let started = Instant::now();
+        rig.runtime.suspend();
+        assert!(started.elapsed() < GPU_SUSPEND_BUDGET + Duration::from_millis(500));
+        assert!(!fake.fan(0).manual);
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+    }
+
+    #[test]
     fn the_guardian_hears_ownership_of_gpu_fans_alone() {
         let gpu = gpu_fan();
         let mut rig = rig("gpu-owning", &[(gpu.as_str(), manual(55.0))], Vec::new());
@@ -1783,6 +1835,7 @@ pub(crate) mod tests {
         assert!(heard.lock().unwrap().contains(&Signal::Owning(true)));
         assert!(rig.runtime.shutdown());
         assert!(!fake.fan(0).manual);
+        assert_eq!(heard.lock().unwrap().last(), Some(&Signal::Owning(false)));
     }
 
     fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {

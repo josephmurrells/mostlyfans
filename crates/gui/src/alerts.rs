@@ -120,7 +120,7 @@ pub fn collect(
     if let Some(state) = state.filter(|_| live) {
         let unverified = state.board.as_ref().filter(|board| !board.fan_control);
         if state.critical {
-            let text = if state.monitor_only && unverified.is_some() {
+            let text = if crate::format::nothing_driven(state) {
                 "Critical temperature: the fans are under BIOS control"
             } else {
                 "Critical temperature: every fan is at 100%"

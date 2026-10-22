@@ -16,6 +16,10 @@ pub struct NvidiaFans {
     _library: SystemLibrary,
 }
 
+pub fn driver_present() -> bool {
+    SystemLibrary::load(crate::sensors::nvidia::LIBRARY).is_ok()
+}
+
 pub fn opener() -> DriverOpener {
     Arc::new(|| NvidiaFans::open().map(|fans| Box::new(fans) as Box<dyn FanDriver>))
 }
@@ -37,8 +41,13 @@ impl NvidiaFans {
                 }
             };
             let name = device.name().unwrap_or_else(|_| "NVIDIA GPU".to_owned());
-            let fans = device.num_fans().unwrap_or(0);
             let range = device.min_max_fan_speed().ok();
+            let controllable = range.is_some() && device.fan_control_policy(0).is_ok();
+            let fans = if controllable {
+                device.num_fans().unwrap_or(0)
+            } else {
+                0
+            };
             found.push((uuid, name, fans, range));
         }
         let labels = unique_labels(found.iter().map(|(_, name, ..)| name.clone()).collect());

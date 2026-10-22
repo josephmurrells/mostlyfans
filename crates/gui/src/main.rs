@@ -162,6 +162,7 @@ fn run_app(minimized: bool) -> ExitCode {
         tracing::warn!("GPU, drive and CPU core sensors are slow to report; starting without them");
     }
     let gpu_releaser = GpuReleaser::open(nvidia::opener(), paths::gpu_ownership_path());
+    let runtime_releaser = gpu_releaser.clone();
     let factory = Box::new(move |shared: Arc<Shared>, messages| {
         let gpus = GpuFans::start(
             nvidia::opener(),
@@ -176,7 +177,8 @@ fn run_app(minimized: bool) -> ExitCode {
             ConflictMonitor::default(),
         )
         .with_signals(Arc::clone(&sink))
-        .with_extra_sensors(extras.clone());
+        .with_extra_sensors(extras.clone())
+        .with_gpu_releaser(runtime_releaser.clone());
         match gpus {
             Ok(gpus) => runtime.with_gpu_fans(gpus),
             Err(error) => {

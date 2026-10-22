@@ -8,7 +8,7 @@ use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 
 use super::{SensorSource, unique_labels};
 
-const LIBRARY: &str = "nvml.dll";
+pub const LIBRARY: &str = "nvml.dll";
 const CADENCE: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
