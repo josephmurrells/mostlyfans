@@ -30,6 +30,8 @@ pub struct FanReading {
     pub rpm: Option<u32>,
     pub mode: HardwareMode,
     pub duty: Option<Duty>,
+    #[serde(default)]
+    pub unavailable: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

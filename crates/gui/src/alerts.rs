@@ -120,7 +120,7 @@ pub fn collect(
     if let Some(state) = state.filter(|_| live) {
         let unverified = state.board.as_ref().filter(|board| !board.fan_control);
         if state.critical {
-            let text = if state.monitor_only && unverified.is_some() {
+            let text = if crate::format::nothing_driven(state) {
                 "Critical temperature: the fans are under BIOS control"
             } else {
                 "Critical temperature: every fan is at 100%"
@@ -175,13 +175,30 @@ pub fn collect(
                 )
             } else if state.conflicts.is_empty() {
                 "Monitor-only mode: the fans are left to the BIOS.".to_owned()
-            } else {
+            } else if state.gpus.fans.is_empty() {
                 format!(
                     "Monitor-only mode: {} is running, so the fans are left to the BIOS.",
                     state.conflicts.join(", ")
                 )
+            } else {
+                format!(
+                    "Monitor-only mode: {} is running, so the fans are left to the BIOS and the graphics driver.",
+                    state.conflicts.join(", ")
+                )
             };
             alerts.push(Alert::new(Severity::MonitorOnly, text));
+        }
+        if state.gpus.monitor_only
+            && !state.gpus.conflicts.is_empty()
+            && !state.gpus.fans.is_empty()
+        {
+            alerts.push(Alert::new(
+                Severity::MonitorOnly,
+                format!(
+                    "Graphics card fans: {} is running, so they are left to it and the graphics driver. The other fans are still controlled.",
+                    state.gpus.conflicts.join(", ")
+                ),
+            ));
         }
         for warning in &state.warnings {
             alerts.push(Alert::new(Severity::Warning, sentence(warning)));

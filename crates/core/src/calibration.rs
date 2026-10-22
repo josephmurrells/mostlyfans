@@ -456,6 +456,7 @@ mod tests {
                 },
             ],
             fans: vec![FanReading {
+                unavailable: None,
                 id: "pwm1".into(),
                 label: "Fan 1".into(),
                 rpm,

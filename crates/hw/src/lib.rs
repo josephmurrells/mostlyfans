@@ -6,6 +6,7 @@ pub mod chips;
 pub mod cpu;
 pub mod ec;
 mod error;
+pub mod gpu_fans;
 pub mod intel;
 pub mod ite;
 pub mod mutex;

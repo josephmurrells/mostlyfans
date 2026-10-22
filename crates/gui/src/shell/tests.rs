@@ -446,6 +446,34 @@ fn render_screenshots() {
     let mut harness = harness_with(shell(&link, Page::Fans), vec2(760.0, 600.0), Theme::Light);
     screenshot(&mut harness, &dir, "compact-light");
 
+    for (theme, suffix) in [(Theme::Dark, "dark"), (Theme::Light, "light")] {
+        let link = FakeLink::new(fixtures::with_gpu(fixtures::state()));
+        let mut view = shell(&link, Page::Fans);
+        view.fans.select(fixtures::gpu_fan(0));
+        let mut harness = harness_with(view, SIZE, theme);
+        screenshot(&mut harness, &dir, &format!("fans-gpu-{suffix}"));
+    }
+
+    for width in [760.0, 980.0, 1200.0] {
+        let mut state = fixtures::with_gpu(fixtures::state());
+        let active = state.config.active_profile.clone();
+        if let Some(profile) = state.config.profiles.get_mut(&active) {
+            profile.fans.insert(
+                fixtures::gpu_fan(1),
+                FanMode::Sync {
+                    fan: fixtures::gpu_fan(0),
+                },
+            );
+        }
+        let link = FakeLink::new(state);
+        let mut harness = harness_with(
+            shell(&link, Page::Overview),
+            vec2(width, 1100.0),
+            Theme::Dark,
+        );
+        screenshot(&mut harness, &dir, &format!("overview-gpu-{width}"));
+    }
+
     let link = FakeLink::new(with_cores(fixtures::state()));
     let mut pinned = shell(&link, Page::Overview);
     pinned.prefs.pinned_sensors = Some(vec![
@@ -493,6 +521,43 @@ fn calibration_starts_shows_progress_and_cancels() {
     click(&mut harness, "Cancel calibration");
     assert_eq!(link.sent(), vec!["calibrate:pwm1", "cancel-calibration"]);
     assert!(harness.query_by_label("Calibration cancelled").is_some());
+}
+
+#[test]
+fn a_gpu_fan_shows_driver_control_without_header_settings() {
+    let link = FakeLink::new(fixtures::with_gpu(fixtures::state()));
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::gpu_fan(0));
+    let harness = harness_with(view, SIZE, Theme::Dark);
+    assert!(harness.query_by_label("Graphics card").is_some());
+    assert!(harness.query_by_label("Driver").is_some());
+    assert!(harness.query_by_label("Header type").is_none());
+    assert!(harness.query_by_label("Calibrate").is_none());
+    assert!(
+        harness
+            .query_by_label_contains("minimum 30% (driver)")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_gpu_tool_is_named_in_its_own_alert() {
+    let link = FakeLink::new(fixtures::with_gpu(fixtures::state()));
+    link.update(|state| {
+        state.gpus.monitor_only = true;
+        state.gpus.conflicts = vec!["MSI Afterburner".to_owned()];
+    });
+    let harness = harness(&link, Page::Overview);
+    assert!(
+        harness
+            .query_by_label_contains("Graphics card fans: MSI Afterburner is running")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Monitor-only mode")
+            .is_none()
+    );
 }
 
 #[test]

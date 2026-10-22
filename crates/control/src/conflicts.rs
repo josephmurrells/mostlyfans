@@ -13,6 +13,12 @@ const CONTROLLING_TOOLS: [(&str, &str); 6] = [
     ("armourycrate.service.exe", "ASUS Armoury Crate"),
 ];
 
+const GPU_TOOLS: [(&str, &str); 3] = [
+    ("msiafterburner.exe", "MSI Afterburner"),
+    ("precisionx_x64.exe", "EVGA Precision X1"),
+    ("gpu tweak iii.exe", "ASUS GPU Tweak III"),
+];
+
 const MONITORING_TOOLS: [(&str, &str); 2] = [
     ("librehardwaremonitor.exe", "LibreHardwareMonitor"),
     ("openhardwaremonitor.exe", "OpenHardwareMonitor"),
@@ -21,6 +27,7 @@ const MONITORING_TOOLS: [(&str, &str); 2] = [
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Findings {
     pub controlling: Vec<String>,
+    pub gpu_controlling: Vec<String>,
     pub monitoring: Vec<String>,
 }
 
@@ -40,6 +47,7 @@ pub fn classify<S: AsRef<str>>(processes: &[S]) -> Findings {
     };
     Findings {
         controlling: matches(&CONTROLLING_TOOLS),
+        gpu_controlling: matches(&GPU_TOOLS),
         monitoring: matches(&MONITORING_TOOLS),
     }
 }
@@ -118,6 +126,13 @@ mod tests {
         ]);
         assert_eq!(findings.controlling, vec!["FanControl"]);
         assert_eq!(findings.monitoring, vec!["LibreHardwareMonitor"]);
+        assert!(findings.gpu_controlling.is_empty());
+        let gpu = classify(&["MSIAfterburner.exe", "GPU Tweak III.exe", "RTSS.exe"]);
+        assert_eq!(
+            gpu.gpu_controlling,
+            vec!["MSI Afterburner", "ASUS GPU Tweak III"]
+        );
+        assert!(gpu.controlling.is_empty());
         assert_eq!(classify::<&str>(&[]), Findings::default());
     }
 

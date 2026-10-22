@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::FanId;
 use crate::board::{BoardInfo, FanLimits};
 use crate::calibration::CalibrationView;
 use crate::config::Config;
 use crate::engine::FanStatus;
 use crate::telemetry::Readings;
+use crate::{Duty, FanId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "detail", rename_all = "snake_case")]
@@ -16,6 +16,22 @@ pub enum HardwareStatus {
     Unavailable(String),
     DriverMissing,
     Suspended,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GpuFanInfo {
+    pub id: FanId,
+    pub gpu: String,
+    pub index: u32,
+    pub minimum: Option<Duty>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GpuState {
+    pub fans: Vec<GpuFanInfo>,
+    pub monitor_only: bool,
+    pub conflicts: Vec<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,4 +51,6 @@ pub struct ControlState {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub calibration: CalibrationView,
+    #[serde(default)]
+    pub gpus: GpuState,
 }

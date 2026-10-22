@@ -1,8 +1,10 @@
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fanforge_hw::HwError;
+use fanforge_hw::gpu_fans::{GpuReleaser, NOT_RESPONDING};
 use fanforge_hw::port::PortIo;
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::superio::SuperIo;
@@ -15,6 +17,43 @@ fn load_snapshot(path: &Path) -> BiosSnapshot {
         tracing::error!(%error, "BIOS snapshot unreadable; restoring BIOS defaults");
         BiosSnapshot::lost()
     })
+}
+
+fn nothing_to_release(error: &HwError, snapshot: &BiosSnapshot) -> bool {
+    matches!(
+        error,
+        HwError::PawnIoMissing | HwError::ChipNotFound(_) | HwError::UnsupportedChip(_)
+    ) && snapshot.owned.is_empty()
+        && !snapshot.lost
+}
+
+pub fn release_with_gpus(
+    gpus: Option<&GpuReleaser>,
+    budget: Duration,
+    chip: impl FnOnce(Duration) -> Result<(), HwError>,
+) -> Result<(), String> {
+    let pending = gpus.cloned().and_then(|gpus| {
+        let (sender, receiver) = mpsc::channel();
+        thread::Builder::new()
+            .name("failsafe-gpu".into())
+            .spawn(move || sender.send(gpus.release(budget)).ok())
+            .map_err(|error| tracing::error!(%error, "could not start the GPU fan release"))
+            .ok()
+            .map(|_| receiver)
+    });
+    let started = Instant::now();
+    let chip = chip(budget).map_err(|error| error.to_string());
+    let gpus = match pending {
+        Some(receiver) => receiver
+            .recv_timeout(budget.saturating_sub(started.elapsed()))
+            .unwrap_or_else(|_| Err(NOT_RESPONDING.to_owned())),
+        None if gpus.is_some() => Err("the GPU fan release could not start".to_owned()),
+        None => Ok(()),
+    };
+    if let Err(error) = &gpus {
+        tracing::error!(%error, "could not return every GPU fan to the driver");
+    }
+    chip.and(gpus)
 }
 
 pub fn release_with<P: PortIo>(
@@ -54,6 +93,10 @@ pub fn release_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(), H
             open_chip().and_then(|mut chip| force_all_auto(&mut chip, &snapshot, remaining));
         match result {
             Ok(()) => return Ok(()),
+            Err(error) if nothing_to_release(&error, &snapshot) => {
+                tracing::info!(%error, "no fan controller to release");
+                return Ok(());
+            }
             Err(error) if Instant::now() + RETRY_PAUSE < deadline => {
                 tracing::warn!(%error, "release attempt failed; retrying");
                 thread::sleep(RETRY_PAUSE);
@@ -68,6 +111,8 @@ pub fn release_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(), H
 
 #[cfg(test)]
 mod tests {
+    use fanforge_hw::gpu_fans::fake::{FakeFan, FakeGpus, SharedGpus};
+    use fanforge_hw::gpu_fans::ownership::{self, Ownership};
     use fanforge_hw::ite::fake::{FakeIte, SharedFake};
     use fanforge_hw::mutex::NamedMutex;
     use fanforge_hw::superio::Slot;
@@ -91,5 +136,60 @@ mod tests {
         for register in [0x15, 0x16, 0x17] {
             assert_eq!(fake.with(|chip| chip.reg(register)) & 0x80, 0x80);
         }
+    }
+
+    #[test]
+    fn gpu_fans_are_released_alongside_the_chip_even_when_the_chip_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gpu_owned.toml");
+        let fan = fanforge_core::FanId::for_gpu_fan(fanforge_hw::gpu_fans::fake::GPU_ID, 0);
+        ownership::save(&path, &Ownership { fans: [fan].into() }).unwrap();
+        let mut gpus = FakeGpus::default();
+        gpus.fans.insert(
+            0,
+            FakeFan {
+                manual: true,
+                target: 70,
+            },
+        );
+        let gpus = SharedGpus::new(gpus);
+        let releaser = GpuReleaser::open(gpus.opener(), path);
+        let result = release_with_gpus(Some(&releaser), Duration::from_secs(2), |_| {
+            Err(HwError::LockTimeout("test".into()))
+        });
+        assert!(result.unwrap_err().contains("test"));
+        assert!(!gpus.fan(0).manual);
+
+        gpus.hold();
+        let started = Instant::now();
+        let result = release_with_gpus(Some(&releaser), Duration::from_millis(100), |_| Ok(()));
+        assert_eq!(result, Err(NOT_RESPONDING.to_owned()));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        gpus.unhold();
+        assert_eq!(
+            release_with_gpus(None, Duration::from_secs(1), |_| Ok(())),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_missing_chip_with_nothing_owned_needs_no_release() {
+        let snapshot = BiosSnapshot::default();
+        assert!(nothing_to_release(&HwError::PawnIoMissing, &snapshot));
+        assert!(nothing_to_release(
+            &HwError::ChipNotFound(0xFFFF),
+            &snapshot
+        ));
+        assert!(!nothing_to_release(
+            &HwError::LockTimeout("bus".into()),
+            &snapshot
+        ));
+        assert!(!nothing_to_release(
+            &HwError::PawnIoMissing,
+            &BiosSnapshot::lost()
+        ));
+        let mut owned = BiosSnapshot::default();
+        owned.claim(0, Default::default());
+        assert!(!nothing_to_release(&HwError::PawnIoMissing, &owned));
     }
 }
