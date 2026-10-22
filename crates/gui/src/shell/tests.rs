@@ -454,6 +454,26 @@ fn render_screenshots() {
         screenshot(&mut harness, &dir, &format!("fans-gpu-{suffix}"));
     }
 
+    for width in [760.0, 980.0, 1200.0] {
+        let mut state = fixtures::with_gpu(fixtures::state());
+        let active = state.config.active_profile.clone();
+        if let Some(profile) = state.config.profiles.get_mut(&active) {
+            profile.fans.insert(
+                fixtures::gpu_fan(1),
+                FanMode::Sync {
+                    fan: fixtures::gpu_fan(0),
+                },
+            );
+        }
+        let link = FakeLink::new(state);
+        let mut harness = harness_with(
+            shell(&link, Page::Overview),
+            vec2(width, 1100.0),
+            Theme::Dark,
+        );
+        screenshot(&mut harness, &dir, &format!("overview-gpu-{width}"));
+    }
+
     let link = FakeLink::new(with_cores(fixtures::state()));
     let mut pinned = shell(&link, Page::Overview);
     pinned.prefs.pinned_sensors = Some(vec![
