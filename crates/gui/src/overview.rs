@@ -4,7 +4,7 @@ use std::time::Instant;
 use eframe::egui::{self, Id, RichText, vec2};
 use fanforge_core::state::ControlState;
 use fanforge_core::telemetry::{FanReading, SensorReading};
-use fanforge_core::{FanId, SensorId};
+use fanforge_core::{FanId, FanKind, SensorId};
 
 use crate::format;
 use crate::history::History;
@@ -86,6 +86,7 @@ pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config
         .readings
         .fans
         .iter()
+        .filter(|fan| fan.id.kind() == FanKind::Header)
         .filter(|fan| format::connected(fan) && !format::is_named(config, &fan.id))
         .map(|fan| fan.id.clone())
         .collect()
@@ -354,7 +355,10 @@ fn fan_card(
             let duty = fan.duty.map(|duty| duty.percent());
             widgets::duty_bar(ui, ui.available_width(), duty, Some(floor.percent));
             ui.horizontal(|ui| {
-                widgets::chip(ui, &format::mode_summary(&state.config, state, &mode));
+                widgets::chip(
+                    ui,
+                    &format::mode_summary(&state.config, state, &fan.id, &mode),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(widgets::caption(ui, format::duty(fan.duty)));
                 });

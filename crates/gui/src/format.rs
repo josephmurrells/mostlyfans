@@ -4,7 +4,7 @@ use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::engine::FanState;
 use fanforge_core::state::{ControlState, HardwareStatus};
 use fanforge_core::telemetry::FanReading;
-use fanforge_core::{Duty, FanId};
+use fanforge_core::{Duty, FanId, FanKind};
 
 use crate::theme::Tone;
 
@@ -23,6 +23,7 @@ pub fn fan_state(state: &FanState) -> (String, Tone) {
         FanState::Calibrating => ("Calibrating".to_owned(), Tone::Accent),
         FanState::Faulted(reason) => (format!("Released after fault: {reason}"), Tone::Danger),
         FanState::MonitorOnly => ("Monitor only".to_owned(), Tone::Neutral),
+        FanState::Unavailable(reason) => (format!("Not available: {reason}"), Tone::Warn),
     }
 }
 
@@ -50,7 +51,14 @@ pub fn rpm(fan: &FanReading) -> String {
 }
 
 pub fn connected(fan: &FanReading) -> bool {
-    fan.rpm.is_some_and(|rpm| rpm > 0)
+    fan.id.kind() == FanKind::Gpu || fan.rpm.is_some_and(|rpm| rpm > 0)
+}
+
+pub fn auto_name(fan: &FanId) -> &'static str {
+    match fan.kind() {
+        FanKind::Header => "BIOS",
+        FanKind::Gpu => "Driver",
+    }
 }
 
 pub fn celsius(value: Option<f32>) -> String {
@@ -79,9 +87,9 @@ pub fn is_named(config: &Config, fan: &FanId) -> bool {
         .is_some_and(|name| !name.trim().is_empty())
 }
 
-pub fn mode_summary(config: &Config, state: &ControlState, mode: &FanMode) -> String {
+pub fn mode_summary(config: &Config, state: &ControlState, fan: &FanId, mode: &FanMode) -> String {
     match mode {
-        FanMode::Auto => "BIOS".to_owned(),
+        FanMode::Auto => auto_name(fan).to_owned(),
         FanMode::Manual { duty } => format!("Fixed {duty}"),
         FanMode::Curve { curve } => {
             let name = config
@@ -158,6 +166,22 @@ mod tests {
         );
         settings.min_duty = Duty::new(45.0);
         assert_eq!(effective_floor(limits, &settings, None).percent, 45.0);
+    }
+
+    #[test]
+    fn gpu_fans_count_as_connected_while_stopped_and_auto_means_the_driver() {
+        let reading = |id: &str| FanReading {
+            id: id.into(),
+            label: id.into(),
+            rpm: Some(0),
+            mode: fanforge_core::telemetry::HardwareMode::Auto,
+            duty: None,
+            unavailable: None,
+        };
+        assert!(connected(&reading("gpu/nvidia/gpu-1/fan1")));
+        assert!(!connected(&reading("pwm1")));
+        assert_eq!(auto_name(&"gpu/nvidia/gpu-1/fan1".into()), "Driver");
+        assert_eq!(auto_name(&"pwm1".into()), "BIOS");
     }
 
     #[test]

@@ -46,6 +46,7 @@ use fanforge_control::legacy::{self, Removal};
 use fanforge_control::runtime::{Paths, Runtime};
 use fanforge_control::shared::Shared;
 use fanforge_control::{failsafe, watchdog};
+use fanforge_hw::gpu_fans::{GpuFans, GpuReleaser, nvidia};
 use fanforge_hw::sensors::{self, ExtraSensors};
 use fanforge_hw::system::Hardware;
 use fanforge_win::paths;
@@ -160,8 +161,14 @@ fn run_app(minimized: bool) -> ExitCode {
     if !extras.wait_for_first_round(FIRST_SENSOR_ROUND) {
         tracing::warn!("GPU, drive and CPU core sensors are slow to report; starting without them");
     }
-    let factory = Box::new(move |shared, messages| {
-        Runtime::new(
+    let gpu_releaser = GpuReleaser::open(nvidia::opener(), paths::gpu_ownership_path());
+    let factory = Box::new(move |shared: Arc<Shared>, messages| {
+        let gpus = GpuFans::start(
+            nvidia::opener(),
+            paths::gpu_ownership_path(),
+            shared.halt_handle(),
+        );
+        let runtime = Runtime::new(
             Paths::default(),
             shared,
             messages,
@@ -169,18 +176,35 @@ fn run_app(minimized: bool) -> ExitCode {
             ConflictMonitor::default(),
         )
         .with_signals(Arc::clone(&sink))
-        .with_extra_sensors(extras.clone())
+        .with_extra_sensors(extras.clone());
+        match gpus {
+            Ok(gpus) => runtime.with_gpu_fans(gpus),
+            Err(error) => {
+                tracing::error!(%error, "GPU fan control could not start");
+                runtime
+            }
+        }
     });
     let release_snapshot = snapshot.clone();
-    let direct_release =
-        Arc::new(move |budget| failsafe::release_from_disk(&release_snapshot, budget).is_ok());
+    let release_gpus = gpu_releaser.clone();
+    let direct_release = Arc::new(move |budget| {
+        failsafe::release_with_gpus(Some(&release_gpus), budget, |budget| {
+            failsafe::release_from_disk(&release_snapshot, budget)
+        })
+        .is_ok()
+    });
     let mut controller = match Controller::start(Arc::clone(&shared), factory, direct_release) {
         Ok(controller) => controller,
         Err(error) => return fail(&format!("Fan control could not start: {error}")),
     };
     let released = guardian.clone();
     controller.on_released(move || released.released());
-    if let Err(error) = watchdog::spawn(Arc::clone(&shared), snapshot.clone(), logging::flush) {
+    if let Err(error) = watchdog::spawn(
+        Arc::clone(&shared),
+        snapshot.clone(),
+        Some(gpu_releaser.clone()),
+        logging::flush,
+    ) {
         return fail(&format!(
             "The control loop watchdog could not start: {error}"
         ));
@@ -191,7 +215,7 @@ fn run_app(minimized: bool) -> ExitCode {
         installed_guardian.ensure_running();
         installed_remote.retry_hardware();
     });
-    let _power = match session::watch(controller.remote(), guardian, snapshot) {
+    let _power = match session::watch(controller.remote(), guardian, snapshot, gpu_releaser) {
         Ok(power) => power,
         Err(error) => return fail(&format!("Session monitoring could not start: {error}")),
     };

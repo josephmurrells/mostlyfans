@@ -175,13 +175,30 @@ pub fn collect(
                 )
             } else if state.conflicts.is_empty() {
                 "Monitor-only mode: the fans are left to the BIOS.".to_owned()
-            } else {
+            } else if state.gpus.fans.is_empty() {
                 format!(
                     "Monitor-only mode: {} is running, so the fans are left to the BIOS.",
                     state.conflicts.join(", ")
                 )
+            } else {
+                format!(
+                    "Monitor-only mode: {} is running, so the fans are left to the BIOS and the graphics driver.",
+                    state.conflicts.join(", ")
+                )
             };
             alerts.push(Alert::new(Severity::MonitorOnly, text));
+        }
+        if state.gpus.monitor_only
+            && !state.gpus.conflicts.is_empty()
+            && !state.gpus.fans.is_empty()
+        {
+            alerts.push(Alert::new(
+                Severity::MonitorOnly,
+                format!(
+                    "Graphics card fans: {} is running, so they are left to it and the graphics driver. The other fans are still controlled.",
+                    state.gpus.conflicts.join(", ")
+                ),
+            ));
         }
         for warning in &state.warnings {
             alerts.push(Alert::new(Severity::Warning, sentence(warning)));
