@@ -33,13 +33,18 @@ pub fn sensor_id(uuid: &str) -> SensorId {
     SensorId::new(format!("gpu/nvidia/{}", uuid.trim().to_ascii_lowercase()))
 }
 
-fn open() -> Result<Session, String> {
+pub fn init() -> Result<(Nvml, SystemLibrary), String> {
     let library = SystemLibrary::load(LIBRARY)
         .map_err(|error| format!("NVIDIA driver not found ({LIBRARY}: {error})"))?;
     let nvml = Nvml::builder()
         .lib_path(library.path().as_os_str())
         .init()
         .map_err(|error| format!("NVML could not start: {error}"))?;
+    Ok((nvml, library))
+}
+
+fn open() -> Result<Session, String> {
+    let (nvml, library) = init()?;
     let count = nvml.device_count().map_err(|error| error.to_string())?;
     let mut found = Vec::new();
     let mut last_error = None;
