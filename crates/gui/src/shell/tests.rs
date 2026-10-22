@@ -474,6 +474,22 @@ fn render_screenshots() {
         screenshot(&mut harness, &dir, &format!("overview-gpu-{width}"));
     }
 
+    let mut paused = fixtures::state();
+    paused.user_monitor_only = true;
+    paused.monitor_only = true;
+    let link = FakeLink::new(paused);
+    let mut harness = harness_with(shell(&link, Page::Settings), SIZE, Theme::Dark);
+    screenshot(&mut harness, &dir, "settings-monitor-only-dark");
+
+    let mut flagged = fixtures::state();
+    flagged.fans[1].state =
+        fanforge_core::engine::FanState::Faulted(fanforge_core::response::NO_RESPONSE.to_owned());
+    let link = FakeLink::new(flagged);
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::fan(1));
+    let mut harness = harness_with(view, SIZE, Theme::Light);
+    screenshot(&mut harness, &dir, "fans-flagged-light");
+
     let link = FakeLink::new(with_cores(fixtures::state()));
     let mut pinned = shell(&link, Page::Overview);
     pinned.prefs.pinned_sensors = Some(vec![
@@ -942,4 +958,42 @@ fn a_pinned_sensor_goes_missing_once_hardware_has_settled() {
         Some(vec![SensorId::new("cpu/package")])
     );
     assert!(harness.query_by_label("Missing").is_none());
+}
+
+#[test]
+fn the_monitor_only_switch_applies_at_once_and_resumes_from_its_alert() {
+    let link = FakeLink::new(fixtures::state());
+    let mut harness = harness(&link, Page::Settings);
+    click(
+        &mut harness,
+        "Monitor only: leave all fans to the BIOS and graphics driver",
+    );
+    assert_eq!(link.sent(), vec!["monitor-only:true"]);
+    assert!(harness.query_by_label("Apply").is_none());
+    click(&mut harness, "Resume control");
+    assert_eq!(link.sent(), vec!["monitor-only:true", "monitor-only:false"]);
+}
+
+#[test]
+fn a_flagged_fan_can_be_tried_again_from_its_alert_and_its_page() {
+    let mut state = fixtures::state();
+    state.fans[1].state = fanforge_core::engine::FanState::Faulted("the fan stopped at 30%".into());
+    let link = FakeLink::new(state);
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::fan(1));
+    let mut harness = harness_with(view, SIZE, Theme::Dark);
+    assert!(
+        harness
+            .query_by_label_contains("was handed back to the BIOS: the fan stopped at 30%")
+            .is_some()
+    );
+    assert_eq!(harness.query_all_by_label("Try again").count(), 2);
+    harness
+        .query_all_by_label("Try again")
+        .next()
+        .unwrap()
+        .click();
+    settle(&mut harness);
+    assert_eq!(link.sent(), vec![format!("retry:{}", fixtures::fan(1))]);
+    assert!(harness.query_by_label("Try again").is_none());
 }

@@ -10,6 +10,7 @@ use fanforge_core::state::ControlState;
 use fanforge_win::paths;
 
 use crate::autostart::{self, AutostartState};
+use crate::connection::{ControlLink, Request};
 use crate::format;
 use crate::icons;
 use crate::notices::{Notices, Topic};
@@ -221,10 +222,13 @@ impl SettingsView {
         state: &ControlState,
         draft: &mut Config,
         autostart: &mut AutostartPanel,
+        link: &dyn ControlLink,
     ) -> bool {
         let mut changed = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
             widgets::page_title(ui, "Settings", None);
+            widgets::card(ui, |ui| fan_control(ui, state, link));
+            ui.add_space(SPACE_M);
             widgets::card(ui, |ui| {
                 widgets::card_title(ui, "General", None);
                 autostart.show(ui);
@@ -414,6 +418,26 @@ impl SettingsView {
             }
         });
         changed
+    }
+}
+
+fn fan_control(ui: &mut egui::Ui, state: &ControlState, link: &dyn ControlLink) {
+    widgets::card_title(
+        ui,
+        "Fan control",
+        Some(
+            "Monitor-only mode hands every fan back to the BIOS and the graphics driver. FanForge keeps showing temperatures and fan speeds, and controls the fans again after a restart.",
+        ),
+    );
+    let mut on = state.user_monitor_only;
+    if ui
+        .checkbox(
+            &mut on,
+            "Monitor only: leave all fans to the BIOS and graphics driver",
+        )
+        .changed()
+    {
+        link.send(Request::SetMonitorOnly(on));
     }
 }
 

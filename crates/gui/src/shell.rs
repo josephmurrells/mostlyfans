@@ -137,6 +137,10 @@ impl Shell {
         self.autostart.poll(&self.notices);
     }
 
+    pub fn set_monitor_only(&mut self, on: bool) {
+        self.link.send(Request::SetMonitorOnly(on));
+    }
+
     pub fn request_profile(&mut self, name: String) -> bool {
         let (_, state) = self.link.view();
         if state
@@ -196,7 +200,21 @@ impl Shell {
                     self.toasts
                         .error(format!("Your changes were rejected: {message}"));
                 }
-                (RequestKind::Profile | RequestKind::Identify | RequestKind::Calibrate, Ok(())) => {
+                (
+                    RequestKind::Profile
+                    | RequestKind::Identify
+                    | RequestKind::Calibrate
+                    | RequestKind::MonitorOnly
+                    | RequestKind::Retry,
+                    Ok(()),
+                ) => {}
+                (RequestKind::MonitorOnly, Err(message)) => {
+                    self.toasts
+                        .error(format!("Monitor-only mode could not be changed: {message}"));
+                }
+                (RequestKind::Retry, Err(message)) => {
+                    self.toasts
+                        .error(format!("The fan could not be tried again: {message}"));
                 }
                 (RequestKind::Profile, Err(message)) => {
                     if let Some((name, _)) = self.profile_override.take()
@@ -503,6 +521,8 @@ impl Shell {
             }
             Some(Action::InstallPawnIo) => self.pawnio.start(ui.ctx()),
             Some(Action::RepairAutostart) => self.autostart.repair(ui.ctx()),
+            Some(Action::ResumeControl) => self.set_monitor_only(false),
+            Some(Action::RetryFan(fan)) => self.link.send(Request::RetryFan(fan)),
             None => {}
         }
     }
@@ -621,7 +641,10 @@ impl Shell {
                 outcome.changed
             }
             Page::Curves => self.curves.show(ui, state, draft),
-            Page::Settings => self.settings.show(ui, state, draft, &mut self.autostart),
+            Page::Settings => {
+                self.settings
+                    .show(ui, state, draft, &mut self.autostart, &*self.link)
+            }
         };
         self.dirty |= changed;
     }
