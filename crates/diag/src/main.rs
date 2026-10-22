@@ -13,7 +13,8 @@ use fanforge_core::telemetry::is_plausible;
 use fanforge_hw::HwError;
 use fanforge_hw::amd::AmdCpu;
 use fanforge_hw::board::detect_identity;
-use fanforge_hw::gpu_fans::nvidia::{FanSample, NvidiaFans, NvidiaGpu};
+use fanforge_hw::gpu_fans::nvidia::NvidiaFans;
+use fanforge_hw::gpu_fans::{FanDriver, FanSample, GpuDesc};
 use fanforge_hw::pawnio;
 use fanforge_hw::sensors::cores::CoreTempSource;
 use fanforge_hw::sensors::{self, SensorSource};
@@ -440,7 +441,7 @@ fn gpu() -> DiagResult {
             "GPU {}: {} ({}), {} fans, range {range}",
             index + 1,
             gpu.label,
-            gpu.uuid,
+            gpu.key,
             gpu.fans
         );
         for fan in 0..gpu.fans {
@@ -455,9 +456,10 @@ fn set_gpu_fan(gpu: usize, fan: u32, duty: u32, timeout: Duration, force: bool) 
         return Err("FanForge is running; quit it from the tray first or pass --force".into());
     }
     let fans = NvidiaFans::open()?;
-    let target: &NvidiaGpu = gpu
+    let gpus = fans.gpus();
+    let target: &GpuDesc = gpu
         .checked_sub(1)
-        .and_then(|index| fans.gpus().get(index))
+        .and_then(|index| gpus.get(index))
         .ok_or_else(|| format!("there are {} NVIDIA GPUs", fans.gpus().len()))?;
     let index = fan
         .checked_sub(1)
@@ -513,7 +515,7 @@ fn restore_gpu() -> DiagResult {
     let mut failed = false;
     for gpu in fans.gpus() {
         for fan in 0..gpu.fans {
-            match fans.restore(gpu, fan) {
+            match fans.restore(&gpu, fan) {
                 Ok(()) => println!("{} fan {} returned to the driver", gpu.label, fan + 1),
                 Err(error) => {
                     failed = true;

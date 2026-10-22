@@ -1,32 +1,23 @@
+use std::sync::Arc;
+
 use fanforge_win::SystemLibrary;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvml_wrapper::{Device, Nvml};
 
-use crate::sensors::nvidia::init;
+use super::{DriverOpener, FanDriver, FanSample, GpuDesc};
+use crate::sensors::nvidia::{init, sensor_id};
 use crate::sensors::unique_labels;
 
 const NVML_SUCCESS: u32 = 0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NvidiaGpu {
-    pub uuid: String,
-    pub label: String,
-    pub fans: u32,
-    pub range: Option<(u32, u32)>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FanSample {
-    pub percent: Option<u32>,
-    pub target: Option<u32>,
-    pub rpm: Option<u32>,
-    pub manual: Option<bool>,
-}
-
 pub struct NvidiaFans {
     nvml: Nvml,
-    gpus: Vec<NvidiaGpu>,
+    gpus: Vec<GpuDesc>,
     _library: SystemLibrary,
+}
+
+pub fn opener() -> DriverOpener {
+    Arc::new(|| NvidiaFans::open().map(|fans| Box::new(fans) as Box<dyn FanDriver>))
 }
 
 impl NvidiaFans {
@@ -54,8 +45,9 @@ impl NvidiaFans {
         let gpus = found
             .into_iter()
             .zip(labels)
-            .map(|((uuid, _, fans, range), label)| NvidiaGpu {
-                uuid,
+            .map(|((uuid, _, fans, range), label)| GpuDesc {
+                id: sensor_id(&uuid).to_string(),
+                key: uuid,
                 label,
                 fans,
                 range,
@@ -68,36 +60,38 @@ impl NvidiaFans {
         })
     }
 
-    pub fn gpus(&self) -> &[NvidiaGpu] {
-        &self.gpus
-    }
-
-    fn device(&self, gpu: &NvidiaGpu) -> Result<Device<'_>, String> {
+    fn device(&self, gpu: &GpuDesc) -> Result<Device<'_>, String> {
         self.nvml
-            .device_by_uuid(gpu.uuid.as_str())
+            .device_by_uuid(gpu.key.as_str())
             .map_err(|error| error.to_string())
     }
+}
 
-    pub fn sample(&self, gpu: &NvidiaGpu, fan: u32) -> Result<FanSample, String> {
+impl FanDriver for NvidiaFans {
+    fn gpus(&self) -> Vec<GpuDesc> {
+        self.gpus.clone()
+    }
+
+    fn sample(&self, gpu: &GpuDesc, fan: u32) -> Result<FanSample, String> {
         let device = self.device(gpu)?;
+        let policy = device
+            .fan_control_policy(fan)
+            .map_err(|error| error.to_string())?;
         Ok(FanSample {
             percent: device.fan_speed(fan).ok(),
             target: target_speed(&device, fan),
             rpm: device.fan_speed_rpm(fan).ok(),
-            manual: device
-                .fan_control_policy(fan)
-                .ok()
-                .map(|policy| matches!(policy, FanControlPolicy::Manual)),
+            manual: Some(matches!(policy, FanControlPolicy::Manual)),
         })
     }
 
-    pub fn set_speed(&self, gpu: &NvidiaGpu, fan: u32, percent: u32) -> Result<(), String> {
+    fn set_speed(&self, gpu: &GpuDesc, fan: u32, percent: u32) -> Result<(), String> {
         self.device(gpu)?
             .set_fan_speed(fan, percent)
             .map_err(|error| error.to_string())
     }
 
-    pub fn restore(&self, gpu: &NvidiaGpu, fan: u32) -> Result<(), String> {
+    fn restore(&self, gpu: &GpuDesc, fan: u32) -> Result<(), String> {
         self.device(gpu)?
             .set_default_fan_speed(fan)
             .map_err(|error| error.to_string())
