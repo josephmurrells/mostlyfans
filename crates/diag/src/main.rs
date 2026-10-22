@@ -103,6 +103,8 @@ enum Command {
         #[arg(long, help = "Run even if FanForge is running")]
         force: bool,
     },
+    #[command(about = "Return every NVIDIA GPU fan to the driver")]
+    RestoreGpu,
 }
 
 fn main() -> ExitCode {
@@ -133,6 +135,7 @@ fn main() -> ExitCode {
             timeout,
             force,
         } => set_gpu_fan(gpu, fan, duty, Duration::from_secs(timeout), force),
+        Command::RestoreGpu => restore_gpu(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -502,5 +505,25 @@ fn set_gpu_fan(gpu: usize, fan: u32, duty: u32, timeout: Duration, force: bool) 
         }
     }
     restored?;
+    Ok(())
+}
+
+fn restore_gpu() -> DiagResult {
+    let fans = NvidiaFans::open()?;
+    let mut failed = false;
+    for gpu in fans.gpus() {
+        for fan in 0..gpu.fans {
+            match fans.restore(gpu, fan) {
+                Ok(()) => println!("{} fan {} returned to the driver", gpu.label, fan + 1),
+                Err(error) => {
+                    failed = true;
+                    println!("{} fan {}: {error}", gpu.label, fan + 1);
+                }
+            }
+        }
+    }
+    if failed {
+        return Err("some GPU fans could not be returned to the driver".into());
+    }
     Ok(())
 }
