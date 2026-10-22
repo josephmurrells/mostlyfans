@@ -47,6 +47,8 @@ pub struct ControlState {
     #[serde(default)]
     pub critical_reached: bool,
     pub monitor_only: bool,
+    #[serde(default)]
+    pub user_monitor_only: bool,
     pub conflicts: Vec<String>,
     pub warnings: Vec<String>,
     #[serde(default)]

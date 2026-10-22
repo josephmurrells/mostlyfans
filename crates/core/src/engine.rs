@@ -8,11 +8,12 @@ use crate::calibration::{
     self, Calibration, CalibrationOutcome, CalibrationReport, CalibrationView, FanCalibration,
     RECOVER_TIME, Step,
 };
-use crate::config::{Config, FanMode};
+use crate::config::{Config, FanMode, FanSettings};
 use crate::curve::{CurveError, CurveEvaluator, HysteresisState, Tuning, find_curve};
+use crate::response::{Observation, Tracker, Verdict};
 use crate::safety::CriticalGuard;
 use crate::telemetry::{FanReading, HardwareMode, Readings};
-use crate::{Duty, FanId, FanKind};
+use crate::{CurveId, Duty, FanId, FanKind};
 
 pub const MAX_WRITE_MISMATCHES: u32 = 3;
 pub const SPIN_UP_DURATION: Duration = Duration::from_secs(2);
@@ -44,6 +45,7 @@ pub enum FanState {
     Identifying,
     Calibrating,
     Faulted(String),
+    LeaderReleased(String),
     MonitorOnly,
     Unavailable(String),
 }
@@ -69,6 +71,7 @@ pub struct TickOutcome {
 enum LastCommand {
     Duty(u8),
     Release,
+    Unreleased,
 }
 
 #[derive(Debug, Default)]
@@ -82,11 +85,14 @@ struct FanRuntime {
     spin_up_left: Duration,
     recover_left: Duration,
     fault: Option<String>,
+    response_fault: bool,
+    response: Tracker,
 }
 
 #[derive(Clone, Debug)]
 enum Target {
     Release,
+    LeaderReleased(String),
     Immediate(f32),
     Smoothed { duty: f32, tuning: Tuning },
     Follow(FanId),
@@ -138,10 +144,29 @@ impl Engine {
 
     pub fn set_config(&mut self, config: Config) {
         self.hysteresis.retain(&config.curves);
-        self.config = config;
-        for runtime in self.fans.values_mut() {
-            runtime.fault = None;
+        for (fan, runtime) in &mut self.fans {
+            if control_changed(&self.config, &config, fan) {
+                runtime.response.restart();
+                if runtime.response_fault {
+                    runtime.response_fault = false;
+                    runtime.fault = None;
+                }
+            }
+            if !runtime.response_fault {
+                runtime.fault = None;
+            }
             runtime.failures = 0;
+            runtime.mismatches = 0;
+            runtime.write_errors = 0;
+        }
+        self.config = config;
+    }
+
+    pub fn clear_fault(&mut self, fan: &FanId) {
+        if let Some(runtime) = self.fans.get_mut(fan) {
+            runtime.fault = None;
+            runtime.response_fault = false;
+            runtime.response = Tracker::default();
             runtime.mismatches = 0;
             runtime.write_errors = 0;
         }
@@ -190,6 +215,13 @@ impl Engine {
             .or(self.calibration_request.as_ref())
         {
             return Err(format!("fan `{running}` is already being calibrated"));
+        }
+        if self
+            .fans
+            .get(&fan)
+            .is_some_and(|runtime| runtime.response_fault)
+        {
+            self.clear_fault(&fan);
         }
         self.calibration_request = Some(fan);
         Ok(())
@@ -335,7 +367,12 @@ impl Engine {
             runtime.mismatches = 0;
             runtime.write_errors = 0;
             runtime.applied = None;
+            runtime.response = Tracker::default();
         }
+    }
+
+    pub fn record_release_error(&mut self, fan: &FanId) {
+        self.fans.entry(fan.clone()).or_default().last_command = Some(LastCommand::Unreleased);
     }
 
     pub fn record_apply_error(&mut self, fan: &FanId, error: &str) {
@@ -376,6 +413,18 @@ impl Engine {
                 let target = match target {
                     Target::Follow(leader) => match planned.get(&leader) {
                         Some((_, Action::SetDuty(duty))) => Target::Immediate(duty.percent()),
+                        Some((status, Action::Release))
+                            if matches!(status.state, FanState::Faulted(_)) =>
+                        {
+                            Target::LeaderReleased(format!(
+                                "follows {}, which was handed back to {}",
+                                fan_label(&self.config, readings, &leader),
+                                match leader.kind() {
+                                    FanKind::Header => "the BIOS",
+                                    FanKind::Gpu => "the graphics driver",
+                                }
+                            ))
+                        }
                         Some((_, Action::Release)) => Target::Release,
                         None if readings.fan(&leader).is_none() => {
                             Target::Failed(format!("followed fan `{leader}` does not exist"))
@@ -424,7 +473,8 @@ impl Engine {
                 outcome.fans.push(status);
                 continue;
             }
-            if let Some(command) = self.reconcile(&mut status, reading, action) {
+            let command = self.reconcile(&mut status, reading, action);
+            if let Some(command) = self.check_response(&mut status, reading, command, elapsed) {
                 outcome.commands.push(command);
             }
             outcome.fans.push(status);
@@ -515,6 +565,11 @@ impl Engine {
                     runtime.smoothed = None;
                     runtime.failures = 0;
                     (FanState::Released, None)
+                }
+                Target::LeaderReleased(reason) => {
+                    runtime.smoothed = None;
+                    runtime.failures = 0;
+                    (FanState::LeaderReleased(reason), None)
                 }
                 Target::Immediate(duty) => {
                     runtime.smoothed = Some(duty);
@@ -631,6 +686,63 @@ impl Engine {
         (status, Action::SetDuty(output))
     }
 
+    fn check_response(
+        &mut self,
+        status: &mut FanStatus,
+        reading: &FanReading,
+        command: Option<Command>,
+        elapsed: Duration,
+    ) -> Option<Command> {
+        if status.id.kind() == FanKind::Gpu {
+            return command;
+        }
+        let enabled = self.config.settings(&status.id).response_check;
+        let runtime = self.fans.entry(status.id.clone()).or_default();
+        let observation = match (&status.state, status.output, reading.rpm) {
+            _ if !enabled => Observation::Reset,
+            (
+                FanState::Released
+                | FanState::Calibrating
+                | FanState::SensorReleased(_)
+                | FanState::LeaderReleased(_)
+                | FanState::MonitorOnly
+                | FanState::Unavailable(_)
+                | FanState::Faulted(_),
+                ..,
+            ) => Observation::Reset,
+            (FanState::Controlled | FanState::Clamped, Some(output), Some(rpm))
+                if runtime.spin_up_left.is_zero() && runtime.mismatches == 0 =>
+            {
+                Observation::Drive {
+                    output: output.percent(),
+                    rpm,
+                }
+            }
+            _ => Observation::Pause,
+        };
+        match runtime.response.observe(observation, elapsed) {
+            Verdict::Fine => command,
+            Verdict::Kick => {
+                let full = Duty::FULL;
+                runtime.applied = Some(full.percent());
+                runtime.last_command = Some(LastCommand::Duty(full.to_raw()));
+                status.output = Some(full);
+                let hardware = match reading.mode {
+                    HardwareMode::Manual => reading.duty.map(Duty::to_raw),
+                    HardwareMode::Auto => None,
+                };
+                (hardware != Some(full.to_raw())).then(|| Command {
+                    fan: status.id.clone(),
+                    action: Action::SetDuty(full),
+                })
+            }
+            Verdict::Fault(reason) => {
+                runtime.response_fault = true;
+                Some(fault(runtime, status, reason))
+            }
+        }
+    }
+
     fn reconcile(
         &mut self,
         status: &mut FanStatus,
@@ -645,7 +757,10 @@ impl Engine {
         };
         match action {
             Action::Release => {
-                let driven = matches!(runtime.last_command, Some(LastCommand::Duty(_)));
+                let driven = matches!(
+                    runtime.last_command,
+                    Some(LastCommand::Duty(_) | LastCommand::Unreleased)
+                );
                 runtime.last_command = Some(LastCommand::Release);
                 runtime.mismatches = 0;
                 driven.then(|| Command {
@@ -665,16 +780,7 @@ impl Engine {
                 }
                 if runtime.mismatches >= MAX_WRITE_MISMATCHES {
                     let reason = "hardware did not keep the requested duty".to_owned();
-                    runtime.fault = Some(reason.clone());
-                    runtime.last_command = Some(LastCommand::Release);
-                    runtime.applied = None;
-                    status.state = FanState::Faulted(reason);
-                    status.target = None;
-                    status.output = None;
-                    return Some(Command {
-                        fan: fan.clone(),
-                        action: Action::Release,
-                    });
+                    return Some(fault(runtime, status, reason));
                 }
                 runtime.last_command = Some(LastCommand::Duty(raw));
                 (hardware_raw != Some(raw)).then(|| Command {
@@ -684,6 +790,66 @@ impl Engine {
             }
         }
     }
+}
+
+fn fault(runtime: &mut FanRuntime, status: &mut FanStatus, reason: String) -> Command {
+    runtime.fault = Some(reason.clone());
+    runtime.last_command = Some(LastCommand::Release);
+    runtime.applied = None;
+    status.state = FanState::Faulted(reason);
+    status.target = None;
+    status.output = None;
+    Command {
+        fan: status.id.clone(),
+        action: Action::Release,
+    }
+}
+
+fn fan_label(config: &Config, readings: &Readings, fan: &FanId) -> String {
+    config
+        .settings(fan)
+        .name
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| readings.fan(fan).map(|reading| reading.label.clone()))
+        .unwrap_or_else(|| fan.to_string())
+}
+
+fn control_changed(old: &Config, new: &Config, fan: &FanId) -> bool {
+    fan_changed(old, new, fan, MAX_SYNC_DEPTH)
+}
+
+fn fan_changed(old: &Config, new: &Config, fan: &FanId, depth: usize) -> bool {
+    let unnamed = |config: &Config| FanSettings {
+        name: None,
+        ..config.settings(fan)
+    };
+    let mode = new.mode(fan);
+    if old.mode(fan) != mode
+        || unnamed(old) != unnamed(new)
+        || old.calibration_for(fan) != new.calibration_for(fan)
+    {
+        return true;
+    }
+    match mode {
+        FanMode::Curve { curve } => curve_changed(old, new, &curve, MAX_SYNC_DEPTH),
+        FanMode::Sync { fan: leader } => depth == 0 || fan_changed(old, new, &leader, depth - 1),
+        FanMode::Auto | FanMode::Manual { .. } => false,
+    }
+}
+
+fn curve_changed(old: &Config, new: &Config, curve: &CurveId, depth: usize) -> bool {
+    let before = find_curve(&old.curves, curve);
+    let after = find_curve(&new.curves, curve);
+    if before != after {
+        return true;
+    }
+    after.is_some_and(|after| {
+        after
+            .kind
+            .references()
+            .iter()
+            .any(|child| depth == 0 || curve_changed(old, new, child, depth - 1))
+    })
 }
 
 fn resolve(config: &Config, fan: &FanId, evaluator: &mut CurveEvaluator<'_>) -> Target {
@@ -730,7 +896,7 @@ fn smooth(previous: f32, target: f32, tuning: &Tuning, elapsed: Duration) -> f32
 mod tests {
     use super::*;
     use crate::calibration::Phase;
-    use crate::curve::{CurveDef, CurveKind, CurvePoint};
+    use crate::curve::{CurveDef, CurveKind, CurvePoint, MixOp};
     use crate::telemetry::SensorReading;
 
     const TICK: Duration = Duration::from_secs(1);
@@ -1097,7 +1263,7 @@ mod tests {
         let mut config = config_with(&[("pwm1", FanMode::Manual { duty: Duty::OFF })]);
         config.fans.insert(
             "pwm1".into(),
-            crate::config::FanSettings {
+            FanSettings {
                 allow_stop: true,
                 ..Default::default()
             },
@@ -1135,7 +1301,7 @@ mod tests {
         )]);
         config.fans.insert(
             "pwm1".into(),
-            crate::config::FanSettings {
+            FanSettings {
                 case_fan,
                 allow_stop,
                 ..Default::default()
@@ -1160,7 +1326,7 @@ mod tests {
         let mut config = config_with(&[("pwm1", FanMode::Manual { duty: Duty::OFF })]);
         config.fans.insert(
             "pwm1".into(),
-            crate::config::FanSettings {
+            FanSettings {
                 allow_stop: true,
                 spin_up_duty: Duty::new(60.0),
                 ..Default::default()
@@ -1702,7 +1868,7 @@ mod tests {
         let mut config = config_with(modes);
         config.fans.insert(
             "pwm1".into(),
-            crate::config::FanSettings {
+            FanSettings {
                 case_fan,
                 allow_stop,
                 ..Default::default()
@@ -2211,5 +2377,280 @@ mod tests {
         let status = Rig::status(&rig.tick(), "pwm1");
         assert_eq!(status.output, Some(Duty::new(55.0)));
         assert_eq!(status.state, FanState::Clamped);
+    }
+
+    fn manual_rig(fan: &str, duty: f32) -> Rig {
+        Rig::new(
+            config_with(&[(
+                fan,
+                FanMode::Manual {
+                    duty: Duty::new(duty),
+                },
+            )]),
+            open_limits(),
+        )
+    }
+
+    fn set_rpm(rig: &mut Rig, fan: &str, rpm: Option<u32>) {
+        rig.readings
+            .fans
+            .iter_mut()
+            .find(|reading| reading.id.as_str() == fan)
+            .unwrap()
+            .rpm = rpm;
+    }
+
+    fn command_for(outcome: &TickOutcome, fan: &str) -> Option<Action> {
+        outcome
+            .commands
+            .iter()
+            .find(|command| command.fan.as_str() == fan)
+            .map(|command| command.action)
+    }
+
+    fn stall(rig: &mut Rig, fan: &str) {
+        for _ in 0..5 {
+            rig.tick();
+        }
+        set_rpm(rig, fan, Some(0));
+        for _ in 0..9 {
+            rig.tick();
+        }
+    }
+
+    #[test]
+    fn a_stalled_header_is_kicked_to_full_then_handed_to_the_bios() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        stall(&mut rig, "pwm1");
+        let outcome = rig.tick();
+        assert_eq!(
+            command_for(&outcome, "pwm1"),
+            Some(Action::SetDuty(Duty::FULL))
+        );
+        assert_eq!(Rig::status(&outcome, "pwm1").output, Some(Duty::FULL));
+        assert_eq!(command_for(&rig.tick(), "pwm1"), None);
+        let outcome = rig.tick();
+        assert_eq!(command_for(&outcome, "pwm1"), Some(Action::Release));
+        assert!(matches!(
+            Rig::status(&outcome, "pwm1").state,
+            FanState::Faulted(ref reason) if reason.contains("stopped at 40%")
+        ));
+        for _ in 0..5 {
+            let outcome = rig.tick();
+            assert_eq!(command_for(&outcome, "pwm1"), None);
+            assert!(matches!(
+                Rig::status(&outcome, "pwm1").state,
+                FanState::Faulted(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_header_with_no_fan_is_never_flagged() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        set_rpm(&mut rig, "pwm1", Some(0));
+        for _ in 0..60 {
+            assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Controlled);
+        }
+    }
+
+    #[test]
+    fn a_flat_response_hands_the_header_to_the_bios() {
+        let mut rig = Rig::new(
+            config_with(&[(
+                "pwm1",
+                FanMode::Curve {
+                    curve: "cpu".into(),
+                },
+            )]),
+            open_limits(),
+        );
+        rig.set_curve_temp(Some(45.0));
+        for _ in 0..12 {
+            rig.tick();
+        }
+        rig.set_curve_temp(Some(70.0));
+        let faulted = (0..12).find_map(|_| {
+            let outcome = rig.tick();
+            matches!(Rig::status(&outcome, "pwm1").state, FanState::Faulted(_))
+                .then(|| command_for(&outcome, "pwm1"))
+        });
+        assert_eq!(faulted, Some(Some(Action::Release)));
+    }
+
+    #[test]
+    fn the_check_can_be_turned_off_per_fan() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        let mut config = rig.engine.config().clone();
+        config.fans.entry("pwm1".into()).or_default().response_check = false;
+        rig.engine.set_config(config);
+        stall(&mut rig, "pwm1");
+        for _ in 0..20 {
+            assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Controlled);
+        }
+    }
+
+    #[test]
+    fn identify_and_critical_pause_the_stall_timer() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        stall(&mut rig, "pwm1");
+        rig.engine.identify("pwm1".into(), Duration::from_secs(60));
+        for _ in 0..20 {
+            rig.tick();
+        }
+        rig.set_temp(Some(95.0));
+        for _ in 0..20 {
+            assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Critical);
+        }
+        rig.engine.identify("pwm1".into(), Duration::ZERO);
+        rig.set_temp(Some(50.0));
+        let resumed = (0..30)
+            .map(|_| Rig::status(&rig.tick(), "pwm1"))
+            .find(|status| status.state != FanState::Critical)
+            .unwrap();
+        assert_eq!(resumed.state, FanState::Controlled);
+        assert_eq!(resumed.output, Some(Duty::FULL));
+    }
+
+    #[test]
+    fn followers_of_a_flagged_header_say_why_and_retry_brings_both_back() {
+        let mut rig = Rig::new(
+            config_with(&[
+                (
+                    "pwm1",
+                    FanMode::Manual {
+                        duty: Duty::new(40.0),
+                    },
+                ),
+                ("pwm2", FanMode::Sync { fan: "pwm1".into() }),
+            ]),
+            open_limits(),
+        );
+        stall(&mut rig, "pwm1");
+        for _ in 0..3 {
+            rig.tick();
+        }
+        let outcome = rig.tick();
+        assert!(matches!(
+            Rig::status(&outcome, "pwm2").state,
+            FanState::LeaderReleased(ref reason) if reason.contains("pwm1")
+        ));
+        set_rpm(&mut rig, "pwm1", Some(1000));
+        rig.engine.clear_fault(&"pwm1".into());
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::Controlled);
+        assert_eq!(Rig::status(&outcome, "pwm2").state, FanState::Controlled);
+    }
+
+    #[test]
+    fn saving_clears_only_the_flags_of_fans_whose_control_changed() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        stall(&mut rig, "pwm1");
+        for _ in 0..3 {
+            rig.tick();
+        }
+        let mut config = rig.engine.config().clone();
+        config.profiles.get_mut("Balanced").unwrap().fans.insert(
+            "pwm2".into(),
+            FanMode::Manual {
+                duty: Duty::new(70.0),
+            },
+        );
+        rig.engine.set_config(config.clone());
+        assert!(matches!(
+            Rig::status(&rig.tick(), "pwm1").state,
+            FanState::Faulted(_)
+        ));
+        config.fans.entry("pwm1".into()).or_default().name = Some("Front".to_owned());
+        rig.engine.set_config(config.clone());
+        assert!(matches!(
+            Rig::status(&rig.tick(), "pwm1").state,
+            FanState::Faulted(_)
+        ));
+        config.fans.entry("pwm1".into()).or_default().spin_up_duty = Duty::new(60.0);
+        rig.engine.set_config(config);
+        set_rpm(&mut rig, "pwm1", Some(1000));
+        assert_eq!(Rig::status(&rig.tick(), "pwm1").state, FanState::Controlled);
+    }
+
+    #[test]
+    fn a_failed_release_is_sent_again() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        stall(&mut rig, "pwm1");
+        rig.tick();
+        rig.tick();
+        assert_eq!(command_for(&rig.tick(), "pwm1"), Some(Action::Release));
+        rig.engine.record_release_error(&"pwm1".into());
+        assert_eq!(command_for(&rig.tick(), "pwm1"), Some(Action::Release));
+        assert_eq!(command_for(&rig.tick(), "pwm1"), None);
+    }
+
+    #[test]
+    fn mix_children_and_leaders_count_as_control_changes() {
+        let mut old = config_with(&[]);
+        old.curves.push(CurveDef {
+            id: "mix".into(),
+            name: "Mix".into(),
+            kind: CurveKind::Mix {
+                op: MixOp::Max,
+                curves: vec!["cpu".into()],
+            },
+            tuning: Tuning::default(),
+        });
+        let profile = old.profiles.get_mut("Balanced").unwrap();
+        profile.fans.insert(
+            "pwm1".into(),
+            FanMode::Curve {
+                curve: "mix".into(),
+            },
+        );
+        profile
+            .fans
+            .insert("pwm2".into(), FanMode::Sync { fan: "pwm1".into() });
+        let mut new = old.clone();
+        new.fans.entry("pwm1".into()).or_default().name = Some("Front".to_owned());
+        assert!(!control_changed(&old, &new, &"pwm1".into()));
+        assert!(!control_changed(&old, &new, &"pwm2".into()));
+        new.curves
+            .iter_mut()
+            .find(|curve| curve.id == CurveId::from("cpu"))
+            .unwrap()
+            .tuning
+            .response_secs = 4.0;
+        assert!(control_changed(&old, &new, &"pwm1".into()));
+        assert!(control_changed(&old, &new, &"pwm2".into()));
+    }
+
+    #[test]
+    fn calibrating_a_flagged_header_clears_the_flag() {
+        let mut rig = manual_rig("pwm1", 40.0);
+        stall(&mut rig, "pwm1");
+        for _ in 0..3 {
+            rig.tick();
+        }
+        set_rpm(&mut rig, "pwm1", Some(1000));
+        rig.engine.request_calibration("pwm1".into()).unwrap();
+        assert!(!matches!(
+            Rig::status(&rig.tick(), "pwm1").state,
+            FanState::Faulted(_)
+        ));
+    }
+
+    #[test]
+    fn gpu_fans_are_not_checked() {
+        let mut rig = gpu_rig(&[(
+            GPU_FAN,
+            FanMode::Manual {
+                duty: Duty::new(40.0),
+            },
+        )]);
+        set_rpm(&mut rig, GPU_FAN, Some(1000));
+        stall(&mut rig, GPU_FAN);
+        for _ in 0..20 {
+            assert_eq!(
+                Rig::status(&rig.tick(), GPU_FAN).state,
+                FanState::Controlled
+            );
+        }
     }
 }

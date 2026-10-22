@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::board::FanLimits;
 use crate::config::FanSettings;
+use crate::response;
 use crate::telemetry::Readings;
 use crate::{Duty, FanId, SensorId};
 
@@ -158,6 +159,7 @@ pub struct Calibration {
     stop_duty: Option<f32>,
     lowest_tested: f32,
     watched: Vec<Watched>,
+    response_check: bool,
 }
 
 impl Calibration {
@@ -213,6 +215,7 @@ impl Calibration {
             stop_duty: None,
             lowest_tested: 100.0,
             watched,
+            response_check: settings.response_check,
         })
     }
 
@@ -393,6 +396,17 @@ impl Calibration {
     }
 
     fn complete(&self, start_duty: Option<f32>) -> Step {
+        if self.response_check
+            && let (Some(top), Some(bottom)) = (self.points.first(), self.points.last())
+            && response::flat(
+                (bottom.duty.percent(), bottom.rpm),
+                (top.duty.percent(), top.rpm),
+            )
+        {
+            return Step::Done(CalibrationOutcome::Aborted(
+                response::NO_RESPONSE.to_owned(),
+            ));
+        }
         Step::Done(CalibrationOutcome::Completed(FanCalibration {
             stop_duty: self.stop_duty.map(Duty::new),
             start_duty: start_duty.map(Duty::new),
@@ -414,6 +428,7 @@ mod tests {
         stops_below: f32,
         starts_at: f32,
         spinning: bool,
+        flat: bool,
         rpm: Option<u32>,
     }
 
@@ -423,6 +438,7 @@ mod tests {
                 stops_below,
                 starts_at,
                 spinning: true,
+                flat: false,
                 rpm: Some(1500),
             }
         }
@@ -433,7 +449,9 @@ mod tests {
             } else if !self.spinning && duty >= self.starts_at {
                 self.spinning = true;
             }
-            self.rpm = Some(if self.spinning {
+            self.rpm = Some(if self.spinning && self.flat {
+                1500
+            } else if self.spinning {
                 (duty * 15.0) as u32
             } else {
                 0
@@ -582,6 +600,24 @@ mod tests {
         fan.rpm = Some(0);
         let run = run(FanSettings::default(), fan, SECOND);
         aborted_with(run.outcome, "does not spin at 100%");
+    }
+
+    #[test]
+    fn a_fan_whose_speed_does_not_follow_the_duty_aborts() {
+        let mut fan = SimFan::new(10.0, 15.0);
+        fan.flat = true;
+        aborted_with(
+            run(FanSettings::default(), fan, SECOND).outcome,
+            response::NO_RESPONSE,
+        );
+
+        let mut fan = SimFan::new(10.0, 15.0);
+        fan.flat = true;
+        let exempt = FanSettings {
+            response_check: false,
+            ..FanSettings::default()
+        };
+        completed(&run(exempt, fan, SECOND));
     }
 
     #[test]
