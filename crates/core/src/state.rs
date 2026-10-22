@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Duty, FanId};
 use crate::board::{BoardInfo, FanLimits};
 use crate::calibration::CalibrationView;
 use crate::config::Config;
 use crate::engine::FanStatus;
 use crate::telemetry::Readings;
+use crate::{Duty, FanId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "detail", rename_all = "snake_case")]

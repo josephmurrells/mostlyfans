@@ -22,6 +22,10 @@ pub fn bios_snapshot_path() -> PathBuf {
     data_dir().join("bios_snapshot.toml")
 }
 
+pub fn gpu_ownership_path() -> PathBuf {
+    data_dir().join("gpu_owned.toml")
+}
+
 pub fn log_dir() -> PathBuf {
     data_dir().join("logs")
 }
