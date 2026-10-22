@@ -11,4 +11,4 @@ pub mod store;
 pub mod telemetry;
 
 pub use duty::Duty;
-pub use ids::{CurveId, FanId, SensorId};
+pub use ids::{CurveId, FanId, FanKind, SensorId};
