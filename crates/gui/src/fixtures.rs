@@ -138,7 +138,7 @@ pub fn with_gpu(mut state: ControlState) -> ControlState {
         let id = gpu_fan(index);
         state.readings.fans.push(FanReading {
             id: id.clone(),
-            label: format!("NVIDIA GeForce RTX 4070 SUPER fan {}", index + 1),
+            label: format!("RTX 4070 SUPER fan {}", index + 1),
             rpm: Some(rpm),
             mode: HardwareMode::Manual,
             duty: duty.map(Duty::new),
@@ -155,7 +155,7 @@ pub fn with_gpu(mut state: ControlState) -> ControlState {
             .insert(id.clone(), FanLimits::for_gpu(Duty::new(30.0)));
         state.gpus.fans.push(GpuFanInfo {
             id,
-            gpu: "NVIDIA GeForce RTX 4070 SUPER".to_owned(),
+            gpu: "RTX 4070 SUPER".to_owned(),
             index,
             minimum: Some(Duty::new(30.0)),
         });

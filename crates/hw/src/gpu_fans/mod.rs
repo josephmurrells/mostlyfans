@@ -14,6 +14,8 @@ pub use worker::{GpuFans, GpuReadings, NOT_RESPONDING};
 
 pub const FOREIGN: &str = "controlled by another program";
 
+const BRANDS: [&str; 4] = ["NVIDIA", "GeForce", "AMD", "Radeon"];
+
 static WRITES: Mutex<()> = Mutex::new(());
 
 fn writes() -> MutexGuard<'static, ()> {
@@ -52,6 +54,19 @@ pub trait FanDriver: Send {
 
 pub type DriverOpener = Arc<dyn Fn() -> Result<Box<dyn FanDriver>, String> + Send + Sync>;
 
+pub fn short_name(name: &str) -> String {
+    let mut rest = name.trim();
+    while let Some(stripped) = BRANDS.iter().find_map(|brand| {
+        rest.strip_prefix(brand)
+            .and_then(|tail| tail.strip_prefix(' '))
+            .map(str::trim_start)
+            .filter(|tail| !tail.is_empty())
+    }) {
+        rest = stripped;
+    }
+    rest.to_owned()
+}
+
 pub fn locate<'a>(gpus: &'a [GpuDesc], fan: &FanId) -> Option<(&'a GpuDesc, u32)> {
     gpus.iter().find_map(|gpu| {
         (0..gpu.fans)
@@ -63,6 +78,19 @@ pub fn locate<'a>(gpus: &'a [GpuDesc], fan: &FanId) -> Option<(&'a GpuDesc, u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brand_prefixes_are_dropped_from_gpu_names() {
+        assert_eq!(
+            short_name("NVIDIA GeForce RTX 4070 SUPER"),
+            "RTX 4070 SUPER"
+        );
+        assert_eq!(short_name("NVIDIA RTX A4000"), "RTX A4000");
+        assert_eq!(short_name("AMD Radeon RX 7900 XTX"), "RX 7900 XTX");
+        assert_eq!(short_name("Quadro RTX 4000"), "Quadro RTX 4000");
+        assert_eq!(short_name("NVIDIA GeForce"), "GeForce");
+        assert_eq!(short_name("NVIDIAX 1"), "NVIDIAX 1");
+    }
 
     #[test]
     fn fans_are_located_by_their_id() {
