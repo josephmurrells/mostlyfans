@@ -15,7 +15,7 @@ use fanforge_core::telemetry::{FanReading, HardwareMode};
 use fanforge_core::{Duty, FanId};
 
 use super::ownership::{self, Loaded, Ownership};
-use super::{DriverOpener, FOREIGN, FanDriver, GpuDesc, locate};
+use super::{DriverOpener, FOREIGN, FanDriver, GpuDesc, locate, writes};
 
 pub const NOT_RESPONDING: &str = "GPU driver not responding";
 const POLL: Duration = Duration::from_secs(1);
@@ -39,6 +39,7 @@ struct FanSnapshot {
 #[derive(Debug, Default)]
 struct State {
     requests: BTreeMap<FanId, Action>,
+    in_flight: BTreeMap<FanId, Action>,
     release_requested: u64,
     release_done: u64,
     release_error: Option<String>,
@@ -137,7 +138,11 @@ impl GpuFans {
             };
             let manual = !stale && fan.manual;
             let duty = fan.target.filter(|_| manual).map(|target| {
-                let pending = match state.requests.get(&fan.id) {
+                let pending = match state
+                    .requests
+                    .get(&fan.id)
+                    .or_else(|| state.in_flight.get(&fan.id))
+                {
                     Some(Action::SetDuty(duty)) => Some(*duty),
                     _ => None,
                 };
@@ -178,6 +183,7 @@ impl GpuFans {
         let deadline = Instant::now() + budget;
         let mut state = self.inner.lock();
         state.requests.clear();
+        state.in_flight.clear();
         state.release_requested += 1;
         let round = state.release_requested;
         self.inner.wake.notify_all();
@@ -239,16 +245,16 @@ impl Worker {
                 let release = (state.release_done < state.release_requested)
                     .then_some(state.release_requested);
                 let requests = mem::take(&mut state.requests);
-                (
-                    if release.is_some() {
-                        BTreeMap::new()
-                    } else {
-                        requests
-                    },
-                    release,
-                )
+                let requests = if release.is_some() {
+                    BTreeMap::new()
+                } else {
+                    requests
+                };
+                state.in_flight = requests.clone();
+                (requests, release)
             };
             let round = panic::catch_unwind(AssertUnwindSafe(|| self.round(requests, release)));
+            self.inner.lock().in_flight.clear();
             if round.is_err() {
                 tracing::error!("the GPU fan driver panicked; reopening it later");
                 self.close("the GPU driver panicked".to_owned());
@@ -301,6 +307,7 @@ impl Worker {
     }
 
     fn release_leftovers(&mut self) {
+        let _writes = writes();
         let Some(driver) = &self.driver else {
             return;
         };
@@ -365,6 +372,7 @@ impl Worker {
                 if !self.owned.fans.contains(fan) {
                     return;
                 }
+                let _writes = writes();
                 match self.call(|driver| driver.restore(&gpu, index)) {
                     Ok(()) => {
                         self.written.remove(fan);
@@ -385,6 +393,7 @@ impl Worker {
     }
 
     fn set(&mut self, fan: &FanId, gpu: &GpuDesc, index: u32, duty: Duty) {
+        let _writes = writes();
         if self.halt.load(Ordering::SeqCst) {
             return;
         }
@@ -425,13 +434,16 @@ impl Worker {
         if self.owned.fans.is_empty() {
             return Ok(());
         }
+        let _writes = writes();
         let Some(driver) = &self.driver else {
             return Err("the GPU driver is unavailable".to_owned());
         };
         let mut first_error = None;
         for fan in self.owned.fans.clone() {
             let Some((gpu, index)) = locate(&self.gpus, &fan) else {
-                tracing::warn!(%fan, "an owned GPU fan is no longer present");
+                tracing::warn!(%fan, "an owned GPU fan is no longer present; forgetting it");
+                self.owned.fans.remove(&fan);
+                self.written.remove(&fan);
                 continue;
             };
             match driver.restore(gpu, index) {
@@ -472,6 +484,9 @@ impl Worker {
                 if let Some(error) = &error {
                     last_error = Some(error.clone());
                 }
+                let target = sample
+                    .target
+                    .or_else(|| self.written.get(&id).copied().filter(|_| manual));
                 fans.push(FanSnapshot {
                     foreign: manual && !self.owned.fans.contains(&id),
                     id,
@@ -480,7 +495,7 @@ impl Worker {
                     minimum: gpu.range.map(|(minimum, _)| minimum),
                     rpm: sample.rpm,
                     manual,
-                    target: sample.target,
+                    target,
                     error,
                 });
             }
@@ -670,12 +685,17 @@ mod tests {
     fn only_the_latest_command_for_a_fan_is_written() {
         let rig = rig();
         rig.fake.hold();
-        for percent in [40.0, 50.0, 60.0] {
+        rig.set(0, 40.0);
+        thread::sleep(Duration::from_millis(50));
+        for percent in [50.0, 55.0, 60.0] {
             rig.set(0, percent);
         }
         rig.fake.unhold();
         wait_until(|| rig.fake.fan(0).target == 60);
-        assert_eq!(rig.writes(), vec![Write::Speed(0, 60)]);
+        let writes = rig.writes();
+        assert_eq!(writes.last(), Some(&Write::Speed(0, 60)));
+        assert!(!writes.contains(&Write::Speed(0, 50)));
+        assert!(!writes.contains(&Write::Speed(0, 55)));
     }
 
     #[test]
@@ -785,6 +805,73 @@ mod tests {
         assert!(releaser.release(Duration::from_millis(100)).is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
         rig.fake.unhold();
+    }
+
+    #[test]
+    fn a_write_in_progress_when_the_halt_arrives_never_lands() {
+        let rig = rig();
+        let releaser = GpuReleaser::open(rig.fake.opener(), rig.path.clone());
+        rig.fake.hold();
+        rig.set(0, 60.0);
+        thread::sleep(Duration::from_millis(50));
+        rig.halt.store(true, Ordering::SeqCst);
+        let pending = {
+            let releaser = releaser.clone();
+            thread::spawn(move || releaser.release(Duration::from_secs(5)))
+        };
+        thread::sleep(Duration::from_millis(50));
+        rig.fake.unhold();
+        pending.join().unwrap().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(!rig.fake.fan(0).manual);
+        assert!(
+            !rig.writes()
+                .iter()
+                .any(|write| matches!(write, Write::Speed(..)))
+        );
+    }
+
+    #[test]
+    fn a_stale_spare_session_is_replaced_and_retried() {
+        let rig = rig();
+        rig.set(0, 60.0);
+        wait_until(|| rig.fake.fan(0).manual);
+        let releaser = GpuReleaser::open(rig.fake.opener(), rig.path.clone());
+        rig.fake.with(|gpus| gpus.expired_before = gpus.opens + 1);
+        releaser.release(Duration::from_secs(2)).unwrap();
+        assert!(!rig.fake.fan(0).manual);
+    }
+
+    #[test]
+    fn without_a_target_readback_the_last_write_is_reported() {
+        let rig = rig_with(
+            FakeGpus {
+                no_target: true,
+                ..FakeGpus::default()
+            },
+            |_| {},
+        );
+        rig.set(0, 65.0);
+        wait_until(|| rig.reading(0).unwrap().mode == HardwareMode::Manual);
+        assert_eq!(rig.reading(0).unwrap().duty, Some(Duty::new(65.0)));
+    }
+
+    #[test]
+    fn an_owned_fan_whose_gpu_is_gone_is_forgotten_on_release() {
+        let gone = FanId::for_gpu_fan("gpu/nvidia/gpu-gone", 0);
+        let rig = rig_with(FakeGpus::default(), |path| {
+            ownership::save(
+                path,
+                &Ownership {
+                    fans: [gone.clone()].into(),
+                },
+            )
+            .unwrap();
+        });
+        assert!(rig.gpus.owns_any());
+        rig.gpus.release(Duration::from_secs(2)).unwrap();
+        assert!(!rig.gpus.owns_any());
+        assert!(!rig.owned().owns(&gone));
     }
 
     #[test]

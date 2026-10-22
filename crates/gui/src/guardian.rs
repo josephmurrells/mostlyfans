@@ -187,7 +187,7 @@ fn run(args: &GuardianArgs) -> ExitCode {
                 )
                 .ok();
             let gpus = GpuReleaser::open(nvidia::opener(), paths::gpu_ownership_path());
-            if chip.is_none() && !gpus.has_session() {
+            if chip.is_none() && !gpus.has_session() && !nvidia::driver_present() {
                 tracing::error!("guardian found neither a fan controller nor a GPU driver");
                 return ExitCode::from(NO_HARDWARE_EXIT_CODE as u8);
             }

@@ -1,22 +1,20 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::Duration;
 
 use super::ownership::{self, Loaded};
-use super::{DriverOpener, FanDriver, NOT_RESPONDING};
+use super::{DriverOpener, FanDriver, NOT_RESPONDING, writes};
 
-struct Spare {
-    opener: DriverOpener,
-    driver: Option<Box<dyn FanDriver>>,
-    path: PathBuf,
-}
+type Session = Option<Box<dyn FanDriver>>;
 
 #[derive(Clone)]
 pub struct GpuReleaser {
-    spare: Arc<Mutex<Spare>>,
+    opener: DriverOpener,
+    path: PathBuf,
+    spare: Arc<Mutex<Session>>,
 }
 
 impl GpuReleaser {
@@ -25,32 +23,30 @@ impl GpuReleaser {
             .map_err(|error| tracing::info!(%error, "no spare GPU driver session"))
             .ok();
         Self {
-            spare: Arc::new(Mutex::new(Spare {
-                opener,
-                driver,
-                path,
-            })),
+            opener,
+            path,
+            spare: Arc::new(Mutex::new(driver)),
         }
     }
 
     pub fn has_session(&self) -> bool {
-        self.spare
-            .try_lock()
-            .is_ok_and(|spare| spare.driver.is_some())
+        self.spare.try_lock().is_ok_and(|session| session.is_some())
     }
 
     pub fn release(&self, budget: Duration) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
-        let spare = Arc::clone(&self.spare);
+        let releaser = self.clone();
         thread::Builder::new()
             .name("gpu-release".into())
             .spawn(move || {
-                let mut spare = spare.lock().unwrap_or_else(PoisonError::into_inner);
-                let result = panic::catch_unwind(AssertUnwindSafe(|| release(&mut spare)))
-                    .unwrap_or_else(|_| {
-                        spare.driver = None;
-                        Err("the GPU driver panicked".to_owned())
-                    });
+                let _writes = writes();
+                let result = match releaser.spare.try_lock() {
+                    Ok(mut session) => releaser.release_with(&mut session),
+                    Err(TryLockError::Poisoned(poisoned)) => {
+                        releaser.release_with(&mut poisoned.into_inner())
+                    }
+                    Err(TryLockError::WouldBlock) => releaser.release_with(&mut None),
+                };
                 sender.send(result).ok();
             })
             .map_err(|error| error.to_string())?;
@@ -58,25 +54,47 @@ impl GpuReleaser {
             .recv_timeout(budget)
             .unwrap_or_else(|_| Err(NOT_RESPONDING.to_owned()))
     }
+
+    fn release_with(&self, session: &mut Session) -> Result<(), String> {
+        let loaded = ownership::load(&self.path);
+        if let Loaded::Owned(ownership) = &loaded
+            && ownership.fans.is_empty()
+        {
+            return Ok(());
+        }
+        let fresh = session.is_none();
+        let first = self.attempt(session, &loaded);
+        if first.is_ok() || fresh {
+            return first;
+        }
+        tracing::warn!("the spare GPU driver session failed; retrying with a fresh one");
+        *session = None;
+        self.attempt(session, &loaded)
+    }
+
+    fn attempt(&self, session: &mut Session, loaded: &Loaded) -> Result<(), String> {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            if session.is_none() {
+                *session = Some((self.opener)()?);
+            }
+            match session {
+                Some(driver) => restore(driver.as_ref(), loaded),
+                None => Ok(()),
+            }
+        }))
+        .unwrap_or_else(|_| Err("the GPU driver panicked".to_owned()));
+        if result.is_err() {
+            *session = None;
+        }
+        result
+    }
 }
 
-fn release(spare: &mut Spare) -> Result<(), String> {
-    let loaded = ownership::load(&spare.path);
-    if let Loaded::Owned(ownership) = &loaded
-        && ownership.fans.is_empty()
-    {
-        return Ok(());
-    }
-    if spare.driver.is_none() {
-        spare.driver = Some((spare.opener)()?);
-    }
-    let Some(driver) = &spare.driver else {
-        return Ok(());
-    };
+fn restore(driver: &dyn FanDriver, loaded: &Loaded) -> Result<(), String> {
     let mut first_error = None;
     for gpu in driver.gpus() {
         for index in 0..gpu.fans {
-            let ours = match &loaded {
+            let ours = match loaded {
                 Loaded::Owned(ownership) => ownership.fans.contains(&gpu.fan_id(index)),
                 Loaded::Lost => driver
                     .sample(&gpu, index)
@@ -87,9 +105,6 @@ fn release(spare: &mut Spare) -> Result<(), String> {
                 first_error.get_or_insert(error);
             }
         }
-    }
-    if first_error.is_some() {
-        spare.driver = None;
     }
     first_error.map_or(Ok(()), Err)
 }

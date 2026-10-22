@@ -54,6 +54,11 @@ pub fn connected(fan: &FanReading) -> bool {
     fan.id.kind() == FanKind::Gpu || fan.rpm.is_some_and(|rpm| rpm > 0)
 }
 
+pub fn nothing_driven(state: &ControlState) -> bool {
+    let unverified = state.board.as_ref().is_some_and(|board| !board.fan_control);
+    state.monitor_only && unverified && (state.gpus.fans.is_empty() || state.gpus.monitor_only)
+}
+
 pub fn auto_name(fan: &FanId) -> &'static str {
     match fan.kind() {
         FanKind::Header => "BIOS",

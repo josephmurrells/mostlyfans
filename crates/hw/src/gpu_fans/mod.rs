@@ -5,7 +5,7 @@ pub mod ownership;
 mod release;
 mod worker;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use fanforge_core::FanId;
 
@@ -13,6 +13,12 @@ pub use release::GpuReleaser;
 pub use worker::{GpuFans, GpuReadings, NOT_RESPONDING};
 
 pub const FOREIGN: &str = "controlled by another program";
+
+static WRITES: Mutex<()> = Mutex::new(());
+
+fn writes() -> MutexGuard<'static, ()> {
+    WRITES.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuDesc {

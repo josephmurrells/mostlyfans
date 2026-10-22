@@ -419,6 +419,8 @@ impl Engine {
                 let runtime = self.fans.entry(reading.id.clone()).or_default();
                 runtime.last_command = None;
                 runtime.mismatches = 0;
+                runtime.write_errors = 0;
+                runtime.fault = None;
                 outcome.fans.push(status);
                 continue;
             }
@@ -970,6 +972,33 @@ mod tests {
             Some(Action::SetDuty(Duty::new(60.0)))
         );
         assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::Controlled);
+    }
+
+    #[test]
+    fn a_driver_reset_clears_gpu_write_faults() {
+        let mut rig = gpu_rig(&[(
+            GPU_FAN,
+            FanMode::Manual {
+                duty: Duty::new(60.0),
+            },
+        )]);
+        rig.tick();
+        for _ in 0..MAX_WRITE_MISMATCHES {
+            rig.engine
+                .record_apply_error(&GPU_FAN.into(), "GPU is lost");
+        }
+        assert!(matches!(
+            Rig::status(&rig.tick(), GPU_FAN).state,
+            FanState::Faulted(_)
+        ));
+        rig.readings.fans.last_mut().unwrap().unavailable =
+            Some("GPU driver not responding".into());
+        rig.tick();
+        rig.readings.fans.last_mut().unwrap().unavailable = None;
+        assert_eq!(
+            Rig::status(&rig.tick(), GPU_FAN).state,
+            FanState::Controlled
+        );
     }
 
     #[test]

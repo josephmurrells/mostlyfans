@@ -51,6 +51,9 @@ fn group_name(kind: FanKind) -> &'static str {
 }
 
 pub fn absent_gpu_fans(config: &Config, state: &ControlState) -> Vec<FanId> {
+    if state.gpus.fans.is_empty() {
+        return Vec::new();
+    }
     let mut absent: Vec<FanId> = config
         .fans
         .keys()
@@ -101,6 +104,7 @@ pub struct FanPage<'a> {
     pub draft: &'a mut Config,
     pub link: &'a dyn ControlLink,
     pub identify_block: Option<&'a str>,
+    pub gpu_identify_block: Option<&'a str>,
     pub setup_skipped: bool,
     pub pinned: &'a [FanId],
 }
@@ -303,6 +307,11 @@ impl FansView {
         let mut touched = false;
         let hardware_limits = state.limits.get(fan).copied().unwrap_or_default();
         let gpu = fan.kind() == FanKind::Gpu;
+        let block = if gpu {
+            page.gpu_identify_block
+        } else {
+            page.identify_block
+        };
 
         ui.horizontal(|ui| {
             let mut name = edited.name.clone().unwrap_or_default();
@@ -322,7 +331,7 @@ impl FansView {
             }
             ui.label(RichText::new(icons::RENAME).color(theme::of(ui).text_muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                identify(ui, page, fan, status.map(|status| &status.state));
+                identify(ui, page, fan, block, status.map(|status| &status.state));
             });
         });
         let mut subtitle = reading.label.clone();
@@ -333,7 +342,7 @@ impl FansView {
             subtitle.push_str(&format!(" · minimum {} (driver)", hardware_limits.floor));
         }
         ui.label(widgets::muted(subtitle));
-        if let Some(reason) = page.identify_block {
+        if let Some(reason) = block {
             ui.label(widgets::caption(
                 ui,
                 format!("Identify is unavailable: {reason}."),
@@ -527,14 +536,18 @@ fn calibrating<'a>(page: &'a FanPage<'_>, fan: &FanId) -> Option<&'a Calibration
         .filter(|progress| &progress.fan == fan)
 }
 
-fn identify(ui: &mut egui::Ui, page: &FanPage<'_>, fan: &FanId, state: Option<&FanState>) {
+fn identify(
+    ui: &mut egui::Ui,
+    page: &FanPage<'_>,
+    fan: &FanId,
+    block: Option<&str>,
+    state: Option<&FanState>,
+) {
     if matches!(state, Some(FanState::Identifying)) {
         widgets::spinner_label(ui, "Spinning…");
         return;
     }
-    let block = page
-        .identify_block
-        .or_else(|| calibrating(page, fan).map(|_| "This fan is being calibrated"));
+    let block = block.or_else(|| calibrating(page, fan).map(|_| "This fan is being calibrated"));
     let button = ui.add_enabled(
         block.is_none(),
         egui::Button::new(widgets::with_icon(icons::IDENTIFY, "Identify")),
@@ -1037,7 +1050,7 @@ mod tests {
                 .fans
                 .insert(second.clone(), FanMode::Sync { fan: gpu.clone() });
         }
-        let state = crate::fixtures::state();
+        let state = crate::fixtures::with_gpu(crate::fixtures::state());
         assert_eq!(
             absent_gpu_fans(&config, &state),
             vec![gpu.clone(), second.clone()]
