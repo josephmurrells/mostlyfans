@@ -26,8 +26,7 @@ pub fn overall(status: &ControlStatus, state: Option<&ControlState>) -> Overall 
     let Some(state) = state else {
         return Overall::Starting;
     };
-    let unverified = state.board.as_ref().is_some_and(|board| !board.fan_control);
-    if !(state.monitor_only && unverified) {
+    if !crate::format::nothing_driven(state) {
         if state.critical {
             return Overall::Critical;
         }

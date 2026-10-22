@@ -75,7 +75,7 @@ impl Heartbeat {
 pub struct Shared {
     pub state: RwLock<Option<Arc<ControlState>>>,
     pub heartbeat: Heartbeat,
-    halted: AtomicBool,
+    halted: Arc<AtomicBool>,
 }
 
 impl Default for Shared {
@@ -83,7 +83,7 @@ impl Default for Shared {
         Self {
             state: RwLock::new(None),
             heartbeat: Heartbeat::new(),
-            halted: AtomicBool::new(false),
+            halted: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -99,6 +99,10 @@ impl Shared {
 
     pub fn halt_flag(&self) -> &AtomicBool {
         &self.halted
+    }
+
+    pub fn halt_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.halted)
     }
 
     pub fn state(&self) -> Option<Arc<ControlState>> {

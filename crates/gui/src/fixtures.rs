@@ -4,14 +4,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use fanforge_control::controller::CommandResult;
-use fanforge_core::board::{BoardIdentity, BoardInfo, fan_limits};
+use fanforge_core::board::{BoardIdentity, BoardInfo, FanLimits, fan_limits};
 use fanforge_core::calibration::{
     CalibrationOutcome, CalibrationProgress, CalibrationReport, CalibrationView, Phase,
 };
 use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
 use fanforge_core::engine::{FanState, FanStatus};
-use fanforge_core::state::{ControlState, HardwareStatus};
+use fanforge_core::state::{ControlState, GpuFanInfo, GpuState, HardwareStatus};
 use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
 use fanforge_core::{CurveId, Duty, FanId, SensorId};
 
@@ -76,6 +76,7 @@ pub fn state() -> ControlState {
             HardwareMode::Auto
         },
         duty: duty.map(Duty::new),
+        unavailable: None,
     };
     let status = |index: usize, state: FanState, output: Option<f32>| FanStatus {
         id: fan(index),
@@ -122,7 +123,57 @@ pub fn state() -> ControlState {
         conflicts: Vec::new(),
         warnings: Vec::new(),
         calibration: CalibrationView::default(),
+        gpus: GpuState::default(),
     }
+}
+
+pub const GPU: &str = "gpu/nvidia/gpu-4edf3223";
+
+pub fn gpu_fan(index: u32) -> FanId {
+    FanId::for_gpu_fan(GPU, index)
+}
+
+pub fn with_gpu(mut state: ControlState) -> ControlState {
+    for (index, rpm, duty) in [(0, 1540, Some(45.0)), (1, 1525, Some(45.0))] {
+        let id = gpu_fan(index);
+        state.readings.fans.push(FanReading {
+            id: id.clone(),
+            label: format!("RTX 4070 SUPER fan {}", index + 1),
+            rpm: Some(rpm),
+            mode: HardwareMode::Manual,
+            duty: duty.map(Duty::new),
+            unavailable: None,
+        });
+        state.fans.push(FanStatus {
+            id: id.clone(),
+            state: FanState::Controlled,
+            target: duty.map(Duty::new),
+            output: duty.map(Duty::new),
+        });
+        state
+            .limits
+            .insert(id.clone(), FanLimits::for_gpu(Duty::new(30.0)));
+        state.gpus.fans.push(GpuFanInfo {
+            id,
+            gpu: "RTX 4070 SUPER".to_owned(),
+            index,
+            minimum: Some(Duty::new(30.0)),
+        });
+    }
+    let curve = profile_curve(&state.config);
+    let active = state.config.active_profile.clone();
+    if let Some(profile) = state.config.profiles.get_mut(&active) {
+        profile.fans.insert(gpu_fan(0), FanMode::Curve { curve });
+    }
+    state
+}
+
+fn profile_curve(config: &Config) -> CurveId {
+    config
+        .curves
+        .first()
+        .map(|curve| curve.id.clone())
+        .unwrap_or_else(|| "cpu".into())
 }
 
 #[derive(Debug)]

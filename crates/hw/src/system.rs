@@ -244,6 +244,7 @@ impl<P: PortIo> Hardware<P> {
                     rpm: chip.rpm[index],
                     mode,
                     duty: (mode == HardwareMode::Manual).then(|| Duty::from_raw(state.duty)),
+                    unavailable: None,
                 }
             })
             .collect();

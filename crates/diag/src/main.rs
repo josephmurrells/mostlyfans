@@ -13,6 +13,8 @@ use fanforge_core::telemetry::is_plausible;
 use fanforge_hw::HwError;
 use fanforge_hw::amd::AmdCpu;
 use fanforge_hw::board::detect_identity;
+use fanforge_hw::gpu_fans::nvidia::NvidiaFans;
+use fanforge_hw::gpu_fans::{FanDriver, FanSample, GpuDesc};
 use fanforge_hw::pawnio;
 use fanforge_hw::sensors::cores::CoreTempSource;
 use fanforge_hw::sensors::{self, SensorSource};
@@ -78,6 +80,32 @@ enum Command {
     },
     #[command(about = "Return every fan channel to BIOS control")]
     Restore,
+    #[command(about = "List NVIDIA GPU fans and their speeds without changing anything")]
+    Gpu,
+    #[command(
+        about = "Temporarily set one NVIDIA GPU fan to a fixed speed, then return it to the driver"
+    )]
+    SetGpuFan {
+        #[arg(long, default_value_t = 1, help = "GPU number from `gpu`")]
+        gpu: usize,
+        #[arg(long, help = "Fan number from `gpu`")]
+        fan: u32,
+        #[arg(
+            long,
+            help = "Speed in percent (the driver minimum or 30, whichever is higher, to 100)"
+        )]
+        duty: u32,
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Seconds before the driver gets the fan back"
+        )]
+        timeout: u64,
+        #[arg(long, help = "Run even if FanForge is running")]
+        force: bool,
+    },
+    #[command(about = "Return every NVIDIA GPU fan to the driver")]
+    RestoreGpu,
 }
 
 fn main() -> ExitCode {
@@ -100,6 +128,15 @@ fn main() -> ExitCode {
             force,
         ),
         Command::Restore => restore(),
+        Command::Gpu => gpu(),
+        Command::SetGpuFan {
+            gpu,
+            fan,
+            duty,
+            timeout,
+            force,
+        } => set_gpu_fan(gpu, fan, duty, Duration::from_secs(timeout), force),
+        Command::RestoreGpu => restore_gpu(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -365,5 +402,130 @@ fn restore() -> DiagResult {
     }
     force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3)?;
     println!("all {} channels returned to BIOS control", chip.fan_count());
+    Ok(())
+}
+
+fn describe(sample: Result<FanSample, String>) -> String {
+    let Ok(sample) = sample else {
+        return sample.err().unwrap_or_default();
+    };
+    let value = |value: Option<u32>, unit: &str| {
+        value.map_or_else(|| "n/a".to_owned(), |value| format!("{value}{unit}"))
+    };
+    let mode = match sample.manual {
+        Some(true) => "manual",
+        Some(false) => "driver",
+        None => "n/a",
+    };
+    format!(
+        "speed {:>5}  target {:>5}  {:>9}  mode {mode}",
+        value(sample.percent, "%"),
+        value(sample.target, "%"),
+        value(sample.rpm, " rpm"),
+    )
+}
+
+fn gpu() -> DiagResult {
+    let started = Instant::now();
+    let fans = NvidiaFans::open()?;
+    println!("NVML started in {} ms", started.elapsed().as_millis());
+    if fans.gpus().is_empty() {
+        println!("no NVIDIA GPUs");
+    }
+    for (index, gpu) in fans.gpus().iter().enumerate() {
+        let range = gpu.range.map_or_else(
+            || "unknown".to_owned(),
+            |(min, max)| format!("{min}-{max}%"),
+        );
+        println!(
+            "GPU {}: {} ({}), {} fans, range {range}",
+            index + 1,
+            gpu.label,
+            gpu.key,
+            gpu.fans
+        );
+        for fan in 0..gpu.fans {
+            println!("  fan {}: {}", fan + 1, describe(fans.sample(gpu, fan)));
+        }
+    }
+    Ok(())
+}
+
+fn set_gpu_fan(gpu: usize, fan: u32, duty: u32, timeout: Duration, force: bool) -> DiagResult {
+    if app_running() && !force {
+        return Err("FanForge is running; quit it from the tray first or pass --force".into());
+    }
+    let fans = NvidiaFans::open()?;
+    let gpus = fans.gpus();
+    let target: &GpuDesc = gpu
+        .checked_sub(1)
+        .and_then(|index| gpus.get(index))
+        .ok_or_else(|| format!("there are {} NVIDIA GPUs", fans.gpus().len()))?;
+    let index = fan
+        .checked_sub(1)
+        .filter(|&index| index < target.fans)
+        .ok_or_else(|| format!("{} has {} fans", target.label, target.fans))?;
+    let (min, max) = target.range.unwrap_or((MIN_DIAG_DUTY as u32, 100));
+    let min = min.max(MIN_DIAG_DUTY as u32);
+    if !(min..=max).contains(&duty) {
+        return Err(format!("duty must be between {min} and {max}").into());
+    }
+    if fans.sample(target, index)?.manual == Some(true) {
+        return Err(
+            "this fan is already in manual mode; another program may be controlling it".into(),
+        );
+    }
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&interrupted);
+    ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst))?;
+
+    if let Err(error) = fans.set_speed(target, index, duty) {
+        fans.restore(target, index).ok();
+        return Err(error.into());
+    }
+    println!(
+        "{} fan {fan} set to {duty}% for up to {}s (Ctrl+C returns it sooner)",
+        target.label,
+        timeout.as_secs()
+    );
+    let started = Instant::now();
+    while started.elapsed() < timeout && !interrupted.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_secs(1));
+        println!(
+            "{:>3}s  {}",
+            started.elapsed().as_secs(),
+            describe(fans.sample(target, index))
+        );
+    }
+    let restored = fans.restore(target, index);
+    if restored.is_ok() {
+        println!("{} fan {fan} returned to the driver", target.label);
+        for second in 1..=3 {
+            thread::sleep(Duration::from_secs(1));
+            println!("+{second}s  {}", describe(fans.sample(target, index)));
+        }
+    }
+    restored?;
+    Ok(())
+}
+
+fn restore_gpu() -> DiagResult {
+    let fans = NvidiaFans::open()?;
+    let mut failed = false;
+    for gpu in fans.gpus() {
+        for fan in 0..gpu.fans {
+            match fans.restore(&gpu, fan) {
+                Ok(()) => println!("{} fan {} returned to the driver", gpu.label, fan + 1),
+                Err(error) => {
+                    failed = true;
+                    println!("{} fan {}: {error}", gpu.label, fan + 1);
+                }
+            }
+        }
+    }
+    if failed {
+        return Err("some GPU fans could not be returned to the driver".into());
+    }
     Ok(())
 }

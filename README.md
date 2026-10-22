@@ -1,10 +1,10 @@
 # FanForge
 
-Fan control for Windows. FanForge reads your motherboard's fan sockets and temperature sensors and drives your case and CPU fans from temperature curves you set. It's a small portable app that lives in the system tray.
+Fan control for Windows. FanForge reads your motherboard's fan sockets and temperature sensors and drives your case, CPU and NVIDIA graphics card fans from temperature curves you set. It's a small portable app that lives in the system tray.
 
 - **Curves for every fan:** follow the CPU, GPU, a drive or a motherboard sensor, or run at a fixed speed. Three profiles to start with (Silent, Balanced, Performance), each with its own fan settings, switchable from the window or the tray.
 - **Every temperature in one place:** CPU (including each core on supported CPUs), motherboard, GPU and drive temperatures, with the lowest and highest since start and a short history. Pin the ones you care about to the Overview.
-- **Safe by default:** fans never drop below a minimum speed, go to full speed if the CPU gets too hot or a sensor fails, and go back to your BIOS fan settings when FanForge stops.
+- **Safe by default:** fans never drop below a minimum speed, go to full speed if the CPU gets too hot or a sensor fails, and go back to your BIOS fan settings (or the graphics driver's) when FanForge stops.
 - **Works on its own:** no other monitoring tools needed. FanForge talks to the hardware through the signed PawnIO driver.
 
 A few terms used below: a **fan header** is a fan socket on the motherboard; **duty** is how much power a fan gets, in %; **BIOS control** means the motherboard's own fan settings are in charge.
@@ -12,8 +12,8 @@ A few terms used below: a **fan header** is a fan socket on the motherboard; **d
 ## Requirements
 
 - Windows 11, 64-bit, and administrator rights. Windows 10 should work but hasn't been tested.
-- A motherboard with a supported ITE or Nuvoton fan controller chip, found on many ASUS, Gigabyte, MSI and ASRock boards. See [Supported hardware](#supported-hardware).
-- The [PawnIO](https://pawnio.eu) driver. FanForge offers to install it for you.
+- A motherboard with a supported ITE or Nuvoton fan controller chip, found on many ASUS, Gigabyte, MSI and ASRock boards, or an NVIDIA graphics card. See [Supported hardware](#supported-hardware).
+- The [PawnIO](https://pawnio.eu) driver for the motherboard fans. FanForge offers to install it for you. Graphics card fans work without it.
 
 ## Getting started
 
@@ -33,7 +33,7 @@ Closing the window keeps FanForge running in the tray. To stop it, choose **Quit
 
 - **Overview:** the temperatures and fans that matter most at a glance. Right-click a tile to unpin it.
 - **Temperatures:** every sensor FanForge can read, grouped by CPU, motherboard, GPU, drives and other. Pin any of them to the Overview, or use **Reset Overview to automatic** to go back to the default selection. Sensors that aren't connected are folded away under "Not reporting".
-- **Fans:** each fan's speed and settings: **Control** (BIOS, fixed, curve, or follow another fan), name, header type, **Minimum duty**, **Allow 0 RPM**, Identify, Calibrate and Pin to Overview.
+- **Fans:** each fan's speed and settings: **Control** (BIOS, fixed, curve, or follow another fan), name, header type, **Minimum duty**, **Allow 0 RPM**, Identify, Calibrate and Pin to Overview. Graphics card fans are listed in their own group, with **Driver** instead of BIOS.
 - **Curves:** create and edit temperature curves, and choose how quickly each one responds (Fast, Smooth or Gentle).
 - **Settings:** profiles, the safety sensor and critical temperature, the safety switches, Start with Windows, and **About** (which fan controller chip you have, and **Open log folder**).
 
@@ -41,11 +41,11 @@ Closing the window keeps FanForge running in the tray. To stop it, choose **Quit
 
 FanForge is built so a mistake, a crash or a bad setting can't leave your PC without cooling.
 
-- **Minimum speeds:** every fan keeps at least 30%, or 20% once you mark it as a case fan. A fan only stops completely if it's a case fan and you turn on **Allow 0 RPM**. A pump may need more than 30%, so give it a higher **Minimum duty**.
-- **Critical temperature:** if the CPU reaches 85 °C (you can change this), every fan goes to full speed until it cools below the "Back to normal below" temperature.
+- **Minimum speeds:** every fan keeps at least 30%, or 20% once you mark it as a case fan. A fan only stops completely if it's a case fan and you turn on **Allow 0 RPM**. A pump may need more than 30%, so give it a higher **Minimum duty**. Graphics card fans keep at least the driver's minimum (and never less than 30%) and never stop while FanForge drives them; set their **Control** to **Driver** to get the card's own quiet mode with 0 RPM at idle back.
+- **Critical temperature:** if the CPU reaches 85 °C (you can change this), every fan goes to full speed until it cools below the "Back to normal below" temperature. That includes graphics card fans left on **Driver**.
 - **Failed sensors:** if a sensor a curve uses stops reporting, that fan goes to full speed. If the safety sensor stops, every fan does.
-- **Back to BIOS control:** when you quit, sign out, shut down or sleep, or if FanForge crashes or is stopped with **End task** in Task Manager, every fan goes back to your BIOS fan settings. A small watchdog process handles this even if the main app is killed. The one exception is Task Manager's **End process tree**, which stops the watchdog too: fans then stay at their last speed, never below their minimum, until FanForge next starts.
-- **Other fan tools:** if FanControl, SpeedFan, Argus Monitor, Fan Xpert, AI Suite 3 or Armoury Crate is running, FanForge only monitors and never touches the fans, so the two can't fight.
+- **Back to BIOS control:** when you quit, sign out, shut down or sleep, or if FanForge crashes or is stopped with **End task** in Task Manager, every fan goes back to your BIOS fan settings, and graphics card fans go back to the driver. A small watchdog process handles this even if the main app is killed. The one exception is Task Manager's **End process tree**, which stops the watchdog too: fans then stay at their last speed, never below their minimum, until FanForge next starts (or, for graphics card fans, until the PC restarts).
+- **Other fan tools:** if FanControl, SpeedFan, Argus Monitor, Fan Xpert, AI Suite 3 or Armoury Crate is running, FanForge only monitors and never touches the fans, so the two can't fight. If MSI Afterburner, EVGA Precision X1 or ASUS GPU Tweak III is running, only the graphics card fans are left alone. A graphics card fan that another program has already set to a manual speed is never taken over.
 
 You can turn off the critical-temperature and failed-sensor overrides in Settings. A warning stays on screen while either is off, and reaching the critical temperature still shows a red alert. The minimum speeds and the return to BIOS control are always on.
 
@@ -63,6 +63,11 @@ You can turn off the critical-temperature and failed-sensor overrides in Setting
 
 To see which chip you have, open **Settings → About → Fan controller**. On a chip that isn't in this table, FanForge finds no fan headers and says so. Some larger Gigabyte boards have a second fan chip; fans on that second chip don't show up yet.
 
+**Graphics card fans**
+
+- **NVIDIA:** GeForce cards from the GTX 900 series on with driver fan control (most desktop cards; laptops usually don't allow it), through the driver's NVML. Tested on an RTX 4070 SUPER.
+- **AMD Radeon:** not yet; planned.
+
 **Temperatures**
 
 - **CPU:** AMD Ryzen and Intel Core. Per-core temperatures on Intel, and on 8- and 16-core Ryzen 3000 and 5000 desktop CPUs (6- and 12-core models not yet). Per-core readings are for display; curves use the overall CPU temperature.
@@ -73,6 +78,7 @@ To see which chip you have, open **Settings → About → Fan controller**. On a
 
 - **Monitoring tools** like HWiNFO and HWMonitor can run at the same time. LibreHardwareMonitor and OpenHardwareMonitor can too, but FanForge shows a warning while they run, because their fan control would fight FanForge's; leave it off.
 - **Other fan controllers** put FanForge into monitoring-only mode while they run (see [Safety](#safety)).
+- **MSI Afterburner** and similar GPU tools are fine for overlays and overclocking. While one runs, FanForge leaves the graphics card fans to it and keeps controlling the rest. If you want FanForge to drive the graphics card fans, close the tool, or turn its fan control off and restart it so the fans go back to the driver.
 - **Anti-cheat:** FanForge uses PawnIO, a signed kernel driver, to reach the hardware. Some anti-cheat systems are wary of hardware-access drivers. PawnIO stays installed after you quit FanForge. If a game objects, uninstalling PawnIO from **Settings > Apps** removes it, but other tools that use PawnIO (such as FanControl and LibreHardwareMonitor) will stop working too.
 - **Windows warnings:** FanForge isn't code-signed yet, so Windows SmartScreen and the administrator prompt show "unknown publisher".
 

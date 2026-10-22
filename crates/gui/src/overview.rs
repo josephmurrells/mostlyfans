@@ -4,7 +4,7 @@ use std::time::Instant;
 use eframe::egui::{self, Id, RichText, vec2};
 use fanforge_core::state::ControlState;
 use fanforge_core::telemetry::{FanReading, SensorReading};
-use fanforge_core::{FanId, SensorId};
+use fanforge_core::{FanId, FanKind, SensorId};
 
 use crate::format;
 use crate::history::History;
@@ -86,6 +86,7 @@ pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config
         .readings
         .fans
         .iter()
+        .filter(|fan| fan.id.kind() == FanKind::Header)
         .filter(|fan| format::connected(fan) && !format::is_named(config, &fan.id))
         .map(|fan| fan.id.clone())
         .collect()
@@ -320,7 +321,6 @@ fn fan_card(
         widgets::clickable_card(ui, Id::unique(("fan-card", fan.id.as_str())), &name, |ui| {
             let palette = theme::of(ui);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&name).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !live {
                         widgets::status(ui, Tone::Neutral, "BIOS control");
@@ -328,6 +328,9 @@ fn fan_card(
                         let (text, tone) = format::fan_state(&status.state);
                         widgets::status(ui, tone, &text);
                     }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(&name).strong()).wrap());
+                    });
                 });
             });
             let rpm = if connected {
@@ -354,9 +357,15 @@ fn fan_card(
             let duty = fan.duty.map(|duty| duty.percent());
             widgets::duty_bar(ui, ui.available_width(), duty, Some(floor.percent));
             ui.horizontal(|ui| {
-                widgets::chip(ui, &format::mode_summary(&state.config, state, &mode));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(widgets::caption(ui, format::duty(fan.duty)));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                        widgets::chip(
+                            ui,
+                            &format::mode_summary(&state.config, state, &fan.id, &mode),
+                        );
+                    });
                 });
             });
         });

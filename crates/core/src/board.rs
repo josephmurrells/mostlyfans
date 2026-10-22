@@ -11,6 +11,8 @@ pub const CASE_FAN_FLOOR: Duty = Duty::new_const(20.0);
 pub struct FanLimits {
     pub floor: Duty,
     pub stop_permitted: bool,
+    #[serde(default)]
+    pub fixed: bool,
 }
 
 impl Default for FanLimits {
@@ -18,16 +20,26 @@ impl Default for FanLimits {
         Self {
             floor: SAFETY_FLOOR,
             stop_permitted: false,
+            fixed: false,
         }
     }
 }
 
 impl FanLimits {
+    pub fn for_gpu(driver_minimum: Duty) -> Self {
+        Self {
+            floor: Duty::new(driver_minimum.percent().max(SAFETY_FLOOR.percent())),
+            stop_permitted: false,
+            fixed: true,
+        }
+    }
+
     pub fn for_header(self, case_fan: bool) -> Self {
-        if case_fan {
+        if case_fan && !self.fixed {
             Self {
                 floor: CASE_FAN_FLOOR,
                 stop_permitted: true,
+                fixed: false,
             }
         } else {
             self
@@ -96,8 +108,19 @@ mod tests {
             limits.for_header(true),
             FanLimits {
                 floor: CASE_FAN_FLOOR,
-                stop_permitted: true
+                stop_permitted: true,
+                fixed: false,
             }
         );
+    }
+
+    #[test]
+    fn gpu_fans_keep_the_driver_minimum_and_never_stop() {
+        let gpu = FanLimits::for_gpu(Duty::new(30.0));
+        assert_eq!(gpu.floor, SAFETY_FLOOR);
+        assert_eq!(FanLimits::for_gpu(Duty::new(10.0)).floor, SAFETY_FLOOR);
+        assert_eq!(FanLimits::for_gpu(Duty::new(45.0)).floor, Duty::new(45.0));
+        assert_eq!(gpu.for_header(true), gpu);
+        assert!(!gpu.for_header(true).stop_permitted);
     }
 }

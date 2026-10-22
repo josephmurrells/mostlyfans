@@ -603,6 +603,7 @@ impl Shell {
                         draft,
                         link: &*self.link,
                         identify_block: identify_block(status, state),
+                        gpu_identify_block: gpu_identify_block(status, state),
                         setup_skipped: self.prefs.setup_skipped,
                         pinned: &pinned_fans,
                     },
@@ -684,6 +685,16 @@ impl Shell {
             Some(SwitchChoice::Cancel) => self.switch_prompt = None,
             None => {}
         }
+    }
+}
+
+fn gpu_identify_block(status: &ControlStatus, state: &ControlState) -> Option<&'static str> {
+    if matches!(status, ControlStatus::Stopped(_)) {
+        Some("Fan control is stopped")
+    } else if state.gpus.monitor_only {
+        Some("Monitor-only mode: FanForge is not controlling the graphics card fans")
+    } else {
+        None
     }
 }
 
