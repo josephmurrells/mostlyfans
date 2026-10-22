@@ -8,10 +8,10 @@ How FanForge works under the hood: the code layout, how each chip is driven, the
 |---|---|---|
 | `fanforge-core` | – | Curves, control engine, safety rules, config, published state. Platform independent. |
 | `fanforge-win` | – | Small safe wrappers over Win32 (SDDL, named objects, pipes, process spawning, power and session events, shortcuts, System32 DLL loading, drive property queries). |
-| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe on the multi-bank ITE chips), AMD (SMN) and Intel (MSR) CPU temperatures, GPU and drive temperature sources. |
+| `fanforge-hw` | – | PawnIO bindings, ISA/PCI bus mutexes, table-driven ITE and Nuvoton Super I/O drivers (bank-safe on the multi-bank ITE chips), AMD (SMN) and Intel (MSR) CPU temperatures, GPU and drive temperature sources, NVIDIA GPU fan control. |
 | `fanforge-control` | – | Control loop runtime, in-process controller, watchdog, guardian protocol, old-service removal. |
 | `fanforge-gui` | `fanforge.exe` | egui desktop app with tray icon. Runs the control loop in-process and doubles as its own guardian (`--guardian`). |
-| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, pm-table, dump, diff, guarded set-pwm, restore. |
+| `fanforge-diag` | `fanforge-diag.exe` | Diagnostics: detect, read, temps, pm-table, dump, diff, guarded set-pwm, restore, gpu, guarded set-gpu-fan, restore-gpu. |
 
 ## Chip support
 
@@ -54,6 +54,19 @@ FanForge supports fan control on a chip when public sources (LibreHardwareMonito
 - **Files:** settings and logs live in `C:\ProgramData\FanForge`, locked down to SYSTEM and Administrators, because an elevated app must not read files a normal program could change. "Start with Windows" copies the exe to `C:\Program Files\FanForge` for the same reason, and registers a scheduled task (`FanForge`, `--minimized`, no time limit, ignores battery state). Release builds embed `requireAdministrator`; debug builds use `asInvoker` so tests can spawn them.
 - **Process rules:** one copy per PC; a second start brings the open window forward (it still shows a UAC prompt, since the manifest requires elevation), and a start from another user session is refused. If the autostart task points somewhere else, Settings offers **Repair**. The Program Files copy is refreshed whenever a different portable exe runs. If the old service build is installed, FanForge offers to stop and remove it; declining leaves it monitor-only.
 
+## GPU fan control
+
+NVIDIA only so far, through the documented NVML calls (`nvmlDeviceGetNumFans`, `nvmlDeviceGetMinMaxFanSpeed`, `nvmlDeviceGetFanControlPolicy_v2`, `nvmlDeviceGetTargetFanSpeed`, `nvmlDeviceSetFanSpeed_v2`, `nvmlDeviceSetDefaultFanSpeed_v2`). Setting a speed needs administrator rights.
+
+- **Ids and limits:** each fan is `gpu/nvidia/<uuid>/fan<N>`, so ids survive reboots and PCIe changes. A fan's kind comes from its id, so a GPU fan can never get header limits: its floor is the driver minimum (never below 30%), it never stops, and the config rejects **Case fan**, **Allow 0 RPM**, calibration and following a fan of the other kind. A GPU fan whose minimum isn't known yet gets no commands. Outputs are whole percent, because that's all the driver holds.
+- **Worker:** a `gpu-fans` thread owns the NVML session so a slow or hung driver (TDR, driver update) can never stall the control loop and trip the watchdog. The loop leaves the newest command per fan in a slot (never a queue) and reads the latest sample. The worker checks the halt flag right before every write. Readings older than max(3 intervals, 3 s) mark every GPU fan "GPU driver not responding"; that clears by itself when the driver answers again. A failed or panicking driver is dropped and reopened every 10 s.
+- **Reading back:** the target speed, not the measured speed, which ramps for several seconds. While the driver still holds the last value written, the newest pending command is reported, so the engine's mismatch check isn't tripped by the worker's lag.
+- **Claiming:** a fan already in manual mode that FanForge doesn't own is never claimed and shows "controlled by another program". Before the first write to a fan, it's recorded in `gpu_owned.toml`; if that file can't be written, the fan isn't touched.
+- **Release:** `nvmlDeviceSetDefaultFanSpeed_v2` hands the fan back to the driver, whose own curve (with 0 RPM at idle) resumes at once, and the fan leaves `gpu_owned.toml`. A manual speed survives the process being killed, so every release path covers GPU fans: quit, session end, sleep, the watchdog, the controller's direct release and the guardian. Those fail-safe paths use a spare NVML session opened at startup, run alongside the chip release within the same budget, and never rewrite `gpu_owned.toml`. At the next start, fans left in the file are handed back; if the file is unreadable, every GPU fan in manual mode is. The guardian keeps running without PawnIO as long as NVML opens.
+- **Board failures stay apart:** the board keeps its own lock-timeout, re-initialisation and retry handling. While the board read is skipped, GPU fans still get commands using the last good board sensors, until the busy-bus warning limit; after that those sensors count as missing.
+- **Conflicts:** MSI Afterburner, EVGA Precision X1 and ASUS GPU Tweak III make only GPU fans monitor-only; the fan tools listed under Safety make every fan monitor-only.
+- **Known limit:** "End process tree" leaves GPU fans at their last speed until the next start, a driver reset or a restart.
+
 ## GPU and drive temperatures
 
 - **NVIDIA:** NVML (`nvml.dll`). Each GPU is identified by its NVML UUID.
@@ -78,11 +91,14 @@ Run from an elevated terminal, with FanForge quit for `dump` and `set-pwm`. `det
 - `pm-table [--raw]`: the CPU code name, SMU firmware and PM table version, Tctl, CCD and per-core temperatures if the layout is known; compare them with HWiNFO's "Core0 (CCD1)" values. The list shows every core slot in the table, so on parts with cores fused off it includes slots HWiNFO skips and the numbering can differ. `--raw` prints every value so an unknown version can be mapped (`fanforge-diag pm-table --raw | Out-File -Encoding utf8 pm-table.txt`). It asks the SMU to refresh the table, the same request HWiNFO and ZenTimings make, holding `Global\Access_PCI`; it changes no settings and works while FanForge runs.
 - `dump --out file.json` and `diff a.json b.json`: snapshot every register (read only; the bank register is put back as found) and compare two snapshots.
 - `set-pwm --channel 2 --duty 40`: sets one fan to a fixed speed, returning it to the BIOS after the timeout, on Ctrl+C or when the console closes. Refuses below 30% and on monitor-only chips.
+- `gpu`: every NVIDIA GPU fan with its range, speed, target, RPM and mode (no administrator rights needed).
+- `set-gpu-fan --fan 1 --duty 60`: sets one GPU fan to a fixed speed, returning it to the driver after the timeout or on Ctrl+C. Refuses below the driver minimum or 30%, and fans another program already set to manual. A killed `set-gpu-fan` leaves the fan in manual mode; `restore-gpu` hands every NVIDIA fan back to the driver.
 
 **Investigating an "only works after another tool" bug:** disable Fast Startup and every monitoring tool's autostart, shut down fully and boot, run `detect` and `dump --out cold.json`, start and close the other tool, then `dump --out after.json` and `diff cold.json after.json`. A changing `bank_register` (bits 5–6 of EC register `0x06` on ITE chips) points at the bank-select cause. On a locked Nuvoton NCT679x, the lock itself (register `0x28`) is the finding.
 
 ## Not yet implemented or untested
 
+- AMD Radeon fan control.
 - The AMD GPU (ADL) path hasn't been tested on a Radeon. A curve bound to a Radeon whose PCI id changed sees a missing sensor and its fan goes to 100% (or BIOS control with the fallback off) until the sensor is picked again.
 - AMD per-core temperatures on 6- and 12-core parts, and PM table layouts beyond the allow-list.
 - The secondary IT879xE chip on larger Gigabyte boards, and the other chips listed under "Not supported yet".
