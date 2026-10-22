@@ -1,16 +1,18 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use fanforge_core::FanId;
+use fanforge_core::board::FanLimits;
 use fanforge_core::config::Config;
 use fanforge_core::engine::{Engine, TickOutcome};
-use fanforge_core::state::{ControlState, HardwareStatus};
+use fanforge_core::state::{ControlState, GpuState, HardwareStatus};
 use fanforge_core::store::{self, CONFIG_BACKUPS};
-use fanforge_core::telemetry::Readings;
+use fanforge_core::telemetry::{Readings, SensorReading};
+use fanforge_core::{FanId, FanKind};
 use fanforge_hw::HwError;
+use fanforge_hw::gpu_fans::{GpuFans, GpuReadings};
 use fanforge_hw::sensors::ExtraSensors;
 use fanforge_win::paths;
 
@@ -21,6 +23,7 @@ use crate::shared::{LoopMessage, Shared};
 
 pub const IDENTIFY_DURATION: Duration = Duration::from_secs(3);
 pub const RESUME_BUDGET: Duration = Duration::from_secs(5);
+pub const GPU_RELEASE_BUDGET: Duration = Duration::from_secs(2);
 const HARDWARE_RETRY: Duration = Duration::from_secs(10);
 const RESUME_FIRST_BACKOFF: Duration = Duration::from_millis(500);
 const READ_FAILURES_BEFORE_REINIT: u32 = 3;
@@ -49,6 +52,12 @@ enum Flow {
     Stop,
 }
 
+enum BoardRead {
+    Fresh(Readings),
+    Stale(Vec<SensorReading>),
+    Missing,
+}
+
 pub struct Runtime<B: Backend> {
     paths: Paths,
     shared: Arc<Shared>,
@@ -67,6 +76,10 @@ pub struct Runtime<B: Backend> {
     lock_skips: u32,
     conflicts: ConflictMonitor,
     extras: ExtraSensors,
+    gpus: Option<GpuFans>,
+    gpu_readings: GpuReadings,
+    board_limits: BTreeMap<FanId, FanLimits>,
+    last_board: Readings,
     config_warning: Option<String>,
     calibration_warning: Option<String>,
     last_outcome: TickOutcome,
@@ -106,6 +119,10 @@ impl<B: Backend> Runtime<B> {
             lock_skips: 0,
             conflicts,
             extras: ExtraSensors::none(),
+            gpus: None,
+            gpu_readings: GpuReadings::default(),
+            board_limits: BTreeMap::new(),
+            last_board: Readings::default(),
             config_warning,
             calibration_warning,
             last_outcome: TickOutcome::default(),
@@ -121,6 +138,11 @@ impl<B: Backend> Runtime<B> {
 
     pub fn with_extra_sensors(mut self, extras: ExtraSensors) -> Self {
         self.extras = extras;
+        self
+    }
+
+    pub fn with_gpu_fans(mut self, gpus: GpuFans) -> Self {
+        self.gpus = Some(gpus);
         self
     }
 
@@ -169,12 +191,12 @@ impl<B: Backend> Runtime<B> {
 
     fn owns_any(&self) -> bool {
         self.hardware.as_ref().is_some_and(Backend::owns_any)
+            || self.gpus.as_ref().is_some_and(GpuFans::owns_any)
     }
 
     fn beat(&self) {
-        self.shared
-            .heartbeat
-            .beat(self.interval(), self.hardware.is_some());
+        let controlling = self.hardware.is_some() || !self.gpu_readings.fans.is_empty();
+        self.shared.heartbeat.beat(self.interval(), controlling);
         self.signal(Signal::Heartbeat {
             interval: self.interval(),
         });
@@ -311,8 +333,13 @@ impl<B: Backend> Runtime<B> {
             .hardware
             .as_ref()
             .is_some_and(|hardware| !hardware.fan_control());
+        let fan_tools = !findings.controlling.is_empty();
         self.engine
-            .set_monitor_only(!findings.controlling.is_empty() || unverified);
+            .set_monitor_only(FanKind::Header, fan_tools || unverified);
+        self.engine.set_monitor_only(
+            FanKind::Gpu,
+            fan_tools || !findings.gpu_controlling.is_empty(),
+        );
 
         self.beat();
         self.control(elapsed);
@@ -320,15 +347,16 @@ impl<B: Backend> Runtime<B> {
         self.publish();
     }
 
-    fn control(&mut self, elapsed: Duration) {
+    fn read_board(&mut self) -> BoardRead {
         let Some(hardware) = self.hardware.as_mut() else {
-            return;
+            return BoardRead::Missing;
         };
-        let readings = match hardware.read() {
+        match hardware.read() {
             Ok(readings) => {
                 self.read_failures = 0;
                 self.lock_skips = 0;
-                readings
+                self.last_board = readings.clone();
+                return BoardRead::Fresh(readings);
             }
             Err(HwError::LockTimeout(name)) => {
                 self.lock_skips += 1;
@@ -338,7 +366,6 @@ impl<B: Backend> Runtime<B> {
                 if self.lock_skips == LOCK_SKIPS_BEFORE_WARNING {
                     tracing::warn!(mutex = %name, "bus has been busy for many cycles");
                 }
-                return;
             }
             Err(error) => {
                 self.cancel_calibration("a hardware read failed");
@@ -347,14 +374,62 @@ impl<B: Backend> Runtime<B> {
                 if self.read_failures >= READ_FAILURES_BEFORE_REINIT {
                     self.reinitialize_after_failure();
                 }
-                return;
             }
+        }
+        let recent = self.lock_skips < LOCK_SKIPS_BEFORE_WARNING
+            && self.read_failures < READ_FAILURES_BEFORE_REINIT;
+        if self.hardware.is_some() && recent {
+            BoardRead::Stale(self.last_board.sensors.clone())
+        } else {
+            BoardRead::Missing
+        }
+    }
+
+    fn apply_limits(&mut self) {
+        let mut limits = self.board_limits.clone();
+        limits.extend(self.gpu_readings.limits.clone());
+        if &limits != self.engine.limits() {
+            self.engine.set_limits(limits);
+        }
+    }
+
+    fn control(&mut self, elapsed: Duration) {
+        let board = self.read_board();
+        let gpu = self
+            .gpus
+            .as_ref()
+            .map(|gpus| gpus.readings(Instant::now(), self.interval()))
+            .unwrap_or_default();
+        let fresh = matches!(board, BoardRead::Fresh(_));
+        let no_gpu_fans = gpu.fans.is_empty();
+        self.gpu_readings = gpu;
+        self.apply_limits();
+        if !fresh && (no_gpu_fans || self.engine.is_calibrating()) {
+            return;
+        }
+        let mut readings = match board {
+            BoardRead::Fresh(readings) => readings,
+            BoardRead::Stale(sensors) => Readings {
+                sensors,
+                fans: Vec::new(),
+            },
+            BoardRead::Missing => Readings::default(),
         };
+        readings.fans.extend(self.gpu_readings.fans.iter().cloned());
 
         let mut inputs = readings.clone();
         inputs.sensors.extend(self.extras.readings(Instant::now()));
-        let outcome = self.engine.tick(&inputs, elapsed);
+        let mut outcome = self.engine.tick(&inputs, elapsed);
         for command in &outcome.commands {
+            if command.fan.kind() == FanKind::Gpu {
+                if let Some(gpus) = &self.gpus {
+                    gpus.request(&command.fan, command.action);
+                }
+                continue;
+            }
+            let Some(hardware) = self.hardware.as_mut() else {
+                continue;
+            };
             match hardware.apply(command, self.shared.halt_flag()) {
                 Ok(()) | Err(HwError::Halted) => {}
                 Err(error) => {
@@ -363,6 +438,23 @@ impl<B: Backend> Runtime<B> {
                         .record_apply_error(&command.fan, &error.to_string());
                 }
             }
+        }
+        if let Some(gpus) = &self.gpus {
+            for (fan, error) in gpus.take_errors() {
+                tracing::warn!(%fan, %error, "failed to apply GPU fan command");
+                self.engine.record_apply_error(&fan, &error);
+            }
+        }
+        if !fresh {
+            let board_fans = self.last_board.fans.iter().cloned();
+            readings.fans = board_fans.chain(readings.fans).collect();
+            outcome.fans.extend(
+                self.last_outcome
+                    .fans
+                    .iter()
+                    .filter(|status| status.id.kind() == FanKind::Header)
+                    .cloned(),
+            );
         }
         self.last_outcome = outcome;
         self.last_readings = readings;
@@ -400,7 +492,8 @@ impl<B: Backend> Runtime<B> {
             take_control,
             "hardware ready"
         );
-        self.engine.set_limits(hardware.fan_limits());
+        self.board_limits = hardware.fan_limits();
+        self.apply_limits();
         self.engine.forget_hardware_state();
         self.hardware = Some(hardware);
         self.hardware_error = None;
@@ -426,6 +519,7 @@ impl<B: Backend> Runtime<B> {
                 self.unreleased = true;
             }
         }
+        self.last_board = Readings::default();
         self.engine.forget_hardware_state();
         self.hardware_error = Some(reason);
         self.next_hardware_attempt = Instant::now() + HARDWARE_RETRY;
@@ -459,6 +553,11 @@ impl<B: Backend> Runtime<B> {
             && let Err(error) = release(hardware, others)
         {
             tracing::error!(%error, "failed to release fans before suspend");
+        }
+        if let Some(gpus) = &self.gpus
+            && let Err(error) = gpus.release(GPU_RELEASE_BUDGET)
+        {
+            tracing::error!(%error, "failed to return GPU fans to the driver before suspend");
         }
         self.engine.forget_hardware_state();
         self.signal(Signal::Suspended);
@@ -534,15 +633,23 @@ impl<B: Backend> Runtime<B> {
         self.cancel_calibration("fan control is stopping");
         self.shared.heartbeat.pause();
         let others = self.others_in_control();
+        let gpus = self
+            .gpus
+            .as_ref()
+            .map_or(Ok(()), |gpus| gpus.release(GPU_RELEASE_BUDGET));
+        if let Err(error) = &gpus {
+            tracing::error!(%error, "failed to return every GPU fan to the driver during shutdown");
+        }
         let Some(mut hardware) = self.hardware.take() else {
-            return !self.unreleased;
+            return !self.unreleased && gpus.is_ok();
         };
         match release(&mut hardware, others) {
-            Ok(()) => {
+            Ok(()) if gpus.is_ok() => {
                 tracing::info!("all fans returned to BIOS control");
                 self.signal(Signal::Owning(false));
                 true
             }
+            Ok(()) => false,
             Err(error) => {
                 tracing::error!(%error, "failed to release every fan during shutdown");
                 false
@@ -607,6 +714,12 @@ impl<B: Backend> Runtime<B> {
             critical: self.last_outcome.critical,
             critical_reached: self.last_outcome.critical_reached,
             monitor_only: self.engine.is_monitor_only(),
+            gpus: GpuState {
+                fans: self.gpu_readings.info.clone(),
+                monitor_only: self.engine.is_monitor_only_for(FanKind::Gpu),
+                conflicts: findings.gpu_controlling.clone(),
+                error: self.gpu_readings.error.clone(),
+            },
             conflicts: findings.controlling,
             warnings,
             calibration,
@@ -619,7 +732,7 @@ impl<B: Backend> Runtime<B> {
 
 impl<B: Backend> Drop for Runtime<B> {
     fn drop(&mut self) {
-        if self.hardware.is_some() {
+        if self.hardware.is_some() || self.owns_any() {
             tracing::warn!("runtime dropped while controlling fans; releasing them");
             self.shutdown();
         }
@@ -1442,6 +1555,234 @@ pub(crate) mod tests {
         assert!(loaded.config.calibration.is_empty());
         assert_eq!(loaded.config_warning, None);
         assert!(loaded.calibration_warning.unwrap().contains("ignored"));
+    }
+
+    use fanforge_hw::gpu_fans::fake::{FakeGpus, GPU_ID, SharedGpus};
+
+    fn gpu_fan() -> FanId {
+        FanId::for_gpu_fan(GPU_ID, 0)
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "condition not reached in time");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn with_gpus(rig: &mut Rig) -> SharedGpus {
+        let fake = SharedGpus::new(FakeGpus::default());
+        let gpus = GpuFans::start(
+            fake.opener(),
+            rig._dir.path().join("gpu_owned.toml"),
+            rig.runtime.shared.halt_handle(),
+        )
+        .unwrap();
+        wait_until(|| {
+            !gpus
+                .readings(Instant::now(), Duration::from_secs(1))
+                .fans
+                .is_empty()
+        });
+        rig.runtime.gpus = Some(gpus);
+        fake
+    }
+
+    fn gpu_rig(tag: &str, processes: Vec<String>) -> (Rig, SharedGpus) {
+        let gpu = gpu_fan();
+        let modes = [("pwm2", manual(60.0)), (gpu.as_str(), manual(55.0))];
+        let mut rig = rig(tag, &modes, processes);
+        let fake = with_gpus(&mut rig);
+        (rig, fake)
+    }
+
+    #[test]
+    fn gpu_fans_are_driven_and_released_alongside_the_board() {
+        let (mut rig, fake) = gpu_rig("gpu-both", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        assert_eq!(fake.fan(0).target, 55);
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(60.0).to_raw());
+        assert!(!fake.fan(1).manual);
+        assert!(rig.runtime.owns_any());
+        rig.runtime.publish();
+        let state = rig.runtime.shared.state().unwrap();
+        assert_eq!(state.gpus.fans.len(), 2);
+        assert!(state.readings.fan(&gpu_fan()).is_some());
+
+        assert!(rig.runtime.shutdown());
+        assert!(!fake.fan(0).manual);
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+    }
+
+    #[test]
+    fn gpu_fans_work_without_a_board_chip_and_the_board_is_still_retried() {
+        let (mut rig, fake) = gpu_rig("gpu-only", Vec::new());
+        let installed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&installed);
+        let mut open = opener(rig.fake.clone(), "gpu-only-open");
+        rig.runtime.opener = Box::new(move |snapshot: &Path| {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                open(snapshot)
+            } else {
+                Err(HwError::PawnIoMissing)
+            }
+        });
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        let status = rig.runtime.shared.state().unwrap().hardware.clone();
+        assert_eq!(status, HardwareStatus::DriverMissing);
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+
+        installed.store(true, std::sync::atomic::Ordering::SeqCst);
+        rig.runtime.handle(LoopMessage::RetryHardware);
+        rig.runtime.tick();
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(60.0).to_raw());
+        assert!(rig.runtime.shutdown());
+        assert!(!fake.fan(0).manual);
+    }
+
+    #[test]
+    fn a_busy_board_still_takes_gpu_fans_to_full_speed_when_critical() {
+        let (mut rig, fake) = gpu_rig("gpu-busy", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).target == 55);
+        rig.fake.with(|chip| chip.banks[0][0x29] = 95);
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).target == 100);
+        rig.fake.with(|chip| chip.banks[0][0x29] = 40);
+        rig.runtime.tick();
+
+        let name = format!(r"Local\fanforge-runtime-gpu-busy-{}", std::process::id());
+        let (release, held) = mpsc::channel::<()>();
+        let (ready_tx, ready) = mpsc::channel();
+        let holder = thread::spawn(move || {
+            let mutex = NamedMutex::open(&name).unwrap();
+            let _guard = mutex.acquire(fanforge_hw::mutex::DEFAULT_TIMEOUT).unwrap();
+            ready_tx.send(()).unwrap();
+            held.recv().ok();
+        });
+        ready.recv().unwrap();
+        let mut config = rig.runtime.engine.config().clone();
+        config.safety.critical_c = 60.0;
+        config.safety.release_c = 50.0;
+        config.safety.critical_sensor = "board/temp1".into();
+        rig.runtime.engine.set_config(config);
+        rig.runtime.last_board.sensors[1].celsius = Some(70.0);
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).target == 100);
+        assert!(rig.runtime.lock_skips > 0);
+        let state = rig.runtime.shared.state().unwrap();
+        assert!(state.readings.fan(&"pwm2".into()).is_some());
+        assert!(state.fans.iter().any(|fan| fan.id.as_str() == "pwm2"));
+        release.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn dropping_a_failed_board_keeps_gpu_fans_under_the_safety_fallback() {
+        let (mut rig, fake) = gpu_rig("gpu-reinit", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        rig.fake.with(|chip| {
+            chip.chip_id = 0xFFFF;
+            chip.unreadable_registers.push(0x0D);
+        });
+        for _ in 0..READ_FAILURES_BEFORE_REINIT + 2 {
+            rig.runtime.tick();
+        }
+        assert!(rig.runtime.hardware.is_none());
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+        wait_until(|| fake.fan(0).target == 100);
+        assert!(fake.fan(0).manual);
+    }
+
+    #[test]
+    fn a_gpu_tool_only_makes_gpu_fans_monitor_only() {
+        let (mut rig, fake) = gpu_rig("gpu-tool", vec!["MSIAfterburner.exe".to_owned()]);
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        rig.runtime.tick();
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(60.0).to_raw());
+        thread::sleep(Duration::from_millis(50));
+        assert!(fake.with(|gpus| gpus.writes.is_empty()));
+        let state = rig.runtime.shared.state().unwrap();
+        assert!(!state.monitor_only);
+        assert!(state.gpus.monitor_only);
+        assert_eq!(state.gpus.conflicts, vec!["MSI Afterburner"]);
+    }
+
+    #[test]
+    fn a_fan_tool_makes_gpu_fans_monitor_only_too() {
+        let (mut rig, fake) = gpu_rig("gpu-fan-tool", vec!["FanControl.exe".to_owned()]);
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        thread::sleep(Duration::from_millis(50));
+        assert!(fake.with(|gpus| gpus.writes.is_empty()));
+        assert!(rig.runtime.engine.is_monitor_only_for(FanKind::Gpu));
+    }
+
+    #[test]
+    fn a_hung_gpu_driver_never_holds_up_the_board() {
+        let (mut rig, fake) = gpu_rig("gpu-hung", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        fake.hold();
+        let started = Instant::now();
+        let mut config = rig.runtime.engine.config().clone();
+        config
+            .profiles
+            .get_mut("Balanced")
+            .unwrap()
+            .fans
+            .insert("pwm2".into(), manual(70.0));
+        rig.runtime.replace_config(config).unwrap();
+        rig.runtime.tick();
+        assert_eq!(reg(&rig, CHA1_DUTY), Duty::new(70.0).to_raw());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!rig.runtime.shutdown());
+        assert!(started.elapsed() < GPU_RELEASE_BUDGET + Duration::from_secs(1));
+        assert_eq!(reg(&rig, CHA1_CONTROL) & AUTO, AUTO);
+        fake.unhold();
+    }
+
+    #[test]
+    fn suspend_returns_gpu_fans_to_the_driver_and_resume_retakes_them() {
+        let (mut rig, fake) = gpu_rig("gpu-suspend", Vec::new());
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        rig.runtime.suspend();
+        assert!(!fake.fan(0).manual);
+        assert!(matches!(rig.runtime.resume(), Flow::Continue));
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+    }
+
+    #[test]
+    fn the_guardian_hears_ownership_of_gpu_fans_alone() {
+        let gpu = gpu_fan();
+        let mut rig = rig("gpu-owning", &[(gpu.as_str(), manual(55.0))], Vec::new());
+        let fake = with_gpus(&mut rig);
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        rig.runtime.signals = Some(Arc::new(move |signal| {
+            sink.lock().unwrap().push(signal);
+        }));
+        rig.runtime.opener = Box::new(|_: &Path| Err(HwError::PawnIoMissing));
+        rig.runtime.open_hardware();
+        rig.runtime.tick();
+        wait_until(|| fake.fan(0).manual);
+        rig.runtime.tick();
+        assert!(heard.lock().unwrap().contains(&Signal::Owning(true)));
+        assert!(rig.runtime.shutdown());
+        assert!(!fake.fan(0).manual);
     }
 
     fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
