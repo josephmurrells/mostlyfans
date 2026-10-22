@@ -37,6 +37,14 @@ id_type!(SensorId);
 id_type!(CurveId);
 
 pub const CORE_SENSOR_PREFIX: &str = "cpu/core";
+pub const GPU_FAN_PREFIX: &str = "gpu/";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FanKind {
+    Header,
+    Gpu,
+}
 
 impl SensorId {
     pub fn core(index: usize) -> Self {
@@ -56,6 +64,18 @@ impl FanId {
     pub fn for_channel(index: usize) -> Self {
         Self(format!("pwm{}", index + 1))
     }
+
+    pub fn for_gpu_fan(gpu: &str, index: u32) -> Self {
+        Self(format!("{gpu}/fan{}", index + 1))
+    }
+
+    pub fn kind(&self) -> FanKind {
+        if self.0.starts_with(GPU_FAN_PREFIX) {
+            FanKind::Gpu
+        } else {
+            FanKind::Header
+        }
+    }
 }
 
 #[cfg(test)]
@@ -69,5 +89,14 @@ mod tests {
         assert!(!SensorId::new("cpu/core").is_display_only());
         assert!(!SensorId::new("cpu/core_voltage").is_display_only());
         assert!(!SensorId::new("cpu/package").is_display_only());
+    }
+
+    #[test]
+    fn gpu_fans_are_recognised_by_their_id() {
+        let fan = FanId::for_gpu_fan("gpu/nvidia/gpu-1234", 1);
+        assert_eq!(fan.as_str(), "gpu/nvidia/gpu-1234/fan2");
+        assert_eq!(fan.kind(), FanKind::Gpu);
+        assert_eq!(FanId::for_channel(0).kind(), FanKind::Header);
+        assert_eq!(FanId::from("gpufan").kind(), FanKind::Header);
     }
 }

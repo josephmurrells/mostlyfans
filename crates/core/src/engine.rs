@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use crate::config::{Config, FanMode};
 use crate::curve::{CurveError, CurveEvaluator, HysteresisState, Tuning, find_curve};
 use crate::safety::CriticalGuard;
 use crate::telemetry::{FanReading, HardwareMode, Readings};
-use crate::{Duty, FanId};
+use crate::{Duty, FanId, FanKind};
 
 pub const MAX_WRITE_MISMATCHES: u32 = 3;
 pub const SPIN_UP_DURATION: Duration = Duration::from_secs(2);
@@ -45,6 +45,7 @@ pub enum FanState {
     Calibrating,
     Faulted(String),
     MonitorOnly,
+    Unavailable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -100,7 +101,7 @@ pub struct Engine {
     fans: HashMap<FanId, FanRuntime>,
     hysteresis: HysteresisState,
     critical: CriticalGuard,
-    monitor_only: bool,
+    monitor_only: BTreeSet<FanKind>,
     identify: Option<(FanId, Duration)>,
     calibration: Option<Calibration>,
     calibration_request: Option<FanId>,
@@ -117,7 +118,7 @@ impl Engine {
             fans: HashMap::new(),
             hysteresis: HysteresisState::default(),
             critical: CriticalGuard::default(),
-            monitor_only: false,
+            monitor_only: BTreeSet::new(),
             identify: None,
             calibration: None,
             calibration_request: None,
@@ -150,12 +151,20 @@ impl Engine {
         self.limits = limits;
     }
 
-    pub fn set_monitor_only(&mut self, monitor_only: bool) {
-        self.monitor_only = monitor_only;
+    pub fn set_monitor_only(&mut self, kind: FanKind, monitor_only: bool) {
+        if monitor_only {
+            self.monitor_only.insert(kind);
+        } else {
+            self.monitor_only.remove(&kind);
+        }
     }
 
     pub fn is_monitor_only(&self) -> bool {
-        self.monitor_only
+        self.is_monitor_only_for(FanKind::Header)
+    }
+
+    pub fn is_monitor_only_for(&self, kind: FanKind) -> bool {
+        self.monitor_only.contains(&kind)
     }
 
     pub fn identify(&mut self, fan: FanId, duration: Duration) {
@@ -163,7 +172,12 @@ impl Engine {
     }
 
     pub fn request_calibration(&mut self, fan: FanId) -> Result<(), String> {
-        if self.monitor_only {
+        if fan.kind() == FanKind::Gpu {
+            return Err(
+                "graphics card fans aren't calibrated; their driver sets the minimum".to_owned(),
+            );
+        }
+        if self.is_monitor_only() {
             return Err("FanForge is in monitor-only mode".to_owned());
         }
         if let Some(cause) = self.critical.active_cause(&self.config.safety) {
@@ -249,7 +263,7 @@ impl Engine {
         let runtime = self.fans.get(&fan);
         let fault = runtime.and_then(|runtime| runtime.fault.clone());
         let failing = runtime.is_some_and(|runtime| runtime.failures > 0);
-        let started = if self.monitor_only {
+        let started = if self.is_monitor_only_for(fan.kind()) {
             Err("FanForge is in monitor-only mode".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Err(format!("{} is active", cause.describe()))
@@ -291,7 +305,7 @@ impl Engine {
             return;
         };
         let fan = calibration.fan().clone();
-        let abort = if self.monitor_only {
+        let abort = if self.is_monitor_only_for(fan.kind()) {
             Some("monitor-only mode turned on".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Some(format!("{} fired", cause.describe()))
@@ -373,7 +387,8 @@ impl Engine {
                     },
                     other => other,
                 };
-                let override_state = self.override_state(&fan, critical, identifying.as_ref());
+                let override_state =
+                    self.override_state(&fan, readings, critical, identifying.as_ref());
                 let plan = self.plan_fan(&fan, target, override_state, elapsed);
                 planned.insert(fan, plan);
             }
@@ -383,7 +398,8 @@ impl Engine {
             }
         }
         for (fan, _) in pending {
-            let override_state = self.override_state(&fan, critical, identifying.as_ref());
+            let override_state =
+                self.override_state(&fan, readings, critical, identifying.as_ref());
             let target = Target::Failed("fan follow chain is a cycle".to_owned());
             let plan = self.plan_fan(&fan, target, override_state, elapsed);
             planned.insert(fan, plan);
@@ -399,6 +415,13 @@ impl Engine {
             let Some((mut status, action)) = planned.remove(&reading.id) else {
                 continue;
             };
+            if matches!(status.state, FanState::Unavailable(_)) {
+                let runtime = self.fans.entry(reading.id.clone()).or_default();
+                runtime.last_command = None;
+                runtime.mismatches = 0;
+                outcome.fans.push(status);
+                continue;
+            }
             if let Some(command) = self.reconcile(&mut status, reading, action) {
                 outcome.commands.push(command);
             }
@@ -410,11 +433,21 @@ impl Engine {
     fn override_state(
         &self,
         fan: &FanId,
+        readings: &Readings,
         critical: bool,
         identifying: Option<&FanId>,
     ) -> Option<FanState> {
-        if self.monitor_only {
+        let unavailable = readings
+            .fan(fan)
+            .and_then(|reading| reading.unavailable.clone())
+            .or_else(|| {
+                (fan.kind() == FanKind::Gpu && !self.limits.contains_key(fan))
+                    .then(|| "the driver hasn't reported the fan's minimum speed".to_owned())
+            });
+        if self.is_monitor_only_for(fan.kind()) {
             Some(FanState::MonitorOnly)
+        } else if let Some(reason) = unavailable {
+            Some(FanState::Unavailable(reason))
         } else if critical {
             Some(FanState::Critical)
         } else if identifying == Some(fan) {
@@ -461,7 +494,9 @@ impl Engine {
             .or_else(|| runtime.fault.clone().map(FanState::Faulted))
             .or_else(|| (probe.is_some() || recovering).then_some(FanState::Calibrating));
         let (state, wanted) = match override_state {
-            Some(state @ (FanState::MonitorOnly | FanState::Faulted(_))) => (state, None),
+            Some(
+                state @ (FanState::MonitorOnly | FanState::Faulted(_) | FanState::Unavailable(_)),
+            ) => (state, None),
             Some(FanState::Calibrating) => {
                 runtime.smoothed = Some(100.0);
                 if probe.is_none() {
@@ -578,6 +613,9 @@ impl Engine {
         }
         if state == FanState::Clamped && output > floor {
             state = FanState::Controlled;
+        }
+        if fan.kind() == FanKind::Gpu {
+            output = output.round().max(floor.ceil());
         }
         runtime.applied = Some(output);
 
@@ -705,6 +743,7 @@ mod tests {
             let fans = ["pwm1", "pwm2"]
                 .into_iter()
                 .map(|id| FanReading {
+                    unavailable: None,
                     id: id.into(),
                     label: id.into(),
                     rpm: Some(1000),
@@ -782,6 +821,7 @@ mod tests {
         FanLimits {
             floor: Duty::OFF,
             stop_permitted: true,
+            fixed: false,
         }
     }
 
@@ -807,6 +847,175 @@ mod tests {
         }
         config.validate().unwrap();
         config
+    }
+
+    const GPU_FAN: &str = "gpu/nvidia/gpu-1/fan1";
+
+    fn with_gpu_fan(mut rig: Rig, limits: Option<FanLimits>) -> Rig {
+        rig.readings.fans.push(FanReading {
+            id: GPU_FAN.into(),
+            label: "GPU fan 1".into(),
+            rpm: Some(0),
+            mode: HardwareMode::Auto,
+            duty: None,
+            unavailable: None,
+        });
+        let mut all = rig.engine.limits().clone();
+        if let Some(limits) = limits {
+            all.insert(GPU_FAN.into(), limits);
+        }
+        rig.engine.set_limits(all);
+        rig
+    }
+
+    fn gpu_rig(modes: &[(&str, FanMode)]) -> Rig {
+        with_gpu_fan(
+            Rig::new(config_with(modes), open_limits()),
+            Some(FanLimits::for_gpu(Duty::new(30.0))),
+        )
+    }
+
+    fn gpu_command(outcome: &TickOutcome) -> Option<Action> {
+        outcome
+            .commands
+            .iter()
+            .find(|command| command.fan.as_str() == GPU_FAN)
+            .map(|command| command.action)
+    }
+
+    #[test]
+    fn a_gpu_fan_never_drops_below_the_driver_minimum_or_stops() {
+        let mut rig = gpu_rig(&[(GPU_FAN, FanMode::Manual { duty: Duty::OFF })]);
+        let outcome = rig.tick();
+        assert_eq!(
+            gpu_command(&outcome),
+            Some(Action::SetDuty(Duty::new(30.0)))
+        );
+        assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::Clamped);
+    }
+
+    #[test]
+    fn a_gpu_fan_without_a_known_minimum_is_never_driven() {
+        let mut rig = with_gpu_fan(
+            Rig::new(
+                config_with(&[(GPU_FAN, FanMode::Manual { duty: Duty::FULL })]),
+                open_limits(),
+            ),
+            None,
+        );
+        let outcome = rig.tick();
+        assert_eq!(gpu_command(&outcome), None);
+        assert!(matches!(
+            Rig::status(&outcome, GPU_FAN).state,
+            FanState::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn gpu_outputs_are_whole_percent_and_a_rounded_readback_never_faults() {
+        let mut config = config_with(&[(
+            GPU_FAN,
+            FanMode::Curve {
+                curve: "cpu".into(),
+            },
+        )]);
+        config.curves[0].tuning.response_secs = 7.0;
+        let mut rig = with_gpu_fan(
+            Rig::new(config, open_limits()),
+            Some(FanLimits::for_gpu(Duty::new(30.0))),
+        );
+        rig.set_temp(Some(45.0));
+        rig.tick();
+        rig.set_temp(Some(78.0));
+        let mut writes = 0;
+        for _ in 0..40 {
+            let outcome = rig.tick();
+            if let Some(Action::SetDuty(duty)) = gpu_command(&outcome) {
+                writes += 1;
+                assert_eq!(duty.percent(), duty.percent().round());
+            }
+            let status = Rig::status(&outcome, GPU_FAN);
+            assert!(!matches!(status.state, FanState::Faulted(_)), "{status:?}");
+            let fan = rig.readings.fans.last_mut().unwrap();
+            fan.duty = fan.duty.map(|duty| Duty::new(duty.percent().round()));
+        }
+        assert!(writes > 5);
+    }
+
+    #[test]
+    fn an_unavailable_gpu_fan_gets_no_commands_and_is_retaken_when_it_returns() {
+        let mut rig = gpu_rig(&[(
+            GPU_FAN,
+            FanMode::Manual {
+                duty: Duty::new(60.0),
+            },
+        )]);
+        assert!(gpu_command(&rig.tick()).is_some());
+        let fan = rig.readings.fans.last_mut().unwrap();
+        fan.unavailable = Some("GPU driver not responding".into());
+        fan.mode = HardwareMode::Auto;
+        fan.duty = None;
+        for _ in 0..5 {
+            let outcome = rig.tick();
+            assert_eq!(gpu_command(&outcome), None);
+            assert_eq!(
+                Rig::status(&outcome, GPU_FAN).state,
+                FanState::Unavailable("GPU driver not responding".into())
+            );
+        }
+        rig.readings.fans.last_mut().unwrap().unavailable = None;
+        let outcome = rig.tick();
+        assert_eq!(
+            gpu_command(&outcome),
+            Some(Action::SetDuty(Duty::new(60.0)))
+        );
+        assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::Controlled);
+    }
+
+    #[test]
+    fn monitor_only_is_per_fan_kind() {
+        let mut rig = gpu_rig(&[
+            (
+                "pwm1",
+                FanMode::Manual {
+                    duty: Duty::new(50.0),
+                },
+            ),
+            (
+                GPU_FAN,
+                FanMode::Manual {
+                    duty: Duty::new(50.0),
+                },
+            ),
+        ]);
+        rig.engine.set_monitor_only(FanKind::Gpu, true);
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::MonitorOnly);
+        assert_eq!(gpu_command(&outcome), None);
+        assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::Controlled);
+        assert!(!rig.engine.is_monitor_only());
+
+        rig.engine.set_monitor_only(FanKind::Gpu, false);
+        rig.engine.set_monitor_only(FanKind::Header, true);
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::MonitorOnly);
+        assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::Controlled);
+    }
+
+    #[test]
+    fn the_critical_override_takes_gpu_fans_on_auto_to_full_speed() {
+        let mut rig = gpu_rig(&[]);
+        rig.set_temp(Some(95.0));
+        let outcome = rig.tick();
+        assert_eq!(Rig::status(&outcome, GPU_FAN).state, FanState::Critical);
+        assert_eq!(gpu_command(&outcome), Some(Action::SetDuty(Duty::FULL)));
+    }
+
+    #[test]
+    fn gpu_fans_are_never_calibrated() {
+        let mut rig = gpu_rig(&[]);
+        assert!(rig.engine.request_calibration(GPU_FAN.into()).is_err());
+        assert!(!rig.engine.is_calibrating());
     }
 
     #[test]
@@ -842,6 +1051,7 @@ mod tests {
         let limits = FanLimits {
             floor: Duty::new(30.0),
             stop_permitted: false,
+            fixed: false,
         };
         let mut rig = Rig::new(
             config_with(&[("pwm1", FanMode::Manual { duty: Duty::OFF })]),
@@ -868,6 +1078,7 @@ mod tests {
             FanLimits {
                 floor: Duty::new(20.0),
                 stop_permitted: true,
+                fixed: false,
             },
         );
         assert_eq!(Rig::status(&rig.tick(), "pwm1").output, Some(Duty::OFF));
@@ -877,6 +1088,7 @@ mod tests {
             FanLimits {
                 floor: Duty::new(20.0),
                 stop_permitted: false,
+                fixed: false,
             },
         );
         assert_eq!(
@@ -1200,7 +1412,7 @@ mod tests {
     #[test]
     fn monitor_only_never_touches_fans_it_did_not_drive() {
         let mut rig = Rig::new(Config::default(), open_limits());
-        rig.engine.set_monitor_only(true);
+        rig.engine.set_monitor_only(FanKind::Header, true);
         rig.readings.fans[0].mode = HardwareMode::Manual;
         rig.readings.fans[0].duty = Some(Duty::new(35.0));
         for _ in 0..3 {
@@ -1239,6 +1451,7 @@ mod tests {
         let limits = FanLimits {
             floor: Duty::new(30.0),
             stop_permitted: false,
+            fixed: false,
         };
         let mut rig = Rig::new(
             config_with(&[
@@ -1367,7 +1580,7 @@ mod tests {
             open_limits(),
         );
         rig.tick();
-        rig.engine.set_monitor_only(true);
+        rig.engine.set_monitor_only(FanKind::Header, true);
         let outcome = rig.tick();
         assert_eq!(
             outcome.commands,
@@ -1575,9 +1788,9 @@ mod tests {
     #[test]
     fn calibration_is_refused_in_monitor_only_and_under_critical() {
         let mut rig = calibration_rig(&[], false, false);
-        rig.engine.set_monitor_only(true);
+        rig.engine.set_monitor_only(FanKind::Header, true);
         assert!(rig.engine.request_calibration("pwm1".into()).is_err());
-        rig.engine.set_monitor_only(false);
+        rig.engine.set_monitor_only(FanKind::Header, false);
         rig.set_temp(Some(90.0));
         rig.tick();
         assert!(rig.engine.request_calibration("pwm1".into()).is_err());
@@ -1665,7 +1878,7 @@ mod tests {
         aborted(rig.report(), "Identify");
 
         let mut rig = start();
-        rig.engine.set_monitor_only(true);
+        rig.engine.set_monitor_only(FanKind::Header, true);
         assert_eq!(
             Rig::status(&rig.tick(), "pwm1").state,
             FanState::MonitorOnly
@@ -1790,6 +2003,7 @@ mod tests {
         let raised = FanLimits {
             floor: Duty::new(80.0),
             stop_permitted: false,
+            fixed: false,
         };
         rig.engine
             .set_limits([("pwm1".into(), raised), ("pwm2".into(), raised)].into());
@@ -1912,6 +2126,7 @@ mod tests {
         let raised = FanLimits {
             floor: Duty::new(80.0),
             stop_permitted: false,
+            fixed: false,
         };
         rig.engine
             .set_limits([("pwm1".into(), raised), ("pwm2".into(), raised)].into());
@@ -1922,10 +2137,10 @@ mod tests {
                 .is_some_and(|progress| progress.duty == Duty::new(75.0))
         });
         assert_eq!(output_of(&outcome, "pwm1"), 80.0);
-        rig.engine.set_monitor_only(true);
+        rig.engine.set_monitor_only(FanKind::Header, true);
         rig.tick();
         aborted(rig.report(), "monitor-only");
-        rig.engine.set_monitor_only(false);
+        rig.engine.set_monitor_only(FanKind::Header, false);
         rig.engine.set_limits(
             [
                 ("pwm1".into(), FanLimits::default()),

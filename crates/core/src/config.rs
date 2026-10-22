@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::calibration::{FanCalibration, MAX_POINTS};
 use crate::curve::{CurveDef, CurveKind, find_curve};
 use crate::telemetry::{MAX_PLAUSIBLE_CELSIUS, MIN_PLAUSIBLE_CELSIUS};
-use crate::{CurveId, Duty, FanId, SensorId};
+use crate::{CurveId, Duty, FanId, FanKind, SensorId};
 
 pub const MIN_INTERVAL_MS: u64 = 250;
 pub const MAX_INTERVAL_MS: u64 = 5000;
@@ -161,6 +161,12 @@ pub enum ConfigError {
     SyncCycle { profile: String, fan: FanId },
     #[error("calibration for fan `{0}` is invalid")]
     InvalidCalibration(FanId),
+    #[error(
+        "`{0}` is a graphics card fan: it can't be a case fan, stop or be calibrated; its driver sets the minimum"
+    )]
+    GpuFanSetting(FanId),
+    #[error("fan `{fan}` in profile `{profile}` can't follow a fan of another kind")]
+    CrossKindSync { profile: String, fan: FanId },
     #[error("critical temperature settings are invalid")]
     InvalidSafety,
     #[error(
@@ -230,6 +236,7 @@ impl Config {
         self.validate_size()?;
         self.validate_safety()?;
         self.validate_calibration()?;
+        self.validate_gpu_fans()?;
         self.validate_curves()?;
         self.validate_profiles()
     }
@@ -316,6 +323,21 @@ impl Config {
         });
         match invalid {
             Some((id, _)) => Err(ConfigError::InvalidCalibration(id.clone())),
+            None => Ok(()),
+        }
+    }
+
+    fn validate_gpu_fans(&self) -> Result<(), ConfigError> {
+        let relaxed = self
+            .fans
+            .iter()
+            .filter(|(_, settings)| settings.case_fan || settings.allow_stop)
+            .map(|(id, _)| id);
+        match relaxed
+            .chain(self.calibration.keys())
+            .find(|id| id.kind() == FanKind::Gpu)
+        {
+            Some(id) => Err(ConfigError::GpuFanSetting(id.clone())),
             None => Ok(()),
         }
     }
@@ -414,6 +436,12 @@ impl Config {
                             curve: curve.clone(),
                         });
                     }
+                    FanMode::Sync { fan: leader } if leader.kind() != fan.kind() => {
+                        return Err(ConfigError::CrossKindSync {
+                            profile: profile_name.clone(),
+                            fan: fan.clone(),
+                        });
+                    }
                     FanMode::Sync { .. } if sync_has_cycle(profile, fan) => {
                         return Err(ConfigError::SyncCycle {
                             profile: profile_name.clone(),
@@ -468,6 +496,70 @@ mod tests {
             kind,
             tuning: Tuning::default(),
         }
+    }
+
+    #[test]
+    fn gpu_fans_reject_header_settings_calibration_and_cross_kind_sync() {
+        let gpu = FanId::for_gpu_fan("gpu/nvidia/gpu-1", 0);
+        let mut config = Config::default();
+        config.fans.insert(
+            gpu.clone(),
+            FanSettings {
+                name: Some("GPU".into()),
+                min_duty: Duty::new(40.0),
+                ..FanSettings::default()
+            },
+        );
+        config.validate().unwrap();
+        for settings in [
+            FanSettings {
+                case_fan: true,
+                ..FanSettings::default()
+            },
+            FanSettings {
+                allow_stop: true,
+                ..FanSettings::default()
+            },
+        ] {
+            let mut relaxed = config.clone();
+            relaxed.fans.insert(gpu.clone(), settings);
+            assert_eq!(
+                relaxed.validate(),
+                Err(ConfigError::GpuFanSetting(gpu.clone()))
+            );
+        }
+        let mut calibrated = config.clone();
+        calibrated
+            .calibration
+            .insert(gpu.clone(), FanCalibration::default());
+        assert_eq!(
+            calibrated.validate(),
+            Err(ConfigError::GpuFanSetting(gpu.clone()))
+        );
+
+        let second = FanId::for_gpu_fan("gpu/nvidia/gpu-1", 1);
+        let profile = config.profiles.get_mut("Balanced").unwrap();
+        profile
+            .fans
+            .insert(second.clone(), FanMode::Sync { fan: gpu.clone() });
+        config.validate().unwrap();
+        let profile = config.profiles.get_mut("Balanced").unwrap();
+        profile
+            .fans
+            .insert("pwm1".into(), FanMode::Sync { fan: gpu.clone() });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::CrossKindSync { .. })
+        ));
+        let profile = config.profiles.get_mut("Balanced").unwrap();
+        profile.fans.remove(&FanId::from("pwm1"));
+        profile
+            .fans
+            .insert(second, FanMode::Sync { fan: "pwm1".into() });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::CrossKindSync { .. })
+        ));
     }
 
     #[test]
