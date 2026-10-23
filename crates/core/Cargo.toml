@@ -1,5 +1,5 @@
 [package]
-name = "fanforge-core"
+name = "mostlyfans-core"
 description = "Platform-independent fan control domain: curves, control engine, safety rules, config and published state."
 version.workspace = true
 edition.workspace = true

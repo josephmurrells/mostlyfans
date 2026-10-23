@@ -657,7 +657,11 @@ mod tests {
     use crate::superio::{SuperIo, detect};
 
     fn lock(tag: &str) -> NamedMutex {
-        NamedMutex::open(&format!(r"Local\fanforge-nct-{tag}-{}", std::process::id())).unwrap()
+        NamedMutex::open(&format!(
+            r"Local\mostlyfans-nct-{tag}-{}",
+            std::process::id()
+        ))
+        .unwrap()
     }
 
     fn probe(fake: FakeNct, tag: &str) -> SuperIo<FakeNct> {

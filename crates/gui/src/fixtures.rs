@@ -3,17 +3,17 @@ use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use fanforge_control::controller::CommandResult;
-use fanforge_core::board::{BoardIdentity, BoardInfo, FanLimits, fan_limits};
-use fanforge_core::calibration::{
+use mostlyfans_control::controller::CommandResult;
+use mostlyfans_core::board::{BoardIdentity, BoardInfo, FanLimits, fan_limits};
+use mostlyfans_core::calibration::{
     CalibrationOutcome, CalibrationProgress, CalibrationReport, CalibrationView, Phase,
 };
-use fanforge_core::config::{Config, FanMode, FanSettings};
-use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
-use fanforge_core::engine::{FanState, FanStatus};
-use fanforge_core::state::{ControlState, GpuFanInfo, GpuState, HardwareStatus};
-use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
-use fanforge_core::{CurveId, Duty, FanId, SensorId};
+use mostlyfans_core::config::{Config, FanMode, FanSettings};
+use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
+use mostlyfans_core::engine::{FanState, FanStatus};
+use mostlyfans_core::state::{ControlState, GpuFanInfo, GpuState, HardwareStatus};
+use mostlyfans_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
+use mostlyfans_core::{CurveId, Duty, FanId, SensorId};
 
 use crate::connection::{ControlLink, ControlStatus, Request, RequestKind};
 
@@ -199,7 +199,7 @@ pub fn with_second_chip(mut state: ControlState) -> ControlState {
     }
     if let Some(board) = state.board.as_mut() {
         board.chips = vec![
-            fanforge_core::board::ChipInfo {
+            mostlyfans_core::board::ChipInfo {
                 chip_id: board.chip_id,
                 chip_name: board.chip_name.clone(),
                 fan_control: board.fan_control,
@@ -207,14 +207,14 @@ pub fn with_second_chip(mut state: ControlState) -> ControlState {
                 fan_headers: board.fan_headers,
                 note: None,
             },
-            fanforge_core::board::ChipInfo {
+            mostlyfans_core::board::ChipInfo {
                 chip_id: 0x8733,
                 chip_name: "ITE IT8792E".to_owned(),
                 fan_control: false,
                 pwm_misconfigured: false,
                 fan_headers: 3,
                 note: Some(
-                    "FanForge only controls the second fan chip on Gigabyte boards".to_owned(),
+                    "MostlyFans only controls the second fan chip on Gigabyte boards".to_owned(),
                 ),
             },
         ];

@@ -73,13 +73,13 @@ fn main() {
     } else {
         ExecutionLevel::AsInvoker
     };
-    embed_manifest(new_manifest("FanForge").requested_execution_level(level))
+    embed_manifest(new_manifest("MostlyFans").requested_execution_level(level))
         .expect("the application manifest could not be embedded");
 
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-    let icon = out.join("fanforge.ico");
+    let icon = out.join("mostlyfans.ico");
     icon_file(&icon);
-    let script = out.join("fanforge.rc");
+    let script = out.join("mostlyfans.rc");
     let escaped = icon.display().to_string().replace('\\', "\\\\");
     std::fs::write(&script, format!("1 ICON \"{escaped}\"\n"))
         .expect("the resource script could not be written");

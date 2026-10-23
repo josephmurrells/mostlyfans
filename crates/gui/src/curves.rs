@@ -1,10 +1,10 @@
 use eframe::egui::{self, ComboBox, DragValue, Id, Margin, RichText, vec2};
-use fanforge_core::config::{
+use mostlyfans_core::config::{
     CPU_SENSOR, Config, FanMode, MAX_CURVE_POINTS, MAX_CURVES, MAX_NAME_LEN,
 };
-use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
-use fanforge_core::state::ControlState;
-use fanforge_core::{CurveId, SensorId};
+use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, MixOp, Tuning};
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::{CurveId, SensorId};
 
 use crate::curve_plot::{self, FloorMark, Interaction, Live, PointLimits, Refusal};
 use crate::format;

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use fanforge_core::SensorId;
-use fanforge_core::telemetry::SensorReading;
-use fanforge_win::SystemLibrary;
+use mostlyfans_core::SensorId;
+use mostlyfans_core::telemetry::SensorReading;
+use mostlyfans_win::SystemLibrary;
 use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 

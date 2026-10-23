@@ -4,7 +4,7 @@ use thiserror::Error;
 pub enum HwError {
     #[error("the PawnIO driver is not installed; install it from https://pawnio.eu")]
     PawnIoMissing,
-    #[error("access to the PawnIO driver was denied; run FanForge as administrator")]
+    #[error("access to the PawnIO driver was denied; run MostlyFans as administrator")]
     AccessDenied,
     #[error("PawnIO call `{call}` failed: {source}")]
     Driver {
@@ -50,10 +50,10 @@ pub enum HwError {
     ChipChanged { expected: u16, found: u16 },
     #[error(
         "bios_snapshot.toml records fans driven on chip {owner:#06x}, but the attached chip is {found:#06x}; check that the fans are under BIOS control, then delete {}",
-        fanforge_win::paths::data_dir().join("bios_snapshot.toml").display()
+        mostlyfans_win::paths::data_dir().join("bios_snapshot.toml").display()
     )]
     ForeignSnapshot { owner: u16, found: u16 },
-    #[error("FanForge doesn't support fan control on the {0}; it only monitors it")]
+    #[error("MostlyFans doesn't support fan control on the {0}; it only monitors it")]
     NoFanControl(&'static str),
     #[error("fan channel {0} is in manual mode with no saved BIOS state to return to")]
     UnknownBiosMode(usize),
@@ -82,5 +82,5 @@ pub enum HwError {
     #[error("fan control is halted; manual speeds are refused")]
     Halted,
     #[error(transparent)]
-    Store(#[from] fanforge_core::store::StoreError),
+    Store(#[from] mostlyfans_core::store::StoreError),
 }

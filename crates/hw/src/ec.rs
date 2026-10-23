@@ -395,7 +395,11 @@ mod tests {
     }
 
     fn lock(tag: &str) -> NamedMutex {
-        NamedMutex::open(&format!(r"Local\fanforge-ec-{tag}-{}", std::process::id())).unwrap()
+        NamedMutex::open(&format!(
+            r"Local\mostlyfans-ec-{tag}-{}",
+            std::process::id()
+        ))
+        .unwrap()
     }
 
     fn nct6687d(tag: &str) -> SuperIo<FakeEc> {

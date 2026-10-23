@@ -1,8 +1,8 @@
-FanForge
+MostlyFans
 Copyright (C) 2026 Joseph Murrells
 Licensed under the GNU General Public License v3.0 or later (see LICENSE).
 
-FanForge includes or is derived from the following third-party work.
+MostlyFans includes or is derived from the following third-party work.
 
 PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
 crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin,
@@ -27,7 +27,7 @@ LibreHardwareMonitor
   were ported from LibreHardwareMonitorLib/Hardware/Motherboard/Lpc/IT87XX.cs,
   Nct677X.cs, LpcIO.cs and LpcPort.cs. No files were copied. Those three
   Rust files are covered by the MPL-2.0 (text in LICENSE-MPL-2.0, header in
-  each file); FanForge as a whole is distributed under the GPL-3.0-or-later,
+  each file); MostlyFans as a whole is distributed under the GPL-3.0-or-later,
   which the MPL-2.0 allows as a Secondary License.
 
 Linux k10temp driver
@@ -81,7 +81,7 @@ AMD Display Library (ADL) SDK
 
 egui default fonts (epaint_default_fonts crate)
   https://github.com/emilk/egui/tree/master/crates/epaint_default_fonts
-  Embedded in fanforge.exe. Hack (MIT and Bitstream Vera licences) is the
+  Embedded in mostlyfans.exe. Hack (MIT and Bitstream Vera licences) is the
   monospace font; Ubuntu-Light (Ubuntu Font Licence 1.0), Noto Emoji (SIL Open
   Font License 1.1) and emoji-icon-font (MIT) are glyph fallbacks behind
   Segoe UI. Release archives include their license texts.

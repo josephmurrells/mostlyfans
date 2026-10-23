@@ -1,5 +1,5 @@
-use fanforge_core::state::ControlState;
-use fanforge_core::{FanId, SensorId};
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::{FanId, SensorId};
 
 use crate::overview;
 use crate::prefs::Prefs;

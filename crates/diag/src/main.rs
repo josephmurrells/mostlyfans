@@ -8,24 +8,24 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use fanforge_core::Duty;
-use fanforge_core::telemetry::is_plausible;
-use fanforge_hw::HwError;
-use fanforge_hw::amd::AmdCpu;
-use fanforge_hw::board::detect_identity;
-use fanforge_hw::gpu_fans::nvidia::NvidiaFans;
-use fanforge_hw::gpu_fans::{FanDriver, FanSample, GpuDesc};
-use fanforge_hw::pawnio;
-use fanforge_hw::sensors::cores::{CoreTempSource, enabled_slots};
-use fanforge_hw::sensors::{self, SensorSource};
-use fanforge_hw::smu::{self, CoreTempLayout, RyzenSmu};
-use fanforge_hw::snapshot::BiosSnapshot;
-use fanforge_hw::superio::RegisterDump;
-use fanforge_hw::system::{
+use mostlyfans_core::Duty;
+use mostlyfans_core::telemetry::is_plausible;
+use mostlyfans_hw::HwError;
+use mostlyfans_hw::amd::AmdCpu;
+use mostlyfans_hw::board::detect_identity;
+use mostlyfans_hw::gpu_fans::nvidia::NvidiaFans;
+use mostlyfans_hw::gpu_fans::{FanDriver, FanSample, GpuDesc};
+use mostlyfans_hw::pawnio;
+use mostlyfans_hw::sensors::cores::{CoreTempSource, enabled_slots};
+use mostlyfans_hw::sensors::{self, SensorSource};
+use mostlyfans_hw::smu::{self, CoreTempLayout, RyzenSmu};
+use mostlyfans_hw::snapshot::BiosSnapshot;
+use mostlyfans_hw::superio::RegisterDump;
+use mostlyfans_hw::system::{
     Chip, Hardware, RELEASE_BUDGET, attach_chip, attach_second_chip, force_all_auto, open_chip,
 };
-use fanforge_win::InstanceMutex;
-use fanforge_win::paths::{self, INSTANCE_MUTEX};
+use mostlyfans_win::InstanceMutex;
+use mostlyfans_win::paths::{self, INSTANCE_MUTEX, OLD_INSTANCE_MUTEX};
 
 const MIN_DIAG_DUTY: f32 = 30.0;
 
@@ -34,7 +34,7 @@ type DiagResult = Result<(), Box<dyn Error>>;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "FanForge hardware diagnostics (run as administrator)"
+    about = "MostlyFans hardware diagnostics (run as administrator)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,7 +84,7 @@ enum Command {
             help = "Seconds before BIOS control is restored"
         )]
         timeout: u64,
-        #[arg(long, help = "Run even if FanForge is running")]
+        #[arg(long, help = "Run even if MostlyFans is running")]
         force: bool,
     },
     #[command(about = "Return every fan channel to BIOS control")]
@@ -110,7 +110,7 @@ enum Command {
             help = "Seconds before the driver gets the fan back"
         )]
         timeout: u64,
-        #[arg(long, help = "Run even if FanForge is running")]
+        #[arg(long, help = "Run even if MostlyFans is running")]
         force: bool,
     },
     #[command(about = "Return every NVIDIA GPU fan to the driver")]
@@ -190,14 +190,14 @@ fn describe_chip(chip: &mut Chip) -> DiagResult {
     for channel in 0..chip.fan_count() {
         let note = match (wiring.has_tach(channel), wiring.has_pwm(channel)) {
             (true, true) => continue,
-            (false, false) => "not wired as a fan header (FanForge hides it)",
+            (false, false) => "not wired as a fan header (MostlyFans hides it)",
             (true, false) => "speed only (the board uses its control pin for something else)",
             (false, true) => "control only (the board uses its speed pin for something else)",
         };
         println!("  Header {}: {note}", channel + 1);
     }
     let control = if !chip.chip().fan_control {
-        "monitor only (FanForge doesn't support fan control on this chip)"
+        "monitor only (MostlyFans doesn't support fan control on this chip)"
     } else if !chip.check_pwm_configuration()? {
         "monitor only (the BIOS set up the fan outputs with inverted polarity, a known BIOS fault that Linux it87 also won't drive; check the fan settings in the BIOS setup)"
     } else {
@@ -206,7 +206,7 @@ fn describe_chip(chip: &mut Chip) -> DiagResult {
     println!("Fan control: {control}");
     if chip.io_space_locked()? {
         println!(
-            "Hardware monitor I/O space: locked by the firmware (FanForge, `read` and `set-pwm` clear it; `dump` skips the monitor registers until then)"
+            "Hardware monitor I/O space: locked by the firmware (MostlyFans, `read` and `set-pwm` clear it; `dump` skips the monitor registers until then)"
         );
     }
     Ok(())
@@ -340,13 +340,13 @@ fn pm_table(raw: bool) -> DiagResult {
                 ),
                 Err(error) => println!("Enabled cores: unknown ({error})"),
             }
-            match fanforge_win::topology::physical_cores() {
+            match mostlyfans_win::topology::physical_cores() {
                 Ok(cores) => {
                     let verdict = match &enabled {
                         Ok(slots) if slots.len() == cores.len() => {
-                            "matches, so FanForge shows per-core temperatures"
+                            "matches, so MostlyFans shows per-core temperatures"
                         }
-                        Ok(_) => "doesn't match, so FanForge hides per-core temperatures",
+                        Ok(_) => "doesn't match, so MostlyFans hides per-core temperatures",
                         Err(_) => "can't be compared",
                     };
                     println!("Windows reports {} physical cores; {verdict}", cores.len());
@@ -405,7 +405,7 @@ fn diff(before: &Path, after: &Path) -> DiagResult {
 }
 
 fn app_running() -> bool {
-    InstanceMutex::exists(INSTANCE_MUTEX)
+    InstanceMutex::exists(INSTANCE_MUTEX) || InstanceMutex::exists(OLD_INSTANCE_MUTEX)
 }
 
 fn set_pwm(channel: usize, duty: f32, timeout: Duration, force: bool) -> DiagResult {
@@ -413,7 +413,7 @@ fn set_pwm(channel: usize, duty: f32, timeout: Duration, force: bool) -> DiagRes
         return Err(format!("duty must be between {MIN_DIAG_DUTY} and 100").into());
     }
     if app_running() && !force {
-        return Err("FanForge is running; quit it from the tray first or pass --force".into());
+        return Err("MostlyFans (or the old FanForge) is running; quit it from the tray first or pass --force".into());
     }
     let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
     let mut chip = open_chip()?;
@@ -479,13 +479,13 @@ fn restore() -> DiagResult {
         })
     } else {
         println!(
-            "the {} is monitor-only; FanForge never drives its fans, so there is nothing to restore",
+            "the {} is monitor-only; MostlyFans never drives its fans, so there is nothing to restore",
             chip.chip().name
         );
         Ok(())
     };
-    if fanforge_hw::second::pending(&path) {
-        match fanforge_hw::second::release_from_disk(Some(&chip), &path, RELEASE_BUDGET * 3) {
+    if mostlyfans_hw::second::pending(&path) {
+        match mostlyfans_hw::second::release_from_disk(Some(&chip), &path, RELEASE_BUDGET * 3) {
             Ok(()) => println!(
                 "the second chip's fans and Gigabyte's fan controller are back under BIOS control"
             ),
@@ -543,7 +543,7 @@ fn gpu() -> DiagResult {
 
 fn set_gpu_fan(gpu: usize, fan: u32, duty: u32, timeout: Duration, force: bool) -> DiagResult {
     if app_running() && !force {
-        return Err("FanForge is running; quit it from the tray first or pass --force".into());
+        return Err("MostlyFans (or the old FanForge) is running; quit it from the tray first or pass --force".into());
     }
     let fans = NvidiaFans::open()?;
     let gpus = fans.gpus();

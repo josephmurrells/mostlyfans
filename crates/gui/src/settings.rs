@@ -3,11 +3,11 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use eframe::egui::{self, ComboBox, DragValue, Id, RichText, Slider, SliderClamping, vec2};
-use fanforge_core::config::{
+use mostlyfans_core::config::{
     Config, MAX_INTERVAL_MS, MAX_NAME_LEN, MAX_PROFILES, MIN_INTERVAL_MS, Profile,
 };
-use fanforge_core::state::ControlState;
-use fanforge_win::paths;
+use mostlyfans_core::state::ControlState;
+use mostlyfans_win::paths;
 
 use crate::autostart::{self, AutostartState};
 use crate::connection::{ControlLink, Request};
@@ -256,7 +256,7 @@ impl SettingsView {
         ui.label(RichText::new("Update interval").strong());
         ui.label(widgets::caption(
             ui,
-            "How often FanForge reads the sensors and sets the fans.",
+            "How often MostlyFans reads the sensors and sets the fans.",
         ));
         let current = if self.custom_interval {
             Interval::Custom
@@ -428,7 +428,7 @@ fn fan_control(ui: &mut egui::Ui, state: &ControlState, link: &dyn ControlLink) 
         ui,
         "Fan control",
         Some(
-            "Monitor-only mode hands every fan back to the BIOS and the graphics driver. FanForge keeps showing temperatures and fan speeds, and controls the fans again after a restart.",
+            "Monitor-only mode hands every fan back to the BIOS and the graphics driver. MostlyFans keeps showing temperatures and fan speeds, and controls the fans again after a restart.",
         ),
     );
     let mut on = state.user_monitor_only;

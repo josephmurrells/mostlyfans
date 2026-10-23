@@ -1,5 +1,5 @@
-use fanforge_core::board::BoardIdentity;
-use fanforge_win::read_local_machine_string;
+use mostlyfans_core::board::BoardIdentity;
+use mostlyfans_win::read_local_machine_string;
 
 const BIOS_KEY: &str = r"HARDWARE\DESCRIPTION\System\BIOS";
 

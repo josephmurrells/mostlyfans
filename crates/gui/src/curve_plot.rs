@@ -2,7 +2,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect, Sense,
     Shape, Stroke, Vec2, pos2, vec2,
 };
-use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, sorted_points};
+use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, sorted_points};
 
 use crate::theme::{self, CAPTION, Palette};
 

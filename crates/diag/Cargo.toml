@@ -1,6 +1,6 @@
 [package]
-name = "fanforge-diag"
-description = "FanForge diagnostics CLI: chip detection, register dumps and guarded manual PWM."
+name = "mostlyfans-diag"
+description = "MostlyFans diagnostics CLI: chip detection, register dumps and guarded manual PWM."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,16 +8,16 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "fanforge-diag"
+name = "mostlyfans-diag"
 path = "src/main.rs"
 
 [dependencies]
-fanforge-core.workspace = true
-fanforge-hw.workspace = true
+mostlyfans-core.workspace = true
+mostlyfans-hw.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 serde_json.workspace = true
-fanforge-win.workspace = true
+mostlyfans-win.workspace = true
 
 [lints]
 workspace = true

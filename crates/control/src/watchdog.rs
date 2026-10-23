@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use fanforge_hw::gpu_fans::GpuReleaser;
+use mostlyfans_hw::gpu_fans::GpuReleaser;
 
 use crate::failsafe;
 use crate::shared::Shared;

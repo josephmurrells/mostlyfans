@@ -218,7 +218,7 @@ pub fn run(
             Action::Release(reason) => {
                 tracing::error!(
                     ?reason,
-                    "FanForge stopped without releasing the fans; returning them to BIOS control"
+                    "MostlyFans stopped without releasing the fans; returning them to BIOS control"
                 );
                 if link.parent_alive() {
                     link.terminate_parent(TERMINATE_WAIT);
@@ -238,9 +238,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
-    use fanforge_hw::ite::fake::{FakeIte, SharedFake};
-    use fanforge_hw::mutex::NamedMutex;
-    use fanforge_hw::superio::{Slot, SuperIo};
+    use mostlyfans_hw::ite::fake::{FakeIte, SharedFake};
+    use mostlyfans_hw::mutex::NamedMutex;
+    use mostlyfans_hw::superio::{Slot, SuperIo};
 
     use super::*;
     use crate::failsafe;
@@ -404,7 +404,7 @@ mod tests {
         let fake = SharedFake::new(FakeIte::new());
         fake.with(|chip| chip.banks[0][0x16] = 0x00);
         let lock = NamedMutex::open(&format!(
-            r"Local\fanforge-guardian-{tag}-{}",
+            r"Local\mostlyfans-guardian-{tag}-{}",
             std::process::id()
         ))
         .unwrap();

@@ -58,11 +58,11 @@ mod tests {
         let library = SystemLibrary::load("kernel32.dll").unwrap();
         assert!(library.path().ends_with("kernel32.dll"));
         assert!(library.symbol(c"GetTickCount64").is_some());
-        assert!(library.symbol(c"FanForgeDoesNotExist").is_none());
+        assert!(library.symbol(c"MostlyFansDoesNotExist").is_none());
     }
 
     #[test]
     fn missing_libraries_fail_to_load() {
-        assert!(SystemLibrary::load("fanforge-missing.dll").is_err());
+        assert!(SystemLibrary::load("mostlyfans-missing.dll").is_err());
     }
 }

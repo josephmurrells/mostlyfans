@@ -768,7 +768,11 @@ mod tests {
     const PWM_CONTROL_8689: [u8; 6] = [0x15, 0x16, 0x17, 0x7F, 0xA7, 0xAF];
 
     fn lock(tag: &str) -> NamedMutex {
-        NamedMutex::open(&format!(r"Local\fanforge-ite-{tag}-{}", std::process::id())).unwrap()
+        NamedMutex::open(&format!(
+            r"Local\mostlyfans-ite-{tag}-{}",
+            std::process::id()
+        ))
+        .unwrap()
     }
 
     fn probe(fake: FakeIte, tag: &str) -> SuperIo<FakeIte> {
@@ -1101,7 +1105,7 @@ mod tests {
 
     #[test]
     fn abandoned_mutex_triggers_full_reinitialisation() {
-        let name = format!(r"Local\fanforge-ite-abandon-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-ite-abandon-{}", std::process::id());
         let mut chip = SuperIo::probe(
             FakeIte::new(),
             Slot::Primary,
@@ -1168,7 +1172,10 @@ mod tests {
 
     #[test]
     fn a_different_chip_after_an_abandoned_mutex_is_refused() {
-        let name = format!(r"Local\fanforge-ite-abandon-changed-{}", std::process::id());
+        let name = format!(
+            r"Local\mostlyfans-ite-abandon-changed-{}",
+            std::process::id()
+        );
         let mut chip = SuperIo::probe(
             FakeIte::new(),
             Slot::Primary,
@@ -1183,7 +1190,7 @@ mod tests {
 
     #[test]
     fn patient_restore_waits_out_a_busy_bus() {
-        let name = format!(r"Local\fanforge-ite-busy-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-ite-busy-{}", std::process::id());
         let mut chip = SuperIo::probe(
             FakeIte::new(),
             Slot::Primary,
@@ -1255,7 +1262,7 @@ mod tests {
     fn it8655e_port_traffic_matches_the_original_driver() {
         let mut fake = FakeIte::new();
         fake.bank_register = 0x21;
-        let name = format!(r"Local\fanforge-ite-trace-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-ite-trace-{}", std::process::id());
         let recorder = Recorder {
             fake,
             trace: Vec::new(),

@@ -40,17 +40,17 @@ use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui;
-use fanforge_control::conflicts::ConflictMonitor;
-use fanforge_control::controller::Controller;
-use fanforge_control::legacy::{self, Removal};
-use fanforge_control::runtime::{Paths, Runtime};
-use fanforge_control::shared::Shared;
-use fanforge_control::{failsafe, watchdog};
-use fanforge_hw::gpu_fans::{GpuFans, GpuReleaser, nvidia};
-use fanforge_hw::sensors::{self, ExtraSensors};
-use fanforge_hw::system::Hardware;
-use fanforge_win::paths;
-use fanforge_win::{DialogKind, message_box};
+use mostlyfans_control::conflicts::ConflictMonitor;
+use mostlyfans_control::controller::Controller;
+use mostlyfans_control::legacy::{self, Removal};
+use mostlyfans_control::runtime::{Paths, Runtime};
+use mostlyfans_control::shared::Shared;
+use mostlyfans_control::{failsafe, watchdog};
+use mostlyfans_hw::gpu_fans::{GpuFans, GpuReleaser, nvidia};
+use mostlyfans_hw::sensors::{self, ExtraSensors};
+use mostlyfans_hw::system::Hardware;
+use mostlyfans_win::paths;
+use mostlyfans_win::{DialogKind, message_box};
 
 use crate::autostart::AutostartState;
 use crate::guardian_link::GuardianLink;
@@ -59,12 +59,12 @@ use crate::notices::{Notices, Topic};
 use crate::prefs::Prefs;
 use crate::window_geometry::LastGoodWindow;
 
-const TITLE: &str = "FanForge";
+const TITLE: &str = "MostlyFans";
 const WINDOW_ICON_SIZE: u32 = 64;
 const FIRST_SENSOR_ROUND: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Parser)]
-#[command(version, about = "FanForge fan control")]
+#[command(version, about = "MostlyFans fan control")]
 struct Cli {
     #[command(flatten)]
     guardian: guardian::GuardianArgs,
@@ -85,7 +85,7 @@ fn offer_legacy_removal() {
     }
     let remove = message_box(
         TITLE,
-        "The old FanForge service is installed. It would fight this app over the fans.\n\nRemove it now?\n\nIf you choose No, FanForge only monitors and leaves the fans to the BIOS.",
+        "The old FanForge service is installed. It would fight this app over the fans.\n\nRemove it now?\n\nIf you choose No, MostlyFans only monitors and leaves the fans to the BIOS.",
         DialogKind::Question,
     );
     if !remove {
@@ -105,7 +105,7 @@ fn offer_legacy_removal() {
             message_box(
                 TITLE,
                 &format!(
-                    "The old service could not be removed: {error}\n\nFanForge only monitors until it is gone."
+                    "The old service could not be removed: {error}\n\nMostlyFans only monitors until it is gone."
                 ),
                 DialogKind::Error,
             );
@@ -119,7 +119,7 @@ fn check_autostart(notices: &Notices) -> AutostartState {
         notices.set(
             Topic::Autostart,
             format!(
-                "The Start with Windows task starts {}, not FanForge's protected copy. Repair it in Settings.",
+                "The Start with Windows task starts {}, not MostlyFans's protected copy. Repair it in Settings.",
                 command.display()
             ),
         );
@@ -128,17 +128,17 @@ fn check_autostart(notices: &Notices) -> AutostartState {
 }
 
 fn run_app(minimized: bool) -> ExitCode {
-    if !fanforge_win::is_elevated().unwrap_or(false) {
-        return fail("FanForge needs administrator rights to reach the fan controller.");
+    if !mostlyfans_win::is_elevated().unwrap_or(false) {
+        return fail("MostlyFans needs administrator rights to reach the fan controller.");
     }
     if let Err(error) =
-        fanforge_win::secure_directory(&paths::data_dir(), fanforge_win::PRIVATE_DATA_SDDL)
+        mostlyfans_win::secure_directory(&paths::data_dir(), mostlyfans_win::PRIVATE_DATA_SDDL)
     {
         return fail(&format!(
-            "The FanForge data folder is not safe to use: {error}"
+            "The MostlyFans data folder is not safe to use: {error}"
         ));
     }
-    logging::init("fanforge");
+    logging::init("mostlyfans");
     watchdog::install_panic_hook();
     let instance = match instance::claim() {
         Claim::Primary(instance) => instance,
@@ -149,7 +149,7 @@ fn run_app(minimized: bool) -> ExitCode {
 
     let executable = match env::current_exe() {
         Ok(executable) => executable,
-        Err(error) => return fail(&format!("FanForge could not locate itself: {error}")),
+        Err(error) => return fail(&format!("MostlyFans could not locate itself: {error}")),
     };
     let notices = Notices::default();
     let autostart = check_autostart(&notices);
@@ -227,7 +227,7 @@ fn run_app(minimized: bool) -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
-            .with_app_id("FanForge")
+            .with_app_id("MostlyFans")
             .with_icon(Arc::new(egui::IconData {
                 rgba: glyph::fan_rgba(WINDOW_ICON_SIZE, glyph::BLUE),
                 width: WINDOW_ICON_SIZE,
@@ -252,7 +252,7 @@ fn run_app(minimized: bool) -> ExitCode {
                 tracing::warn!(%error, "a second launch cannot bring this window forward");
             }
             Ok(Box::new(
-                app::FanForgeApp::new(
+                app::MostlyFansApp::new(
                     ctx,
                     Box::new(controller),
                     notices,

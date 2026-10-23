@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_core::telemetry::SensorReading;
+use mostlyfans_core::telemetry::SensorReading;
 
 pub use cache::{STALE_CADENCES, SensorCache, SourceIndex};
 
@@ -203,7 +203,7 @@ pub fn unique_labels(names: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fanforge_core::SensorId;
+    use mostlyfans_core::SensorId;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     const FAST: Duration = Duration::from_millis(5);

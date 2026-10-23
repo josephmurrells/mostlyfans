@@ -3,13 +3,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_hw::HwError;
-use fanforge_hw::gpu_fans::{GpuReleaser, NOT_RESPONDING};
-use fanforge_hw::port::PortIo;
-use fanforge_hw::second;
-use fanforge_hw::snapshot::BiosSnapshot;
-use fanforge_hw::superio::SuperIo;
-use fanforge_hw::system::{force_all_auto, open_chip};
+use mostlyfans_hw::HwError;
+use mostlyfans_hw::gpu_fans::{GpuReleaser, NOT_RESPONDING};
+use mostlyfans_hw::port::PortIo;
+use mostlyfans_hw::second;
+use mostlyfans_hw::snapshot::BiosSnapshot;
+use mostlyfans_hw::superio::SuperIo;
+use mostlyfans_hw::system::{force_all_auto, open_chip};
 
 const RETRY_PAUSE: Duration = Duration::from_millis(100);
 
@@ -70,7 +70,7 @@ fn with_second_chip(
     }
     let remaining = budget.saturating_sub(started.elapsed());
     let second = second::release_from_disk(None, snapshot_path, remaining).inspect_err(|error| {
-        tracing::error!(%error, "fans on the second chip may still be at FanForge's last speed");
+        tracing::error!(%error, "fans on the second chip may still be at MostlyFans's last speed");
     });
     primary.and(second)
 }
@@ -138,11 +138,11 @@ fn release_primary_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use fanforge_hw::gpu_fans::fake::{FakeFan, FakeGpus, SharedGpus};
-    use fanforge_hw::gpu_fans::ownership::{self, Ownership};
-    use fanforge_hw::ite::fake::{FakeIte, SharedFake};
-    use fanforge_hw::mutex::NamedMutex;
-    use fanforge_hw::superio::Slot;
+    use mostlyfans_hw::gpu_fans::fake::{FakeFan, FakeGpus, SharedGpus};
+    use mostlyfans_hw::gpu_fans::ownership::{self, Ownership};
+    use mostlyfans_hw::ite::fake::{FakeIte, SharedFake};
+    use mostlyfans_hw::mutex::NamedMutex;
+    use mostlyfans_hw::superio::Slot;
 
     use super::*;
 
@@ -156,8 +156,11 @@ mod tests {
                 chip.banks[0][register] = 0x00;
             }
         });
-        let lock =
-            NamedMutex::open(&format!(r"Local\fanforge-failsafe-{}", std::process::id())).unwrap();
+        let lock = NamedMutex::open(&format!(
+            r"Local\mostlyfans-failsafe-{}",
+            std::process::id()
+        ))
+        .unwrap();
         let mut chip = SuperIo::probe(fake.clone(), Slot::Primary, lock).unwrap();
         release_with(&mut chip, &path, Duration::from_secs(1)).unwrap();
         for register in [0x15, 0x16, 0x17] {
@@ -169,7 +172,7 @@ mod tests {
     fn gpu_fans_are_released_alongside_the_chip_even_when_the_chip_fails() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gpu_owned.toml");
-        let fan = fanforge_core::FanId::for_gpu_fan(fanforge_hw::gpu_fans::fake::GPU_ID, 0);
+        let fan = mostlyfans_core::FanId::for_gpu_fan(mostlyfans_hw::gpu_fans::fake::GPU_ID, 0);
         ownership::save(&path, &Ownership { fans: [fan].into() }).unwrap();
         let mut gpus = FakeGpus::default();
         gpus.fans.insert(

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use fanforge_control::guardian::Signal;
-use fanforge_win::{AnonymousPipe, Process};
+use mostlyfans_control::guardian::Signal;
+use mostlyfans_win::{AnonymousPipe, Process};
 
 const GUARDIAN_WAIT: Duration = Duration::from_secs(10);
 
@@ -20,7 +20,7 @@ struct Guardian {
 
 fn dummy_parent() -> Child {
     Command::new(
-        fanforge_win::system_dir()
+        mostlyfans_win::system_dir()
             .expect("system directory")
             .join("ping.exe"),
     )
@@ -41,8 +41,8 @@ fn start_guardian() -> Guardian {
         .expect("parent handle");
     let pipe = AnonymousPipe::new().expect("pipe");
     let marker_argument = marker.to_string_lossy().into_owned();
-    let spawned = fanforge_win::spawn_with_handles(
-        Path::new(env!("CARGO_BIN_EXE_fanforge")),
+    let spawned = mostlyfans_win::spawn_with_handles(
+        Path::new(env!("CARGO_BIN_EXE_mostlyfans")),
         &[&parent_handle, &pipe.read],
         |values| {
             vec![

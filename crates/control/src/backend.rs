@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 
-use fanforge_core::FanId;
-use fanforge_core::board::{BoardInfo, FanLimits};
-use fanforge_core::engine::Command;
-use fanforge_core::telemetry::Readings;
-use fanforge_hw::HwError;
-use fanforge_hw::port::PortIo;
-use fanforge_hw::system::Hardware;
+use mostlyfans_core::FanId;
+use mostlyfans_core::board::{BoardInfo, FanLimits};
+use mostlyfans_core::engine::Command;
+use mostlyfans_core::telemetry::Readings;
+use mostlyfans_hw::HwError;
+use mostlyfans_hw::port::PortIo;
+use mostlyfans_hw::system::Hardware;
 
 pub trait Backend {
     fn read(&mut self) -> Result<Readings, HwError>;

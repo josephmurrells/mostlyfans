@@ -1,6 +1,6 @@
 use std::arch::x86_64::__cpuid;
 
-use fanforge_win::topology::PhysicalCore;
+use mostlyfans_win::topology::PhysicalCore;
 use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
 use windows::Win32::System::Threading::{
     GetActiveProcessorCount, GetCurrentThread, SetThreadGroupAffinity,

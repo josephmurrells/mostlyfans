@@ -1,4 +1,4 @@
-pub use fanforge_core::config::CPU_SENSOR;
+pub use mostlyfans_core::config::CPU_SENSOR;
 
 use crate::HwError;
 use crate::amd::AmdCpu;

@@ -1,9 +1,9 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use fanforge_core::SensorId;
-use fanforge_core::telemetry::SensorReading;
-use fanforge_win::storage::{BUS_TYPE_NVME, Drive, DriveDescriptor, MAX_PHYSICAL_DRIVES};
+use mostlyfans_core::SensorId;
+use mostlyfans_core::telemetry::SensorReading;
+use mostlyfans_win::storage::{BUS_TYPE_NVME, Drive, DriveDescriptor, MAX_PHYSICAL_DRIVES};
 
 use super::SensorSource;
 

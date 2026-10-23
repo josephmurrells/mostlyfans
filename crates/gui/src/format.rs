@@ -1,10 +1,10 @@
-use fanforge_core::board::{BoardInfo, FanLimits};
-use fanforge_core::calibration::{self, FanCalibration};
-use fanforge_core::config::{Config, FanMode, FanSettings};
-use fanforge_core::engine::FanState;
-use fanforge_core::state::{ControlState, HardwareStatus};
-use fanforge_core::telemetry::FanReading;
-use fanforge_core::{Duty, FanId, FanKind};
+use mostlyfans_core::board::{BoardInfo, FanLimits};
+use mostlyfans_core::calibration::{self, FanCalibration};
+use mostlyfans_core::config::{Config, FanMode, FanSettings};
+use mostlyfans_core::engine::FanState;
+use mostlyfans_core::state::{ControlState, HardwareStatus};
+use mostlyfans_core::telemetry::FanReading;
+use mostlyfans_core::{Duty, FanId, FanKind};
 
 use crate::theme::Tone;
 
@@ -170,7 +170,7 @@ pub fn critical_sensor_label(state: &ControlState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fanforge_core::board::{CASE_FAN_FLOOR, SAFETY_FLOOR};
+    use mostlyfans_core::board::{CASE_FAN_FLOOR, SAFETY_FLOOR};
 
     #[test]
     fn the_effective_floor_never_drops_below_the_header_floor() {
@@ -205,7 +205,7 @@ mod tests {
             id: id.into(),
             label: id.into(),
             rpm: Some(0),
-            mode: fanforge_core::telemetry::HardwareMode::Auto,
+            mode: mostlyfans_core::telemetry::HardwareMode::Auto,
             duty: None,
             unavailable: None,
             monitor_only: false,

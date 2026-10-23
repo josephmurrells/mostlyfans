@@ -1,6 +1,6 @@
 [package]
-name = "fanforge-gui"
-description = "FanForge desktop app: controls the fans while it runs, from the window or the tray."
+name = "mostlyfans-gui"
+description = "MostlyFans desktop app: controls the fans while it runs, from the window or the tray."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,14 +8,14 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "fanforge"
+name = "mostlyfans"
 path = "src/main.rs"
 
 [dependencies]
-fanforge-core.workspace = true
-fanforge-control.workspace = true
-fanforge-hw.workspace = true
-fanforge-win.workspace = true
+mostlyfans-core.workspace = true
+mostlyfans-control.workspace = true
+mostlyfans-hw.workspace = true
+mostlyfans-win.workspace = true
 clap.workspace = true
 eframe.workspace = true
 ron.workspace = true

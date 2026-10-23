@@ -13,7 +13,7 @@ pub const MIN_TICKS: u32 = 3;
 pub const SPREAD: f32 = 30.0;
 pub const LOW_DUTY_MAX: f32 = 50.0;
 pub const FLAT_RATIO: f32 = 1.10;
-pub const NO_RESPONSE: &str = "its speed doesn't follow the duty FanForge sets (a 3-pin fan on a PWM header, a pump, or a mismatched header)";
+pub const NO_RESPONSE: &str = "its speed doesn't follow the duty MostlyFans sets (a 3-pin fan on a PWM header, a pump, or a mismatched header)";
 const HOLD_TOLERANCE: f32 = 2.0;
 const BAND: f32 = 10.0;
 

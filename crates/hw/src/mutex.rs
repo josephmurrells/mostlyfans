@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use fanforge_win::{SecurityAttributes, borrow_handle, own_handle, wide};
+use mostlyfans_win::{SecurityAttributes, borrow_handle, own_handle, wide};
 use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
     CreateMutexW, MUTEX_MODIFY_STATE, OpenMutexW, ReleaseMutex, SYNCHRONIZATION_SYNCHRONIZE,
@@ -141,7 +141,7 @@ mod tests {
     use super::*;
 
     fn unique_name(tag: &str) -> String {
-        format!(r"Local\fanforge-test-{tag}-{}", std::process::id())
+        format!(r"Local\mostlyfans-test-{tag}-{}", std::process::id())
     }
 
     #[test]

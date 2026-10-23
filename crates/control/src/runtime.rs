@@ -4,17 +4,17 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use fanforge_core::board::FanLimits;
-use fanforge_core::config::Config;
-use fanforge_core::engine::{Action, Engine, TickOutcome};
-use fanforge_core::state::{ControlState, GpuState, HardwareStatus};
-use fanforge_core::store::{self, CONFIG_BACKUPS};
-use fanforge_core::telemetry::{Readings, SensorReading};
-use fanforge_core::{FanId, FanKind};
-use fanforge_hw::HwError;
-use fanforge_hw::gpu_fans::{GpuFans, GpuReadings, GpuReleaser};
-use fanforge_hw::sensors::ExtraSensors;
-use fanforge_win::paths;
+use mostlyfans_core::board::FanLimits;
+use mostlyfans_core::config::Config;
+use mostlyfans_core::engine::{Action, Engine, TickOutcome};
+use mostlyfans_core::state::{ControlState, GpuState, HardwareStatus};
+use mostlyfans_core::store::{self, CONFIG_BACKUPS};
+use mostlyfans_core::telemetry::{Readings, SensorReading};
+use mostlyfans_core::{FanId, FanKind};
+use mostlyfans_hw::HwError;
+use mostlyfans_hw::gpu_fans::{GpuFans, GpuReadings, GpuReleaser};
+use mostlyfans_hw::sensors::ExtraSensors;
+use mostlyfans_win::paths;
 
 use crate::backend::Backend;
 use crate::conflicts::ConflictMonitor;
@@ -255,7 +255,7 @@ impl<B: Backend> Runtime<B> {
             }
             LoopMessage::RetryFan(fan, reply) => {
                 let result = if self.engine.is_monitor_only_for(fan.kind()) {
-                    Err("FanForge is in monitor-only mode".to_owned())
+                    Err("MostlyFans is in monitor-only mode".to_owned())
                 } else {
                     tracing::info!(%fan, "retrying a fan after a fault");
                     self.engine.clear_fault(&fan);
@@ -328,7 +328,7 @@ impl<B: Backend> Runtime<B> {
             Err(error) => {
                 tracing::error!(%fan, %error, "calibration result not saved");
                 self.calibration_warning = Some(format!(
-                    "the calibration of `{fan}` applies until FanForge restarts but was not saved ({error})"
+                    "the calibration of `{fan}` applies until MostlyFans restarts but was not saved ({error})"
                 ));
             }
         }
@@ -736,11 +736,9 @@ impl<B: Backend> Runtime<B> {
         if self.lock_skips >= LOCK_SKIPS_BEFORE_WARNING {
             warnings.push("another program has held the hardware bus for a long time".to_owned());
         }
-        warnings.extend(
-            findings.monitoring.iter().map(|tool| {
-                format!("{tool} is running; if it controls fans it will fight FanForge")
-            }),
-        );
+        warnings.extend(findings.monitoring.iter().map(|tool| {
+            format!("{tool} is running; if it controls fans it will fight MostlyFans")
+        }));
         let calibration = self.engine.calibration_view();
         warnings.extend(calibration.not_restarting.iter().map(|fan| {
             format!("fan `{fan}` did not restart during calibration, even at 100%; check that it is connected and working")
@@ -855,19 +853,19 @@ pub(crate) mod tests {
     use std::sync::{Mutex, mpsc};
     use std::thread;
 
-    use fanforge_core::Duty;
-    use fanforge_core::board::BoardIdentity;
-    use fanforge_core::calibration::{CalibrationOutcome, FanCalibration, MAX_POINTS, Phase};
-    use fanforge_core::config::{FanMode, MAX_FAN_ENTRIES};
-    use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
-    use fanforge_core::engine::FanState;
-    use fanforge_core::telemetry::SensorReading;
-    use fanforge_hw::ite::fake::{FakeIte, SharedFake};
-    use fanforge_hw::mutex::NamedMutex;
-    use fanforge_hw::nuvoton::fake::{FakeNct, OUTSIDE_CONFIG_MODE, SharedNct};
-    use fanforge_hw::sensors::SensorCache;
-    use fanforge_hw::superio::{Slot, SuperIo};
-    use fanforge_hw::system::Hardware;
+    use mostlyfans_core::Duty;
+    use mostlyfans_core::board::BoardIdentity;
+    use mostlyfans_core::calibration::{CalibrationOutcome, FanCalibration, MAX_POINTS, Phase};
+    use mostlyfans_core::config::{FanMode, MAX_FAN_ENTRIES};
+    use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
+    use mostlyfans_core::engine::FanState;
+    use mostlyfans_core::telemetry::SensorReading;
+    use mostlyfans_hw::ite::fake::{FakeIte, SharedFake};
+    use mostlyfans_hw::mutex::NamedMutex;
+    use mostlyfans_hw::nuvoton::fake::{FakeNct, OUTSIDE_CONFIG_MODE, SharedNct};
+    use mostlyfans_hw::sensors::SensorCache;
+    use mostlyfans_hw::superio::{Slot, SuperIo};
+    use mostlyfans_hw::system::Hardware;
 
     use super::*;
 
@@ -884,7 +882,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn opener(fake: SharedFake, tag: &str) -> Opener<Hardware<SharedFake>> {
-        let name = format!(r"Local\fanforge-runtime-{tag}-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-runtime-{tag}-{}", std::process::id());
         Box::new(move |snapshot: &Path| {
             let chip = SuperIo::probe(fake.clone(), Slot::Primary, NamedMutex::open(&name)?)?;
             Hardware::from_parts(
@@ -1451,12 +1449,14 @@ pub(crate) mod tests {
     #[test]
     fn a_busy_bus_cancels_only_after_three_skipped_ticks() {
         let mut rig = started("cal-busy", &[("pwm2", manual(60.0))]);
-        let name = format!(r"Local\fanforge-runtime-cal-busy-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-runtime-cal-busy-{}", std::process::id());
         let (release, held) = mpsc::channel::<()>();
         let (ready_tx, ready) = mpsc::channel();
         let holder = thread::spawn(move || {
             let mutex = NamedMutex::open(&name).unwrap();
-            let _guard = mutex.acquire(fanforge_hw::mutex::DEFAULT_TIMEOUT).unwrap();
+            let _guard = mutex
+                .acquire(mostlyfans_hw::mutex::DEFAULT_TIMEOUT)
+                .unwrap();
             ready_tx.send(()).unwrap();
             held.recv().ok();
         });
@@ -1529,7 +1529,7 @@ pub(crate) mod tests {
         let mut settings = rig.runtime.engine.config().clone();
         settings.fans.insert(
             "pwm2".into(),
-            fanforge_core::config::FanSettings {
+            mostlyfans_core::config::FanSettings {
                 case_fan: true,
                 allow_stop: true,
                 ..Default::default()
@@ -1583,7 +1583,7 @@ pub(crate) mod tests {
             "pwm2".into(),
             FanCalibration {
                 points: vec![
-                    fanforge_core::calibration::CalibrationPoint {
+                    mostlyfans_core::calibration::CalibrationPoint {
                         duty: Duty::FULL,
                         rpm: 1,
                     };
@@ -1600,7 +1600,7 @@ pub(crate) mod tests {
         assert!(loaded.calibration_warning.unwrap().contains("ignored"));
     }
 
-    use fanforge_hw::gpu_fans::fake::{FakeGpus, GPU_ID, SharedGpus};
+    use mostlyfans_hw::gpu_fans::fake::{FakeGpus, GPU_ID, SharedGpus};
 
     fn gpu_fan() -> FanId {
         FanId::for_gpu_fan(GPU_ID, 0)
@@ -1784,12 +1784,14 @@ pub(crate) mod tests {
         rig.fake.with(|chip| chip.banks[0][0x29] = 40);
         rig.runtime.tick();
 
-        let name = format!(r"Local\fanforge-runtime-gpu-busy-{}", std::process::id());
+        let name = format!(r"Local\mostlyfans-runtime-gpu-busy-{}", std::process::id());
         let (release, held) = mpsc::channel::<()>();
         let (ready_tx, ready) = mpsc::channel();
         let holder = thread::spawn(move || {
             let mutex = NamedMutex::open(&name).unwrap();
-            let _guard = mutex.acquire(fanforge_hw::mutex::DEFAULT_TIMEOUT).unwrap();
+            let _guard = mutex
+                .acquire(mostlyfans_hw::mutex::DEFAULT_TIMEOUT)
+                .unwrap();
             ready_tx.send(()).unwrap();
             held.recv().ok();
         });
@@ -1946,7 +1948,7 @@ pub(crate) mod tests {
         assert_eq!(heard.lock().unwrap().last(), Some(&Signal::Owning(false)));
     }
 
-    fn hands_off_lifecycle<P: fanforge_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
+    fn hands_off_lifecycle<P: mostlyfans_hw::port::PortIo + Clone + 'static>(tag: &str, io: P) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config: dir.path().join("config.toml"),
@@ -1954,7 +1956,7 @@ pub(crate) mod tests {
         };
         store::save_toml_atomic(&paths.config, &config_with(&[("pwm2", manual(60.0))]), 0).unwrap();
         let name = format!(
-            r"Local\fanforge-runtime-hands-off-{tag}-{}",
+            r"Local\mostlyfans-runtime-hands-off-{tag}-{}",
             std::process::id()
         );
         let chip_io = io.clone();

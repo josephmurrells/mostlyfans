@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn a_locked_executable_cannot_be_renamed() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("fanforge.exe");
+        let file = dir.path().join("mostlyfans.exe");
         std::fs::write(&file, b"binary").unwrap();
         let _lock = lock_against_replacement(&file).unwrap();
         assert!(std::fs::rename(&file, dir.path().join("moved.exe")).is_err());

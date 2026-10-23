@@ -282,7 +282,7 @@ impl<P: PortIo> SecondProbe<P> {
                     .to_owned()
             }
             Self::Nothing(chip_id) => {
-                format!("chip id {chip_id:#06x} on 0x4E isn't a second fan chip FanForge knows")
+                format!("chip id {chip_id:#06x} on 0x4E isn't a second fan chip MostlyFans knows")
             }
             Self::Alias(name) => format!(
                 "{name} on 0x4E answers at the first chip's address (the same chip twice), so it is ignored"

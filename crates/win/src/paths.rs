@@ -4,8 +4,9 @@ use windows::Win32::UI::Shell::FOLDERID_ProgramData;
 
 use crate::shell::known_folder;
 
-pub const APP_NAME: &str = "FanForge";
-pub const INSTANCE_MUTEX: &str = r"Global\FanForge.Instance";
+pub const APP_NAME: &str = "MostlyFans";
+pub const INSTANCE_MUTEX: &str = r"Global\MostlyFans.Instance";
+pub const OLD_INSTANCE_MUTEX: &str = r"Global\FanForge.Instance";
 const FALLBACK_PROGRAM_DATA: &str = r"C:\ProgramData";
 
 pub fn data_dir() -> PathBuf {

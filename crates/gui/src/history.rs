@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fanforge_core::state::{ControlState, HardwareStatus};
-use fanforge_core::telemetry::is_plausible;
-use fanforge_core::{FanId, SensorId};
+use mostlyfans_core::state::{ControlState, HardwareStatus};
+use mostlyfans_core::telemetry::is_plausible;
+use mostlyfans_core::{FanId, SensorId};
 
 pub const WINDOW: Duration = Duration::from_secs(300);
 const MIN_SPAN: Duration = Duration::from_secs(60);

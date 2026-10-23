@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use fanforge_core::config::Config;
+use mostlyfans_core::config::Config;
 
 fn keyed<K: Ord, V: PartialEq>(live: &BTreeMap<K, V>, draft: &BTreeMap<K, V>) -> usize {
     let keys: BTreeSet<&K> = live.keys().chain(draft.keys()).collect();
@@ -39,8 +39,8 @@ pub fn count(live: &Config, draft: &Config) -> usize {
 mod tests {
     use super::*;
     use crate::fixtures;
-    use fanforge_core::Duty;
-    use fanforge_core::config::{FanMode, Profile};
+    use mostlyfans_core::Duty;
+    use mostlyfans_core::config::{FanMode, Profile};
 
     #[test]
     fn an_unchanged_draft_has_no_changes() {

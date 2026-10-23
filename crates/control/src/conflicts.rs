@@ -4,7 +4,8 @@ use crate::legacy;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-const CONTROLLING_TOOLS: [(&str, &str); 6] = [
+const CONTROLLING_TOOLS: [(&str, &str); 7] = [
+    ("fanforge.exe", "FanForge (an old MostlyFans build)"),
     ("fancontrol.exe", "FanControl"),
     ("speedfan.exe", "SpeedFan"),
     ("argusmonitor.exe", "Argus Monitor"),
@@ -65,7 +66,7 @@ pub struct ConflictMonitor {
 impl Default for ConflictMonitor {
     fn default() -> Self {
         Self::with_sources(
-            Box::new(|| fanforge_win::running_process_names().map_err(|error| error.to_string())),
+            Box::new(|| mostlyfans_win::running_process_names().map_err(|error| error.to_string())),
             Box::new(|| {
                 legacy::service_installed()
                     .then(|| legacy::SERVICE_LABEL.to_owned())
@@ -121,10 +122,14 @@ mod tests {
         let findings = classify(&[
             "explorer.exe",
             "FanControl.exe",
+            "FanForge.exe",
             "LibreHardwareMonitor.exe",
             "HWiNFO64.EXE",
         ]);
-        assert_eq!(findings.controlling, vec!["FanControl"]);
+        assert_eq!(
+            findings.controlling,
+            vec!["FanForge (an old MostlyFans build)", "FanControl"]
+        );
         assert_eq!(findings.monitoring, vec!["LibreHardwareMonitor"]);
         assert!(findings.gpu_controlling.is_empty());
         let gpu = classify(&["MSIAfterburner.exe", "GPU Tweak III.exe", "RTSS.exe"]);

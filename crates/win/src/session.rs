@@ -14,7 +14,7 @@ use windows::core::PCWSTR;
 
 use crate::wide;
 
-const CLASS_NAME: &str = "FanForgeSessionWindow";
+const CLASS_NAME: &str = "MostlyFansSessionWindow";
 const EARLIEST_APPLICATION_SHUTDOWN_LEVEL: u32 = 0x3FF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +76,7 @@ fn create_window() -> io::Result<HWND> {
     if unsafe { RegisterClassW(&class) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let title = wide("FanForge session monitor");
+    let title = wide("MostlyFans session monitor");
     let window = unsafe {
         CreateWindowExW(
             WS_EX_TOOLWINDOW,

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use fanforge_core::SensorId;
-use fanforge_core::telemetry::{SensorReading, is_plausible};
-use fanforge_win::topology::{self, PhysicalCore};
+use mostlyfans_core::SensorId;
+use mostlyfans_core::telemetry::{SensorReading, is_plausible};
+use mostlyfans_win::topology::{self, PhysicalCore};
 
 use super::SensorSource;
 use crate::HwError;
@@ -303,7 +303,7 @@ impl SensorSource for CoreTempSource {
                 Ok(AmdRead::Readings(readings)) => readings,
                 Ok(AmdRead::WrongLayout) => {
                     tracing::warn!(
-                        "per-core temperatures don't match the CPU temperature; the PM table layout looks wrong, so they are turned off until FanForge restarts"
+                        "per-core temperatures don't match the CPU temperature; the PM table layout looks wrong, so they are turned off until MostlyFans restarts"
                     );
                     self.state = State::Unsupported;
                     Vec::new()

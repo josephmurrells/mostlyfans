@@ -1,6 +1,6 @@
 use std::sync::{Mutex, PoisonError};
 
-use fanforge_win::paths;
+use mostlyfans_win::paths;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
@@ -10,7 +10,7 @@ const MAX_LOG_FILES: usize = 7;
 static GUARD: Mutex<Option<WorkerGuard>> = Mutex::new(None);
 
 fn filter() -> EnvFilter {
-    EnvFilter::try_from_env("FANFORGE_LOG").unwrap_or_else(|_| EnvFilter::new("info"))
+    EnvFilter::try_from_env("MOSTLYFANS_LOG").unwrap_or_else(|_| EnvFilter::new("info"))
 }
 
 pub fn init(prefix: &str) {

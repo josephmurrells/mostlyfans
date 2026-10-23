@@ -4,14 +4,14 @@ use std::sync::Arc;
 use eframe::egui::{Theme, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use fanforge_core::Duty;
-use fanforge_core::SensorId;
-use fanforge_core::calibration::{
+use mostlyfans_core::Duty;
+use mostlyfans_core::SensorId;
+use mostlyfans_core::calibration::{
     CalibrationOutcome, CalibrationPoint, CalibrationReport, FanCalibration,
 };
-use fanforge_core::config::FanMode;
-use fanforge_core::state::ControlState;
-use fanforge_core::telemetry::SensorReading;
+use mostlyfans_core::config::FanMode;
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::telemetry::SensorReading;
 
 use super::*;
 use crate::autostart::AutostartState;
@@ -403,9 +403,9 @@ fn busy_state() -> ControlState {
 }
 
 #[test]
-#[ignore = "renders screenshots for manual review; set FANFORGE_SCREENSHOTS"]
+#[ignore = "renders screenshots for manual review; set MOSTLYFANS_SCREENSHOTS"]
 fn render_screenshots() {
-    let Some(dir) = std::env::var_os("FANFORGE_SCREENSHOTS").map(PathBuf::from) else {
+    let Some(dir) = std::env::var_os("MOSTLYFANS_SCREENSHOTS").map(PathBuf::from) else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
@@ -499,8 +499,9 @@ fn render_screenshots() {
     screenshot(&mut harness, &dir, "settings-monitor-only-dark");
 
     let mut flagged = fixtures::state();
-    flagged.fans[1].state =
-        fanforge_core::engine::FanState::Faulted(fanforge_core::response::NO_RESPONSE.to_owned());
+    flagged.fans[1].state = mostlyfans_core::engine::FanState::Faulted(
+        mostlyfans_core::response::NO_RESPONSE.to_owned(),
+    );
     let link = FakeLink::new(flagged);
     let mut view = shell(&link, Page::Fans);
     view.fans.select(fixtures::fan(1));
@@ -658,7 +659,7 @@ fn a_gpu_tool_is_named_in_its_own_alert() {
     assert!(
         harness
             .query_by_label_contains(
-                "MSI Afterburner is running, so FanForge isn't controlling the graphics card fans"
+                "MSI Afterburner is running, so MostlyFans isn't controlling the graphics card fans"
             )
             .is_some()
     );
@@ -1070,7 +1071,8 @@ fn the_monitor_only_switch_applies_at_once_and_resumes_from_its_alert() {
 #[test]
 fn a_flagged_fan_can_be_tried_again_from_its_alert_and_its_page() {
     let mut state = fixtures::state();
-    state.fans[1].state = fanforge_core::engine::FanState::Faulted("the fan stopped at 30%".into());
+    state.fans[1].state =
+        mostlyfans_core::engine::FanState::Faulted("the fan stopped at 30%".into());
     let link = FakeLink::new(state);
     let mut view = shell(&link, Page::Fans);
     view.fans.select(fixtures::fan(1));

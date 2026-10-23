@@ -36,9 +36,9 @@ impl Tray {
     pub fn new(ctx: &egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
         let status = MenuItem::new("Starting…", false, None);
-        let show = MenuItem::new("Open FanForge", true, None);
+        let show = MenuItem::new("Open MostlyFans", true, None);
         let monitor_only = CheckMenuItem::new("Monitor only", true, false, None);
-        let exit = MenuItem::new("Quit FanForge", true, None);
+        let exit = MenuItem::new("Quit MostlyFans", true, None);
         menu.append_items(&[
             &status,
             &PredefinedMenuItem::separator(),
@@ -80,7 +80,7 @@ impl Tray {
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
-            .with_tooltip("FanForge")
+            .with_tooltip("MostlyFans")
             .with_icon(fan_icon(glyph::BLUE)?)
             .build()?;
         Ok(Self {
@@ -94,7 +94,7 @@ impl Tray {
             profile_names: Vec::new(),
             events,
             exit_requested,
-            tooltip: "FanForge".to_owned(),
+            tooltip: "MostlyFans".to_owned(),
         })
     }
 

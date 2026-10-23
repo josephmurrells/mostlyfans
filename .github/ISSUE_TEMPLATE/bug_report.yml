@@ -1,0 +1,51 @@
+name: Bug report
+description: Something doesn't work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a fan is stuck or your PC is running hot, quit MostlyFans from the tray first so the fans go back to BIOS control.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: MostlyFans version or commit
+    validations:
+      required: true
+  - type: input
+    id: chip
+    attributes:
+      label: Fan controller chip
+      description: Settings → About → Fan controller.
+      placeholder: ITE IT8655E
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Motherboard, CPU and graphics card
+      placeholder: ASUS PRIME B350-PLUS, Ryzen 7 5700X3D, RTX 4070 SUPER
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: diag
+    attributes:
+      label: mostlyfans-diag detect output
+      description: For motherboard fan problems, run `mostlyfans-diag detect` from an administrator terminal and paste the output.
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The latest file from Settings → Open log folder. Drag the file in, or paste the relevant part.
+      render: text

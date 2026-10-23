@@ -2,7 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, ViewportCommand};
-use fanforge_core::state::ControlState;
+use mostlyfans_core::state::ControlState;
 
 use crate::autostart::AutostartState;
 use crate::connection::ControlLink;
@@ -21,7 +21,7 @@ use crate::window_geometry::LastGoodWindow;
 const VISIBLE_REFRESH: Duration = Duration::from_millis(500);
 const HIDDEN_REFRESH: Duration = Duration::from_secs(2);
 
-pub struct FanForgeApp {
+pub struct MostlyFansApp {
     show_gate: ShowGate,
     tray: Option<Tray>,
     shell: Shell,
@@ -43,7 +43,7 @@ fn tint(overall: &Overall) -> [u8; 3] {
     }
 }
 
-impl FanForgeApp {
+impl MostlyFansApp {
     pub fn new(
         ctx: &egui::Context,
         link: Box<dyn ControlLink>,
@@ -130,19 +130,19 @@ fn tooltip(state: &ControlState, overall: &Overall, profile: &str) -> String {
         .readings
         .temperature(&state.config.safety.critical_sensor);
     format!(
-        "FanForge – {} · {profile} · {sensor} {}",
+        "MostlyFans – {} · {profile} · {sensor} {}",
         overall.label(),
         format::whole_celsius(reading)
     )
 }
 
-impl Drop for FanForgeApp {
+impl Drop for MostlyFansApp {
     fn drop(&mut self) {
         self.show_gate.close();
     }
 }
 
-impl eframe::App for FanForgeApp {
+impl eframe::App for MostlyFansApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(VISIBLE_REFRESH);
         self.shell.logic();

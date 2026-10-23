@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_core::FanId;
-use fanforge_core::config::Config;
-use fanforge_core::state::ControlState;
+use mostlyfans_core::FanId;
+use mostlyfans_core::config::Config;
+use mostlyfans_core::state::ControlState;
 
 use crate::backend::Backend;
 use crate::runtime::Runtime;
@@ -308,9 +308,9 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use fanforge_core::store;
-    use fanforge_hw::ite::fake::{FakeIte, SharedFake};
-    use fanforge_hw::system::Hardware;
+    use mostlyfans_core::store;
+    use mostlyfans_hw::ite::fake::{FakeIte, SharedFake};
+    use mostlyfans_hw::system::Hardware;
 
     use super::*;
     use crate::conflicts::ConflictMonitor;

@@ -34,7 +34,7 @@ pub(crate) fn wait_handle(handle: &OwnedHandle, timeout: Option<Duration>) -> io
 fn squatted(name: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        format!("`{name}` exists with permissions FanForge did not set"),
+        format!("`{name}` exists with permissions MostlyFans did not set"),
     )
 }
 
@@ -178,7 +178,7 @@ mod tests {
     }
 
     fn unique(tag: &str) -> String {
-        format!(r"Local\fanforge-win-{tag}-{}", std::process::id())
+        format!(r"Local\mostlyfans-win-{tag}-{}", std::process::id())
     }
 
     #[test]
