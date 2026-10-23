@@ -1,0 +1,47 @@
+name: Hardware report
+description: Tell us how FanForge works on your board, chip or graphics card, including when everything works.
+labels: [hardware]
+body:
+  - type: input
+    id: board
+    attributes:
+      label: Motherboard
+      placeholder: Gigabyte X570 AORUS ELITE
+    validations:
+      required: true
+  - type: input
+    id: chip
+    attributes:
+      label: Fan controller chip
+      description: Settings → About → Fan controller.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: FanForge version or commit
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: What works
+      options:
+        - label: Every fan header is listed, and none that aren't on the board
+        - label: Fans follow curves
+        - label: Fans go back to BIOS control after Quit FanForge
+        - label: Fans go back to BIOS control after End task in Task Manager
+        - label: Graphics card fans follow curves and go back to the driver
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything that didn't work or looked wrong.
+  - type: textarea
+    id: diag
+    attributes:
+      label: fanforge-diag detect output
+      description: Run `fanforge-diag detect` from an administrator terminal and paste the output.
+      render: text
+    validations:
+      required: true

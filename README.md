@@ -7,6 +7,9 @@ Fan control for Windows. FanForge reads your motherboard's fan sockets and tempe
 - **Safe by default:** fans never drop below a minimum speed, go to full speed if the CPU gets too hot or a sensor fails, and go back to your BIOS fan settings (or the graphics driver's) when FanForge stops.
 - **Works on its own:** no other monitoring tools needed. FanForge talks to the hardware through the signed PawnIO driver.
 
+> [!WARNING]
+> **Use FanForge at your own risk.** It writes directly to your motherboard's fan controller and your graphics card's fan settings through a kernel driver. Most of the supported chips are driven from public documentation and other open-source tools, not tested on every board, and a wrong setting, a bug or an unusual BIOS could leave a fan too slow, stop it, or make your PC run hot. Keep an eye on your temperatures after you set it up, and stop using it if anything looks wrong. FanForge comes with no warranty: the authors aren't liable for damage to your hardware, lost data or anything else that results from using it (see sections 15 and 16 of the [license](LICENSE)).
+
 A few terms used below: a **fan header** is a fan socket on the motherboard; **duty** is how much power a fan gets, in %; **BIOS control** means the motherboard's own fan settings are in charge.
 
 ## Requirements
@@ -90,7 +93,7 @@ To see which chip you have, open **Settings → About → Fan controller**. Head
 - **No fans, or monitoring only:** the notice at the top of the window says why. Usually PawnIO is missing, another fan tool is running, or the chip isn't supported for fan control yet.
 - **A fan doesn't respond:** in the BIOS, set that header to an automatic fan curve (not "Full speed" or "Manual"), using PWM mode for 4-pin fans and DC/Voltage mode for 3-pin fans. Then check the message for that fan on the Fans page.
 - **Logs:** **Settings → Open log folder**, or `C:\ProgramData\FanForge\logs`. Your settings are in `C:\ProgramData\FanForge`.
-- **Reporting a problem:** open an [issue](https://github.com/josephmurrells/fanforge/issues) with your fan controller chip (Settings → About) and the latest log file.
+- **Reporting a problem:** open an [issue](https://github.com/josephmurrells/fanforge/issues/new/choose) with your fan controller chip (Settings → About), the latest log file and, if it's about the motherboard fans, the output of `fanforge-diag detect` run from an administrator terminal. Security problems go through [SECURITY.md](SECURITY.md) instead.
 
 ## Updating
 
@@ -113,8 +116,16 @@ cargo build --release
 
 The app is `target\release\fanforge.exe`, and the diagnostics tool is `target\release\fanforge-diag.exe`. How FanForge drives each chip, the safety internals and the diagnostics tool are described in [docs/technical.md](docs/technical.md).
 
+## Contributing
+
+Bug reports, hardware reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and submit changes.
+
 ## License
 
 Copyright (C) 2026 Joseph Murrells.
 
 FanForge is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE). `crates/hw/src/chips.rs`, `ite.rs` and `nuvoton.rs` are derived from LibreHardwareMonitor and are also covered by the [Mozilla Public License 2.0](LICENSE-MPL-2.0). It embeds signed [PawnIO modules](https://github.com/namazso/PawnIO.Modules) (LGPL-2.1, [license text](crates/hw/modules/LICENSE-LGPL-2.1), source at the [0.2.11 tag](https://github.com/namazso/PawnIO.Modules/tree/0.2.11)). Third-party components keep their own licenses, listed in [NOTICE](NOTICE).
+
+FanForge is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+FanForge isn't affiliated with or endorsed by ASUS, Gigabyte, MSI, ASRock, ITE, Nuvoton, AMD, Intel, NVIDIA or the authors of the other tools named here. Product names are trademarks of their owners.
