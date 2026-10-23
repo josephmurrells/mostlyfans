@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::HwError;
 use crate::board::detect_identity;
 use crate::chips::{ChipSpec, EcMap, NCT6687D_MSI_800};
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT};
 use crate::port::PortIo;
 use crate::superio::{BankDump, ChannelState, ChipConfig, ChipReadings, ControlKind, RegisterDump};
 
@@ -269,7 +269,7 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
 
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
 ) -> Result<RegisterDump, HwError> {
     let (global_config, ec_ldn_config) = crate::nuvoton::ldn_config(io, lock, config)?;
@@ -303,6 +303,7 @@ pub(crate) fn dump<P: PortIo>(
 
 #[cfg(test)]
 mod tests {
+    use crate::mutex::NamedMutex;
     use std::collections::BTreeMap;
 
     use super::*;

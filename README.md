@@ -64,7 +64,7 @@ You can turn off the critical-temperature and failed-sensor overrides in Setting
 | Nuvoton NCT6687D (MSI) | Yes. On MSI 800-series boards (B840, B850, B860, X870, Z890), only the CPU and Pump headers |
 | Nuvoton NCT6683D | Monitoring only |
 
-To see which chip you have, open **Settings → About → Fan controller**. On a chip that isn't in this table, FanForge finds no fan headers and says so. Some larger Gigabyte boards have a second fan chip; fans on that second chip don't show up yet.
+To see which chip you have, open **Settings → About → Fan controller**. Headers the board doesn't wire as fan headers are hidden, and one whose control pin the board uses for something else shows its speed but can't be controlled. On a chip that isn't in this table, FanForge finds no fan headers and says so. Some larger Gigabyte boards have a second fan chip (IT8790E, IT8792E or IT87952E). Its fans and temperatures show up in their own group. On Gigabyte boards where FanForge can reach the board's own fan controller, FanForge controls the IT8792E and IT87952E fans too (not yet tested on real hardware); otherwise they're monitor only, and the Fans page says why.
 
 **Graphics card fans**
 

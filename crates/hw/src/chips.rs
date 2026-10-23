@@ -4,6 +4,8 @@
 //
 // Derived from LibreHardwareMonitor (https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 
+use crate::pinmux::{IteMux, NctMux};
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChipSpec {
     pub name: &'static str,
@@ -46,6 +48,8 @@ pub struct IteMap {
     pub config_check: bool,
     pub manual_control: Option<u8>,
     pub polarity_check: bool,
+    pub pinmux: IteMux,
+    pub pwm6_gate: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,6 +59,7 @@ pub struct NctMap {
     pub slots: &'static [TempSlot],
     pub sources: &'static [TempSource],
     pub io_lock: bool,
+    pub pinmux: NctMux,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -158,6 +163,8 @@ const ITE: IteMap = IteMap {
     config_check: true,
     manual_control: None,
     polarity_check: true,
+    pinmux: IteMux::Classic,
+    pwm6_gate: false,
 };
 
 const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
@@ -166,6 +173,13 @@ const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
         fan_control: true,
         ident: Ident::Ite(chip_id),
         map: ChipMap::Ite(map),
+    }
+}
+
+const fn second_ite(name: &'static str, chip_id: u16) -> ChipSpec {
+    ChipSpec {
+        fan_control: false,
+        ..ite(name, chip_id, ITE)
     }
 }
 
@@ -371,7 +385,7 @@ const fn nuvoton(
     fans: usize,
     tach: Tach,
     (slots, sources): (&'static [TempSlot], &'static [TempSource]),
-    io_lock: bool,
+    (io_lock, pinmux): (bool, NctMux),
 ) -> ChipSpec {
     ChipSpec {
         name,
@@ -383,6 +397,7 @@ const fn nuvoton(
             slots,
             sources,
             io_lock,
+            pinmux,
         }),
     }
 }
@@ -390,7 +405,7 @@ const fn nuvoton(
 const EXACT: u8 = 0xFF;
 const FAMILY: u8 = 0xF0;
 
-pub static CHIPS: [ChipSpec; 28] = [
+pub static CHIPS: [ChipSpec; 31] = [
     ChipSpec {
         name: "ITE IT8655E",
         fan_control: true,
@@ -401,6 +416,7 @@ pub static CHIPS: [ChipSpec; 28] = [
             dump_banks: 4,
             config_check: false,
             polarity_check: false,
+            pinmux: IteMux::It8655,
             ..ITE
         }),
     },
@@ -416,6 +432,7 @@ pub static CHIPS: [ChipSpec; 28] = [
             tach_enable: TACH_ENABLE_8665,
             bank_select: true,
             config_check: false,
+            pinmux: IteMux::It8665,
             ..ITE
         },
     ),
@@ -429,16 +446,27 @@ pub static CHIPS: [ChipSpec; 28] = [
             pwm_control: PWM_CONTROL_ALT,
             tach_low: TACH_LOW_ALT,
             tach_high: TACH_HIGH_ALT,
+            pinmux: IteMux::It8625,
             ..ITE
         },
     ),
-    ite("ITE IT8620E", 0x8620, IteMap { fans: 5, ..ITE }),
+    ite(
+        "ITE IT8620E",
+        0x8620,
+        IteMap {
+            fans: 5,
+            pinmux: IteMux::It8620,
+            pwm6_gate: true,
+            ..ITE
+        },
+    ),
     ite(
         "ITE IT8628E",
         0x8628,
         IteMap {
             fans: 6,
             temps: 6,
+            pinmux: IteMux::It8620,
             ..ITE
         },
     ),
@@ -450,6 +478,8 @@ pub static CHIPS: [ChipSpec; 28] = [
             bank_select: true,
             dump_banks: 4,
             temps: 7,
+            pinmux: IteMux::It8620,
+            pwm6_gate: true,
             ..ITE
         },
     ),
@@ -462,6 +492,8 @@ pub static CHIPS: [ChipSpec; 28] = [
             dump_banks: 4,
             temps: 6,
             index_echo: false,
+            pinmux: IteMux::It8620,
+            pwm6_gate: true,
             ..ITE
         },
     ),
@@ -475,6 +507,8 @@ pub static CHIPS: [ChipSpec; 28] = [
             bank_select: true,
             dump_banks: 4,
             manual_control: Some(0x7F),
+            pinmux: IteMux::It8620,
+            pwm6_gate: true,
             ..ITE
         }),
     },
@@ -486,12 +520,16 @@ pub static CHIPS: [ChipSpec; 28] = [
             bank_select: true,
             dump_banks: 4,
             temps: 6,
+            pwm6_gate: true,
             ..ITE
         },
     ),
     ite("ITE IT8721F", 0x8721, ITE),
     ite("ITE IT8728F", 0x8728, ITE),
     ite("ITE IT8772E", 0x8772, ITE),
+    ite("ITE IT8792E", 0x8733, ITE),
+    ite("ITE IT87952E", 0x8695, ITE),
+    second_ite("ITE IT8790E", 0x8790),
     nuvoton(
         "Nuvoton NCT6771F",
         (0xB4, 0x70, FAMILY),
@@ -501,7 +539,7 @@ pub static CHIPS: [ChipSpec; 28] = [
             min_rpm: 20,
         },
         (SLOTS_6776, SOURCES_6771),
-        false,
+        (false, NctMux::Unchecked),
     ),
     nuvoton(
         "Nuvoton NCT6776F",
@@ -512,7 +550,7 @@ pub static CHIPS: [ChipSpec; 28] = [
             min_rpm: 164,
         },
         (SLOTS_6776, SOURCES_6776),
-        false,
+        (false, NctMux::Nct6776),
     ),
     nuvoton(
         "Nuvoton NCT6779D",
@@ -520,7 +558,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         5,
         COUNT_TACH,
         (SLOTS_6779, SOURCES_6779),
-        false,
+        (false, NctMux::Nct6779),
     ),
     nuvoton(
         "Nuvoton NCT6791D",
@@ -528,7 +566,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6791),
     ),
     nuvoton(
         "Nuvoton NCT6792D",
@@ -536,7 +574,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6792),
     ),
     nuvoton(
         "Nuvoton NCT6792D-A",
@@ -544,7 +582,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6779, SOURCES_6779),
-        true,
+        (true, NctMux::Nct6792),
     ),
     nuvoton(
         "Nuvoton NCT6793D",
@@ -552,7 +590,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6793),
     ),
     nuvoton(
         "Nuvoton NCT6795D",
@@ -560,7 +598,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6795),
     ),
     nuvoton(
         "Nuvoton NCT6796D",
@@ -568,7 +606,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         6,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6796),
     ),
     nuvoton(
         "Nuvoton NCT6796D-R or NCT5585D",
@@ -576,7 +614,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         7,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Unchecked),
     ),
     nuvoton(
         "Nuvoton NCT6797D",
@@ -584,7 +622,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         7,
         COUNT_TACH,
         (SLOTS_6791, SOURCES_6796),
-        true,
+        (true, NctMux::Nct6797),
     ),
     nuvoton(
         "Nuvoton NCT6798D",
@@ -592,7 +630,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         7,
         COUNT_TACH,
         (SLOTS_6798, SOURCES_6798),
-        true,
+        (true, NctMux::Nct6798),
     ),
     nuvoton(
         "Nuvoton NCT6799D or NCT6796D-S",
@@ -600,7 +638,7 @@ pub static CHIPS: [ChipSpec; 28] = [
         7,
         COUNT_TACH,
         (SLOTS_6798, SOURCES_6798),
-        true,
+        (true, NctMux::Nct6799),
     ),
     ec(
         "Nuvoton NCT6683D",

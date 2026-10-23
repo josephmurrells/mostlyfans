@@ -61,8 +61,28 @@ pub struct BoardInfo {
     pub chip_name: String,
     #[serde(default)]
     pub fan_control: bool,
+    #[serde(default)]
+    pub pwm_misconfigured: bool,
     pub fan_headers: usize,
     pub likely_cpu_fan: Option<FanId>,
+    #[serde(default)]
+    pub chips: Vec<ChipInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChipInfo {
+    pub chip_id: u16,
+    pub chip_name: String,
+    pub fan_control: bool,
+    #[serde(default)]
+    pub pwm_misconfigured: bool,
+    pub fan_headers: usize,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+pub fn chip_label(chip_name: &str) -> &str {
+    chip_name.strip_prefix("ITE ").unwrap_or(chip_name)
 }
 
 pub fn fan_limits(headers: usize) -> BTreeMap<FanId, FanLimits> {
@@ -81,6 +101,13 @@ pub fn temp_label(index: usize) -> String {
 
 pub fn temp_sensor_id(index: usize) -> SensorId {
     SensorId::new(format!("board/temp{}", index + 1))
+}
+
+pub fn chip_temp_sensor_id(chip: usize, index: usize) -> SensorId {
+    match chip {
+        0 => temp_sensor_id(index),
+        _ => SensorId::new(format!("board{}/temp{}", chip + 1, index + 1)),
+    }
 }
 
 #[cfg(test)]

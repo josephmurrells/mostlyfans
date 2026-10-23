@@ -4,21 +4,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fanforge_core::board::{
-    BoardIdentity, BoardInfo, FanLimits, default_fan_name, fan_limits, temp_label, temp_sensor_id,
+    BoardIdentity, BoardInfo, ChipInfo, FanLimits, default_fan_name, temp_label, temp_sensor_id,
 };
 use fanforge_core::engine::{Action, Command};
 use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
 use fanforge_core::{Duty, FanId, SensorId};
 
 use crate::HwError;
+use crate::amd::CpuInfo;
 use crate::board::detect_identity;
 use crate::cpu::{CPU_SENSOR, Cpu};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
+use crate::second::{self, SecondChip, wired_headers};
 use crate::snapshot::BiosSnapshot;
-use crate::superio::{SuperIo, detect};
+use crate::superio::{SecondProbe, SuperIo, detect, detect_second};
 
-pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
+pub use crate::second::SECOND_CHIP;
+
+pub use crate::second::RELEASE_BUDGET;
+pub const NO_CONTROL_PIN: &str = "the board uses this header's control pin for something else";
 
 pub type Chip = SuperIo<LpcIo>;
 
@@ -30,14 +35,14 @@ pub fn attach_chip() -> Result<Chip, HwError> {
     detect(LpcIo::open, || NamedMutex::open(ISA_BUS), false)
 }
 
+pub fn attach_second_chip(primary: &Chip) -> SecondProbe<LpcIo> {
+    detect_second(primary, LpcIo::open, false)
+}
+
 pub fn channel_index(fan: &FanId, channels: usize) -> Option<usize> {
-    let index = fan
-        .as_str()
-        .strip_prefix("pwm")?
-        .parse::<usize>()
-        .ok()?
-        .checked_sub(1)?;
-    (index < channels).then_some(index)
+    fan.header_channel()
+        .filter(|&(chip, index)| chip == 0 && index < channels)
+        .map(|(_, index)| index)
 }
 
 pub fn force_all_auto<P: PortIo>(
@@ -96,17 +101,36 @@ pub struct Hardware<P: PortIo = LpcIo> {
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
     foreign_owner: Option<u16>,
+    second: Option<SecondChip<P>>,
 }
 
 impl Hardware<LpcIo> {
     pub fn open(snapshot_path: &Path) -> Result<Self, HwError> {
         let chip = open_chip()?;
         let identity = detect_identity();
+        let board = second::Board {
+            gigabyte: identity
+                .manufacturer
+                .to_ascii_lowercase()
+                .contains("gigabyte"),
+            amd: CpuInfo::detect().vendor == "AuthenticAMD",
+        };
+        let second = detect_second(&chip, LpcIo::open, true)
+            .chip()
+            .map(|mut found| {
+                let control = second::discover(&mut found, board, second::open_isa_bridge);
+                SecondChip::new(
+                    found,
+                    control,
+                    second::snapshot_path(snapshot_path),
+                    second::open_isa_bridge,
+                )
+            });
         let cpu = Cpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
             tracing::warn!(%error, "CPU temperature sensors are unavailable");
         }
-        Self::from_parts(chip, cpu, identity, snapshot_path)
+        Ok(Self::from_parts(chip, cpu, identity, snapshot_path)?.with_second(second))
     }
 }
 
@@ -142,7 +166,17 @@ impl<P: PortIo> Hardware<P> {
             snapshot,
             snapshot_path: snapshot_path.to_owned(),
             foreign_owner,
+            second: None,
         })
+    }
+
+    pub fn with_second(mut self, second: Option<SecondChip<P>>) -> Self {
+        self.second = second;
+        self
+    }
+
+    pub fn second_chip(&self) -> Option<&SuperIo<P>> {
+        self.second.as_ref().map(|second| &second.chip)
     }
 
     pub fn board_info(&self) -> BoardInfo {
@@ -151,13 +185,39 @@ impl<P: PortIo> Hardware<P> {
             chip_id: self.chip.config().chip_id,
             chip_name: self.chip.chip().name.to_owned(),
             fan_control: self.chip.fan_control(),
-            fan_headers: self.chip.fan_count(),
-            likely_cpu_fan: Some(FanId::for_channel(0)),
+            pwm_misconfigured: self.chip.pwm_misconfigured(),
+            fan_headers: self.headers().count(),
+            likely_cpu_fan: self
+                .chip
+                .wiring()
+                .is_wired(0)
+                .then(|| FanId::for_channel(0)),
+            chips: std::iter::once(ChipInfo {
+                chip_id: self.chip.config().chip_id,
+                chip_name: self.chip.chip().name.to_owned(),
+                fan_control: self.chip.fan_control(),
+                pwm_misconfigured: self.chip.pwm_misconfigured(),
+                fan_headers: self.headers().count(),
+                note: None,
+            })
+            .chain(self.second.as_ref().map(SecondChip::info))
+            .collect(),
         }
     }
 
+    fn headers(&self) -> impl Iterator<Item = usize> + use<P> {
+        wired_headers(&self.chip)
+    }
+
     pub fn fan_limits(&self) -> BTreeMap<FanId, FanLimits> {
-        fan_limits(self.chip.fan_count())
+        let second = self.second.iter().flat_map(|second| {
+            wired_headers(&second.chip).map(|channel| FanId::for_chip_channel(SECOND_CHIP, channel))
+        });
+        self.headers()
+            .map(FanId::for_channel)
+            .chain(second)
+            .map(|fan| (fan, FanLimits::default()))
+            .collect()
     }
 
     pub fn warnings(&self) -> Vec<String> {
@@ -177,7 +237,8 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn owns_any(&self) -> bool {
-        self.chip.can_release() && !self.snapshot.owned.is_empty()
+        (self.chip.can_release() && !self.snapshot.owned.is_empty())
+            || self.second.as_ref().is_some_and(SecondChip::owns_any)
     }
 
     fn persist_snapshot(&self) -> Result<(), HwError> {
@@ -187,6 +248,16 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn initialize_channels(&mut self, take_control: bool) -> Result<(), HwError> {
+        let result = self.initialize_primary(take_control);
+        if let Some(second) = &mut self.second
+            && let Err(error) = second.initialize(take_control)
+        {
+            tracing::error!(%error, "could not set up the second fan chip's fans");
+        }
+        result
+    }
+
+    fn initialize_primary(&mut self, take_control: bool) -> Result<(), HwError> {
         if !self.chip.can_release() {
             return Ok(());
         }
@@ -210,7 +281,11 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn reinitialize(&mut self) -> Result<(), HwError> {
-        self.chip.reinitialize()
+        self.chip.reinitialize()?;
+        if let Some(second) = &mut self.second {
+            second.reinitialize();
+        }
+        Ok(())
     }
 
     pub fn read(&mut self) -> Result<Readings, HwError> {
@@ -228,10 +303,12 @@ impl<P: PortIo> Hardware<P> {
                 celsius: *temp,
             });
         }
-        let fans = chip
+        let wiring = self.chip.wiring();
+        let mut fans: Vec<FanReading> = chip
             .channels
             .iter()
             .enumerate()
+            .filter(|&(index, _)| wiring.is_wired(index))
             .map(|(index, state)| {
                 let mode = if state.is_auto() {
                     HardwareMode::Auto
@@ -241,13 +318,17 @@ impl<P: PortIo> Hardware<P> {
                 FanReading {
                     id: FanId::for_channel(index),
                     label: default_fan_name(index),
-                    rpm: chip.rpm[index],
+                    rpm: chip.rpm[index].filter(|_| wiring.has_tach(index)),
                     mode,
                     duty: (mode == HardwareMode::Manual).then(|| Duty::from_raw(state.duty)),
-                    unavailable: None,
+                    unavailable: (!wiring.has_pwm(index)).then(|| NO_CONTROL_PIN.to_owned()),
+                    monitor_only: false,
                 }
             })
             .collect();
+        if let Some(second) = &mut self.second {
+            second.read_into(&mut sensors, &mut fans);
+        }
         Ok(Readings { sensors, fans })
     }
 
@@ -268,11 +349,20 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn apply(&mut self, command: &Command, halted: &AtomicBool) -> Result<(), HwError> {
+        if let Some(second) = &mut self.second
+            && let Some((SECOND_CHIP, channel)) = command.fan.header_channel()
+            && channel < second.chip.fan_count()
+        {
+            return second.apply(channel, command.action, halted);
+        }
         let channel = channel_index(&command.fan, self.chip.fan_count())
             .ok_or_else(|| HwError::UnknownFan(command.fan.to_string()))?;
         match command.action {
             Action::SetDuty(_) if !self.fan_control() => {
                 Err(HwError::NoFanControl(self.chip.chip().name))
+            }
+            Action::SetDuty(_) if !self.chip.wiring().has_pwm(channel) => {
+                Err(HwError::NoControlPin(channel))
             }
             Action::Release if !self.chip.can_release() || !self.resettable(channel, false) => {
                 Ok(())
@@ -355,20 +445,31 @@ impl<P: PortIo> Hardware<P> {
     }
 
     fn release(&mut self, owned_only: bool) -> Result<(), HwError> {
-        if let Some(owner) = self.foreign_owner.filter(|_| !self.chip.can_release()) {
-            return Err(HwError::ForeignSnapshot {
+        let started = Instant::now();
+        let primary = if let Some(owner) = self.foreign_owner.filter(|_| !self.chip.can_release()) {
+            Err(HwError::ForeignSnapshot {
                 owner,
                 found: self.chip.config().chip_id,
-            });
-        }
-        if !self.chip.can_release() {
-            return Ok(());
-        }
-        let result = self.release_channels(owned_only);
-        if let Err(error) = self.persist_snapshot() {
-            tracing::warn!(%error, "failed to persist BIOS snapshot after release");
-        }
-        result
+            })
+        } else if self.chip.can_release() {
+            let result = self.release_channels(owned_only);
+            if let Err(error) = self.persist_snapshot() {
+                tracing::warn!(%error, "failed to persist BIOS snapshot after release");
+            }
+            result
+        } else {
+            Ok(())
+        };
+        let second = match &mut self.second {
+            Some(second) => {
+                let remaining = RELEASE_BUDGET
+                    .saturating_sub(started.elapsed())
+                    .max(second::SHORT_BUDGET);
+                second.release(owned_only, remaining)
+            }
+            None => Ok(()),
+        };
+        primary.and(second)
     }
 }
 
@@ -420,6 +521,196 @@ mod tests {
             path,
         )
         .unwrap()
+    }
+
+    fn with_second_chip(tag: &str, path: &Path) -> (Hardware<SharedFake>, SharedFake, SharedFake) {
+        let primary = SharedFake::new(FakeIte::chip(0x8689));
+        let second = SharedFake::new(FakeIte::second(0x8733));
+        let found = detect_second(
+            &SuperIo::probe(primary.clone(), Slot::Primary, lock(&format!("{tag}-a"))).unwrap(),
+            |_| Ok(second.clone()),
+            true,
+        )
+        .chip();
+        assert!(found.is_some());
+        let hardware = hardware(tag, &primary, path).with_second(found.map(|chip| {
+            SecondChip::new(
+                chip,
+                Err("monitor only in tests".to_owned()),
+                second::snapshot_path(path),
+                || Err(HwError::AccessDenied),
+            )
+        }));
+        (hardware, primary, second)
+    }
+
+    fn data_writes(fake: &SharedFake) -> usize {
+        fake.with(|chip| {
+            chip.writes
+                .iter()
+                .filter(|&&(port, ..)| port == chip.base + 6)
+                .count()
+        })
+    }
+
+    #[test]
+    fn a_second_chip_adds_monitor_only_fans_and_temperatures_without_renaming_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, _, second) = with_second_chip("two-chips", &dir.path().join("s.toml"));
+        let readings = hardware.read().unwrap();
+        let ids: Vec<&str> = readings.fans.iter().map(|fan| fan.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "pwm1",
+                "pwm2",
+                "pwm3",
+                "pwm4",
+                "pwm5",
+                "pwm6",
+                "sio2/pwm1",
+                "sio2/pwm2",
+                "sio2/pwm3"
+            ]
+        );
+        let extra = &readings.fans[6];
+        assert_eq!(extra.label, "Fan 1 (IT8792E)");
+        assert!(extra.monitor_only);
+        assert_eq!(extra.rpm, Some(1136));
+        assert_eq!(extra.duty, None);
+        assert!(readings.fans[..6].iter().all(|fan| !fan.monitor_only));
+        let board2: Vec<(&str, &str)> = readings
+            .sensors
+            .iter()
+            .filter(|sensor| sensor.id.as_str().starts_with("board2/"))
+            .map(|sensor| (sensor.id.as_str(), sensor.label.as_str()))
+            .collect();
+        assert_eq!(board2[0], ("board2/temp1", "Board temp 1 (IT8792E)"));
+        assert_eq!(board2.len(), 3);
+        assert!(
+            readings
+                .sensors
+                .iter()
+                .any(|sensor| sensor.id.as_str() == "board/temp1")
+        );
+
+        let info = hardware.board_info();
+        assert_eq!(info.chip_name, "ITE IT8689E");
+        assert_eq!(info.fan_headers, 6);
+        assert_eq!(info.chips.len(), 2);
+        assert_eq!(info.chips[1].chip_name, "ITE IT8792E");
+        assert!(!info.chips[1].fan_control);
+        assert!(hardware.fan_control());
+        assert!(
+            hardware
+                .fan_limits()
+                .contains_key(&FanId::from("sio2/pwm2"))
+        );
+
+        let before = data_writes(&second);
+        let all_before = second.with(|chip| chip.writes.len());
+        assert!(matches!(
+            hardware.apply(&set("sio2/pwm1", 60.0), &RUNNING),
+            Err(HwError::NoFanControl("ITE IT8792E"))
+        ));
+        hardware.apply(&release("sio2/pwm1"), &RUNNING).unwrap();
+        assert!(matches!(
+            hardware.apply(&set("sio2/pwm4", 60.0), &RUNNING),
+            Err(HwError::UnknownFan(_))
+        ));
+        hardware.initialize_channels(true).unwrap();
+        hardware.apply(&set("pwm1", 60.0), &RUNNING).unwrap();
+        hardware.release_all().unwrap();
+        assert_eq!(data_writes(&second), before);
+        assert_eq!(second.with(|chip| chip.writes.len()), all_before);
+        assert!(
+            !hardware
+                .snapshot
+                .owned
+                .iter()
+                .any(|fan| fan.as_str().contains('/'))
+        );
+    }
+
+    #[test]
+    fn resume_skips_a_second_chip_after_a_primary_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, primary, second) =
+            with_second_chip("two-resume", &dir.path().join("s.toml"));
+        primary.with(|chip| chip.offline = true);
+        let writes = second.with(|chip| chip.writes.len());
+        assert!(hardware.reinitialize().is_err());
+        assert_eq!(second.with(|chip| chip.writes.len()), writes);
+        primary.with(|chip| chip.offline = false);
+        hardware.reinitialize().unwrap();
+        assert!(second.with(|chip| chip.writes.len()) > writes);
+    }
+
+    #[test]
+    fn an_abandoned_bus_reinitialises_both_chips_whichever_sees_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, primary, second) =
+            with_second_chip("two-abandon", &dir.path().join("s.toml"));
+        let name = hardware.chip.bus_lock().name().to_owned();
+        let primary_exits = primary.with(|chip| chip.exits);
+        let second_writes = second.with(|chip| chip.writes.len());
+        std::thread::spawn(move || {
+            let mutex = NamedMutex::open(&name).unwrap();
+            std::mem::forget(mutex.acquire(crate::mutex::DEFAULT_TIMEOUT).unwrap());
+            std::mem::forget(mutex);
+        })
+        .join()
+        .unwrap();
+        if let Some(extra) = hardware.second.as_mut() {
+            extra.chip.read().unwrap();
+        }
+        hardware.read().unwrap();
+        assert_eq!(primary.with(|chip| chip.exits), primary_exits + 1);
+        assert!(second.with(|chip| chip.writes.len()) > second_writes);
+    }
+
+    #[test]
+    fn a_failing_second_chip_never_fails_the_first_and_backs_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, _, second) = with_second_chip("two-fail", &dir.path().join("s.toml"));
+        second.with(|chip| chip.offline = true);
+        for _ in 0..3 {
+            let readings = hardware.read().unwrap();
+            let extra = readings
+                .fans
+                .iter()
+                .find(|fan| fan.id.as_str() == "sio2/pwm1")
+                .unwrap();
+            assert!(extra.monitor_only);
+            assert_eq!(extra.rpm, None);
+            assert!(
+                readings
+                    .sensors
+                    .iter()
+                    .filter(|sensor| sensor.id.as_str().starts_with("board2/"))
+                    .all(|sensor| sensor.celsius.is_none())
+            );
+            assert_eq!(readings.fans[0].rpm, Some(1136));
+        }
+        second.with(|chip| chip.offline = false);
+        let writes = second.with(|chip| chip.writes.len());
+        let readings = hardware.read().unwrap();
+        hardware.reinitialize().unwrap();
+        assert_eq!(second.with(|chip| chip.writes.len()), writes);
+        assert_eq!(readings.fans.len(), 9);
+        hardware.apply(&set("pwm2", 50.0), &RUNNING).unwrap();
+
+        if let Some(extra) = hardware.second.as_mut() {
+            extra.backoff = Duration::ZERO;
+            extra.retry_at = Some(Instant::now());
+        }
+        let readings = hardware.read().unwrap();
+        let extra = readings
+            .fans
+            .iter()
+            .find(|fan| fan.id.as_str() == "sio2/pwm1")
+            .unwrap();
+        assert_eq!(extra.rpm, Some(1136));
     }
 
     #[test]
@@ -743,6 +1034,69 @@ mod tests {
     }
 
     #[test]
+    fn headers_the_board_wired_to_something_else_are_hidden_or_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.pins[0x29] = 0x02;
+        ite.pins[0x27] |= 0x80;
+        ite.pins[0x26] = 0x20;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8689-pins", &fake, &path);
+        let info = hardware.board_info();
+        assert_eq!(info.fan_headers, 5);
+        assert_eq!(info.likely_cpu_fan, Some(FanId::from("pwm1")));
+        assert_eq!(
+            hardware
+                .fan_limits()
+                .keys()
+                .map(FanId::as_str)
+                .collect::<Vec<_>>(),
+            ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"]
+        );
+
+        hardware.initialize_channels(true).unwrap();
+        let readings = hardware.read().unwrap();
+        let ids: Vec<&str> = readings.fans.iter().map(|fan| fan.id.as_str()).collect();
+        assert_eq!(ids, ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"]);
+        assert_eq!(
+            readings.fans[1].unavailable.as_deref(),
+            Some(NO_CONTROL_PIN)
+        );
+        assert_eq!(readings.fans[1].rpm, Some(1136));
+        assert_eq!(readings.fans[2].rpm, None);
+        assert!(readings.fans[2].unavailable.is_none());
+        assert_eq!(readings.fans[4].rpm, None);
+
+        let before = fake.with(|chip| chip.writes.len());
+        assert!(matches!(
+            hardware.apply(&set("pwm2", 60.0), &RUNNING),
+            Err(HwError::NoControlPin(1))
+        ));
+        assert_eq!(fake.with(|chip| chip.writes.len()), before);
+        assert!(!hardware.owns_any());
+        hardware.apply(&set("pwm3", 60.0), &RUNNING).unwrap();
+    }
+
+    #[test]
+    fn the_it8689e_drops_pwm6_when_the_ec_has_it_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0x0B] = 0x00;
+        let fake = SharedFake::new(ite);
+        let it8689e = hardware("8689-pwm6", &fake, &dir.path().join("snapshot.toml"));
+        assert_eq!(it8689e.board_info().fan_headers, 6);
+        assert!(it8689e.chip.wiring().has_tach(5));
+        assert!(!it8689e.chip.wiring().has_pwm(5));
+
+        let mut ite = FakeIte::chip(0x8628);
+        ite.banks[0][0x0B] = 0x00;
+        let fake = SharedFake::new(ite);
+        let it8628e = hardware("8628-pwm6", &fake, &dir.path().join("other.toml"));
+        assert!(it8628e.chip.wiring().has_pwm(5));
+    }
+
+    #[test]
     fn unverified_chips_are_monitored_without_touching_fans_or_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
@@ -859,6 +1213,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: false,
+            pinmux: crate::pinmux::NctMux::Nct6779,
         }),
     };
 

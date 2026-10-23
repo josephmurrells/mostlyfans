@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 use std::os::windows::io::OwnedHandle;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use fanforge_win::{SecurityAttributes, borrow_handle, own_handle, wide};
@@ -22,6 +24,37 @@ const MUTEX_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x100001;;;WD)";
 pub struct NamedMutex {
     name: String,
     handle: OwnedHandle,
+}
+
+#[derive(Debug)]
+pub struct BusLock {
+    mutex: NamedMutex,
+    abandonments: AtomicU64,
+}
+
+impl BusLock {
+    pub fn new(mutex: NamedMutex) -> Arc<Self> {
+        Arc::new(Self {
+            mutex,
+            abandonments: AtomicU64::new(0),
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        self.mutex.name()
+    }
+
+    pub fn acquire(&self, timeout: Duration) -> Result<MutexGuard<'_>, HwError> {
+        let guard = self.mutex.acquire(timeout)?;
+        if guard.was_abandoned() {
+            self.abandonments.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(guard)
+    }
+
+    pub fn abandonments(&self) -> u64 {
+        self.abandonments.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug)]

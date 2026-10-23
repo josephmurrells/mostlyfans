@@ -86,7 +86,7 @@ pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config
         .readings
         .fans
         .iter()
-        .filter(|fan| fan.id.kind() == FanKind::Header)
+        .filter(|fan| fan.id.kind() == FanKind::Header && !fan.monitor_only)
         .filter(|fan| format::connected(fan) && !format::is_named(config, &fan.id))
         .map(|fan| fan.id.clone())
         .collect()
