@@ -17,7 +17,7 @@ use crate::cpu::{CPU_SENSOR, Cpu};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
 use crate::snapshot::BiosSnapshot;
-use crate::superio::{ChipConfig, ChipReadings, SuperIo, detect, detect_second};
+use crate::superio::{ChipReadings, SecondProbe, SuperIo, detect, detect_second};
 
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 pub const NO_CONTROL_PIN: &str = "the board uses this header's control pin for something else";
@@ -36,8 +36,8 @@ pub fn attach_chip() -> Result<Chip, HwError> {
     detect(LpcIo::open, || NamedMutex::open(ISA_BUS), false)
 }
 
-pub fn attach_second_chip(primary: &ChipConfig) -> Option<Chip> {
-    detect_second(primary, LpcIo::open, || NamedMutex::open(ISA_BUS), false)
+pub fn attach_second_chip(primary: &Chip) -> SecondProbe<LpcIo> {
+    detect_second(primary, LpcIo::open, false)
 }
 
 pub fn channel_index(fan: &FanId, channels: usize) -> Option<usize> {
@@ -115,6 +115,7 @@ struct SecondChip<P: PortIo> {
     chip: SuperIo<P>,
     failures: u32,
     retry_at: Option<Instant>,
+    backoff: Duration,
 }
 
 impl<P: PortIo> SecondChip<P> {
@@ -128,8 +129,31 @@ impl<P: PortIo> SecondChip<P> {
         }
     }
 
+    fn backing_off(&self) -> bool {
+        self.retry_at.is_some_and(|at| Instant::now() < at)
+    }
+
+    fn failed(&mut self, error: &HwError) {
+        self.failures += 1;
+        if self.failures == 1 {
+            tracing::warn!(%error, chip = self.chip.chip().name, "the second fan chip could not be read");
+        }
+        if self.failures >= SECOND_FAILURES_BEFORE_BACKOFF {
+            self.retry_at = Some(Instant::now() + self.backoff);
+        }
+    }
+
+    fn reinitialize(&mut self) {
+        if self.backing_off() {
+            return;
+        }
+        if let Err(error) = self.chip.reinitialize() {
+            self.failed(&error);
+        }
+    }
+
     fn poll(&mut self) -> Option<ChipReadings> {
-        if self.retry_at.is_some_and(|at| Instant::now() < at) {
+        if self.backing_off() {
             return None;
         }
         match self.chip.read() {
@@ -145,13 +169,7 @@ impl<P: PortIo> SecondChip<P> {
                 Some(readings)
             }
             Err(error) => {
-                self.failures += 1;
-                if self.failures == 1 {
-                    tracing::warn!(%error, chip = self.chip.chip().name, "the second fan chip could not be read");
-                }
-                if self.failures >= SECOND_FAILURES_BEFORE_BACKOFF {
-                    self.retry_at = Some(Instant::now() + SECOND_BACKOFF);
-                }
+                self.failed(&error);
                 None
             }
         }
@@ -198,12 +216,7 @@ impl<P: PortIo> SecondChip<P> {
 impl Hardware<LpcIo> {
     pub fn open(snapshot_path: &Path) -> Result<Self, HwError> {
         let chip = open_chip()?;
-        let second = detect_second(
-            &chip.config(),
-            LpcIo::open,
-            || NamedMutex::open(ISA_BUS),
-            true,
-        );
+        let second = detect_second(&chip, LpcIo::open, true).chip();
         let identity = detect_identity();
         let cpu = Cpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
@@ -254,6 +267,7 @@ impl<P: PortIo> Hardware<P> {
             chip,
             failures: 0,
             retry_at: None,
+            backoff: SECOND_BACKOFF,
         });
         self
     }
@@ -352,13 +366,11 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn reinitialize(&mut self) -> Result<(), HwError> {
-        let primary = self.chip.reinitialize();
-        if let Some(second) = &mut self.second
-            && let Err(error) = second.chip.reinitialize()
-        {
-            tracing::warn!(%error, "the second fan chip could not be set up again");
+        self.chip.reinitialize()?;
+        if let Some(second) = &mut self.second {
+            second.reinitialize();
         }
-        primary
+        Ok(())
     }
 
     pub fn read(&mut self) -> Result<Readings, HwError> {
@@ -593,13 +605,11 @@ mod tests {
         let primary = SharedFake::new(FakeIte::chip(0x8689));
         let second = SharedFake::new(FakeIte::second(0x8733));
         let found = detect_second(
-            &SuperIo::probe(primary.clone(), Slot::Primary, lock(&format!("{tag}-a")))
-                .unwrap()
-                .config(),
+            &SuperIo::probe(primary.clone(), Slot::Primary, lock(&format!("{tag}-a"))).unwrap(),
             |_| Ok(second.clone()),
-            || Ok(lock(&format!("{tag}-b"))),
             true,
-        );
+        )
+        .chip();
         assert!(found.is_some());
         let hardware = hardware(tag, &primary, path).with_second(found);
         (hardware, primary, second)
@@ -669,6 +679,7 @@ mod tests {
         );
 
         let before = data_writes(&second);
+        let all_before = second.with(|chip| chip.writes.len());
         assert!(matches!(
             hardware.apply(&set("sio2/pwm1", 60.0), &RUNNING),
             Err(HwError::NoFanControl("ITE IT8792E"))
@@ -682,6 +693,7 @@ mod tests {
         hardware.apply(&set("pwm1", 60.0), &RUNNING).unwrap();
         hardware.release_all().unwrap();
         assert_eq!(data_writes(&second), before);
+        assert_eq!(second.with(|chip| chip.writes.len()), all_before);
         assert!(
             !hardware
                 .snapshot
@@ -689,6 +701,43 @@ mod tests {
                 .iter()
                 .any(|fan| fan.as_str().contains('/'))
         );
+    }
+
+    #[test]
+    fn resume_skips_a_second_chip_after_a_primary_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, primary, second) =
+            with_second_chip("two-resume", &dir.path().join("s.toml"));
+        primary.with(|chip| chip.offline = true);
+        let writes = second.with(|chip| chip.writes.len());
+        assert!(hardware.reinitialize().is_err());
+        assert_eq!(second.with(|chip| chip.writes.len()), writes);
+        primary.with(|chip| chip.offline = false);
+        hardware.reinitialize().unwrap();
+        assert!(second.with(|chip| chip.writes.len()) > writes);
+    }
+
+    #[test]
+    fn an_abandoned_bus_reinitialises_both_chips_whichever_sees_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut hardware, primary, second) =
+            with_second_chip("two-abandon", &dir.path().join("s.toml"));
+        let name = hardware.chip.bus_lock().name().to_owned();
+        let primary_exits = primary.with(|chip| chip.exits);
+        let second_writes = second.with(|chip| chip.writes.len());
+        std::thread::spawn(move || {
+            let mutex = NamedMutex::open(&name).unwrap();
+            std::mem::forget(mutex.acquire(crate::mutex::DEFAULT_TIMEOUT).unwrap());
+            std::mem::forget(mutex);
+        })
+        .join()
+        .unwrap();
+        if let Some(extra) = hardware.second.as_mut() {
+            extra.chip.read().unwrap();
+        }
+        hardware.read().unwrap();
+        assert_eq!(primary.with(|chip| chip.exits), primary_exits + 1);
+        assert!(second.with(|chip| chip.writes.len()) > second_writes);
     }
 
     #[test]
@@ -717,9 +766,22 @@ mod tests {
         second.with(|chip| chip.offline = false);
         let writes = second.with(|chip| chip.writes.len());
         let readings = hardware.read().unwrap();
+        hardware.reinitialize().unwrap();
         assert_eq!(second.with(|chip| chip.writes.len()), writes);
         assert_eq!(readings.fans.len(), 9);
         hardware.apply(&set("pwm2", 50.0), &RUNNING).unwrap();
+
+        if let Some(extra) = hardware.second.as_mut() {
+            extra.backoff = Duration::ZERO;
+            extra.retry_at = Some(Instant::now());
+        }
+        let readings = hardware.read().unwrap();
+        let extra = readings
+            .fans
+            .iter()
+            .find(|fan| fan.id.as_str() == "sio2/pwm1")
+            .unwrap();
+        assert_eq!(extra.rpm, Some(1136));
     }
 
     #[test]

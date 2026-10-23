@@ -78,7 +78,7 @@ pub fn chip_lines(board: &BoardInfo) -> Vec<String> {
 }
 
 pub fn connected(fan: &FanReading) -> bool {
-    fan.id.kind() == FanKind::Gpu || fan.rpm.is_some_and(|rpm| rpm > 0)
+    fan.id.kind() == FanKind::Gpu || fan.monitor_only || fan.rpm.is_some_and(|rpm| rpm > 0)
 }
 
 pub fn nothing_driven(state: &ControlState) -> bool {

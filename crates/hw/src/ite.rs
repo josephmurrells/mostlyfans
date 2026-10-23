@@ -7,7 +7,7 @@
 use crate::HwError;
 use crate::chips::ChipMap;
 use crate::chips::IteMap;
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT};
 use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
@@ -128,6 +128,9 @@ pub(crate) fn read_config<P: PortIo>(
     with_slot_config(io, slot, |space| {
         let chip_id = space.read_word(CHIP_ID_REG)?;
         let chip_id = match slot {
+            Slot::Primary if SECOND_CHIP_IDS.contains(&chip_id) => {
+                return Err(HwError::UnsupportedChip(chip_id));
+            }
             Slot::Primary => chip_id,
             Slot::Secondary => second_chip_id(chip_id)?,
         };
@@ -359,7 +362,7 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
 
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
     map: &IteMap,
 ) -> Result<RegisterDump, HwError> {
@@ -414,7 +417,7 @@ pub(crate) fn dump<P: PortIo>(
 
 pub(crate) fn pwm_configured<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
     map: &IteMap,
 ) -> Result<bool, HwError> {
@@ -708,6 +711,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    use crate::mutex::NamedMutex;
     use std::thread;
     use std::time::Duration;
 
@@ -801,7 +805,8 @@ mod tests {
 
     #[test]
     fn a_second_chip_on_4e_is_entered_with_its_own_key_and_never_exited() {
-        let mut chip = SuperIo::probe_second(FakeIte::second(0x8733), lock("second")).unwrap();
+        let mut chip =
+            SuperIo::probe_second(FakeIte::second(0x8733), BusLock::new(lock("second"))).unwrap();
         assert_eq!(chip.chip().name, "ITE IT8792E");
         assert_eq!(chip.config().slot, Slot::Secondary);
         assert_eq!(chip.config().base_address, 0x2A0);
@@ -831,7 +836,7 @@ mod tests {
     fn a_second_chip_already_in_config_mode_is_not_entered_again() {
         let mut fake = FakeIte::second(0x8695);
         fake.config_mode = true;
-        let chip = SuperIo::attach_second(fake, lock("second-entered")).unwrap();
+        let chip = SuperIo::attach_second(fake, BusLock::new(lock("second-entered"))).unwrap();
         assert_eq!(chip.chip().name, "ITE IT87952E");
         assert!(!config_writes(&chip.io, 0x4E).contains(&0x87));
         assert_eq!(chip.io.exits, 0);
@@ -855,14 +860,13 @@ mod tests {
 
     #[test]
     fn a_second_chip_is_looked_for_only_beside_a_primary_ite_and_never_as_an_alias() {
-        let primary = probe(FakeIte::chip(0x8689), "second-primary").config();
-        let found = crate::superio::detect_second(
-            &primary,
-            |_| Ok(FakeIte::second(0x8733)),
-            || Ok(lock("second-found")),
-            true,
+        let primary = probe(FakeIte::chip(0x8689), "second-primary");
+        let found = crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0x8733)), true);
+        assert!(found.describe().ends_with("IT8792E on 0x4E"));
+        assert_eq!(
+            found.chip().map(|chip| chip.chip().name),
+            Some("ITE IT8792E")
         );
-        assert_eq!(found.map(|chip| chip.chip().name), Some("ITE IT8792E"));
 
         let alias = crate::superio::detect_second(
             &primary,
@@ -872,34 +876,44 @@ mod tests {
                     ..FakeIte::second(0x8733)
                 })
             },
-            || Ok(lock("second-alias")),
             true,
         );
-        assert!(alias.is_none());
+        assert!(alias.describe().contains("the same chip twice"));
+        assert!(alias.chip().is_none());
 
-        let nuvoton = ChipConfig {
-            chip: chip_matching(|chip| chip.matches_nuvoton(0xD4, 0x2B)).unwrap(),
-            ..primary
-        };
+        let mut nuvoton = probe(FakeIte::chip(0x8689), "second-nuvoton");
+        nuvoton.config.chip = chip_matching(|chip| chip.matches_nuvoton(0xD4, 0x2B)).unwrap();
         let opened = std::cell::Cell::new(false);
-        let none = crate::superio::detect_second::<FakeIte>(
+        let none = crate::superio::detect_second(
             &nuvoton,
             |_| {
                 opened.set(true);
                 Err(HwError::AccessDenied)
             },
-            || Ok(lock("second-nuvoton")),
             true,
         );
-        assert!(none.is_none() && !opened.get());
+        assert!(matches!(none, crate::superio::SecondProbe::NotLooked));
+        assert!(!opened.get());
 
-        let empty = crate::superio::detect_second(
-            &primary,
-            |_| Ok(FakeIte::second(0xFFFF)),
-            || Ok(lock("second-empty")),
-            true,
-        );
-        assert!(empty.is_none());
+        let empty = crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0xFFFF)), true);
+        assert_eq!(empty.describe(), "none on 0x4E");
+        let reentered =
+            crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0x8883)), true);
+        assert!(reentered.describe().contains("0x8883"));
+        let refused = crate::superio::detect_second(&primary, |_| Err(HwError::AccessDenied), true);
+        assert!(refused.describe().contains("could not be set up"));
+    }
+
+    #[test]
+    fn second_chip_ids_are_refused_on_the_primary_port_as_before() {
+        for chip_id in SECOND_CHIP_IDS {
+            let mut io = FakeIte::chip(chip_id);
+            assert!(matches!(
+                read_config(&mut io, Slot::Primary, true),
+                Err(HwError::UnsupportedChip(found)) if found == chip_id
+            ));
+            assert!(!io.config_mode);
+        }
     }
 
     #[test]

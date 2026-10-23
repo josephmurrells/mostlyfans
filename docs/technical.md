@@ -40,7 +40,7 @@ FanForge supports fan control on a chip when public sources (LibreHardwareMonito
   - **Speed readings:** on boards with the newest Gigabyte controller, the speeds read from the chip's usual registers may be low or 0.
 - **Shared IDs:** NCT6796D-R shares its ID with NCT5585D, and NCT6799D with NCT6796D-S. FanForge can't tell them apart, so temperature labels may be off on the second chip of each pair. Both chips of each pair use the same fan-control registers.
 - **Nuvoton I/O lock:** on NCT679x boards where the firmware locks the hardware-monitor I/O space, FanForge clears the lock whenever it sets up the chip (startup, resume and recovery after a failed read or an abandoned bus mutex), as the Linux `nct6775` driver does. It's a single config-space write. If the lock doesn't clear, FanForge reports it. `fanforge-diag read` and `set-pwm` clear it the same way; `detect` and `dump` never do, and the dump's LDN section shows register `0x28` as it was at that moment (bit 4 set means locked; anything that cleared it since boot, including FanForge itself, shows as unlocked).
-- **Not supported yet:** ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), fan control on the secondary IT879xE chips (see below), Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips, and the extra tach-only inputs some chips have beyond their PWM channels (e.g. the IT8686E's 6th tach).
+- **Not supported yet:** ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), fan control on the secondary IT879xE chips (see above), Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips, and the extra tach-only inputs some chips have beyond their PWM channels (e.g. the IT8686E's 6th tach).
 
 ## Safety internals
 

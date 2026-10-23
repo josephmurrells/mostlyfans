@@ -76,15 +76,11 @@ impl FanId {
         let (chip, channel) = match self.0.split_once('/') {
             None => (0, self.0.as_str()),
             Some((prefix, channel)) => {
-                let chip = prefix.strip_prefix("sio")?.parse::<usize>().ok()?;
+                let chip = number(prefix.strip_prefix("sio")?)?;
                 (chip.checked_sub(1).filter(|&chip| chip > 0)?, channel)
             }
         };
-        let digits = channel.strip_prefix("pwm")?;
-        if digits.starts_with('0') || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        let index = digits.parse::<usize>().ok()?.checked_sub(1)?;
+        let index = number(channel.strip_prefix("pwm")?)?.checked_sub(1)?;
         Some((chip, index))
     }
 
@@ -99,6 +95,16 @@ impl FanId {
             FanKind::Header
         }
     }
+}
+
+fn number(digits: &str) -> Option<usize> {
+    if digits.is_empty()
+        || digits.starts_with('0')
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -133,6 +139,10 @@ mod tests {
             "sio2/pwm0",
             "gpu/nvidia/x/fan1",
             "pwm+1",
+            "sio+2/pwm1",
+            "sio02/pwm1",
+            "sio/pwm1",
+            "sio2/pwm1/x",
         ] {
             assert_eq!(FanId::from(id).header_channel(), None, "{id}");
         }
