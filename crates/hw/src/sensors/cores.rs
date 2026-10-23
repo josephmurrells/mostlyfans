@@ -164,6 +164,9 @@ fn open() -> Result<State, String> {
                 Ok(slots) => slots,
                 Err(state) => return Ok(state),
             };
+            if slots.is_empty() && matches!(layout.map, CoreMap::ZeroWhenFusedOff(_)) {
+                return Err("the PM table doesn't report any active cores yet".to_owned());
+            }
             if slots.len() != cores.len() {
                 return unsupported(&format!(
                     "PM table has {} enabled core slots but the CPU has {} cores",
@@ -214,9 +217,9 @@ pub fn enabled_slots(
                         .transpose()
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(smu::fused_slots(&fuses))
+            Ok(smu::enabled_slots_from_fuses(&fuses))
         }
-        CoreMap::IdleFields(fields) => {
+        CoreMap::ZeroWhenFusedOff(fields) => {
             let table = smu.read_pm_table()?;
             layout.active_slots(&table, fields).ok_or_else(|| {
                 HwError::UnsupportedCpu("the PM table is shorter than its layout".to_owned())

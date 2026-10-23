@@ -298,6 +298,19 @@ fn pm_table(raw: bool) -> DiagResult {
                 ),
                 Err(error) => println!("Enabled cores: unknown ({error})"),
             }
+            match fanforge_win::topology::physical_cores() {
+                Ok(cores) => {
+                    let verdict = match &enabled {
+                        Ok(slots) if slots.len() == cores.len() => {
+                            "matches, so FanForge shows per-core temperatures"
+                        }
+                        Ok(_) => "doesn't match, so FanForge hides per-core temperatures",
+                        Err(_) => "can't be compared",
+                    };
+                    println!("Windows reports {} physical cores; {verdict}", cores.len());
+                }
+                Err(error) => println!("Windows physical cores: unknown ({error})"),
+            }
             println!(
                 "Per-core temperatures by table slot (ryzen_monitor layout, index {}):",
                 layout.offset

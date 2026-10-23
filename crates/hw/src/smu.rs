@@ -58,7 +58,8 @@ const CORE_FUSE_BASE: u32 = 0x3008_1800;
 const CORE_FUSE_CCD_STRIDE: u32 = 0x0200_0000;
 const MATISSE_FUSES: CoreMap = CoreMap::Fuses { offset: 0x238 };
 const VERMEER_FUSES: CoreMap = CoreMap::Fuses { offset: 0x598 };
-const CEZANNE_FIELDS: CoreMap = CoreMap::IdleFields(&[200, 208, 224, 232, 240, 248, 256, 264, 296]);
+const CEZANNE_FIELDS: CoreMap =
+    CoreMap::ZeroWhenFusedOff(&[200, 208, 224, 232, 240, 248, 256, 264, 296]);
 const CORE_TEMP_LAYOUTS: [CoreTempLayout; 7] = [
     CoreTempLayout {
         version: 0x0024_0803,
@@ -107,7 +108,7 @@ const CORE_TEMP_LAYOUTS: [CoreTempLayout; 7] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoreMap {
     Fuses { offset: u32 },
-    IdleFields(&'static [usize]),
+    ZeroWhenFusedOff(&'static [usize]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,7 +174,7 @@ pub fn core_fuse_addresses(offset: u32, ccd_fuse: u32, ccds: usize) -> Vec<Optio
         .collect()
 }
 
-pub fn fused_slots(core_fuses: &[Option<u32>]) -> Vec<usize> {
+pub fn enabled_slots_from_fuses(core_fuses: &[Option<u32>]) -> Vec<usize> {
     core_fuses
         .iter()
         .enumerate()
@@ -363,7 +364,7 @@ mod tests {
         let ccd_fuse = 0b11 << 22;
         let addresses = core_fuse_addresses(0x598, ccd_fuse, 2);
         assert_eq!(addresses, [Some(0x3008_1D98), Some(0x3208_1D98)]);
-        let slots = fused_slots(&[Some(0b1100_0000), Some(0xFFFF_FF81)]);
+        let slots = enabled_slots_from_fuses(&[Some(0b1100_0000), Some(0xFFFF_FF81)]);
         assert_eq!(slots, [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14]);
 
         let layout = CoreTempLayout::for_version(0x0038_0805).unwrap();
@@ -385,13 +386,16 @@ mod tests {
     fn a_ccd_the_fuses_leave_out_has_no_cores() {
         let addresses = core_fuse_addresses(0x238, 0b01 << 22, 2);
         assert_eq!(addresses, [Some(0x3008_1A38), None]);
-        assert_eq!(fused_slots(&[Some(0), None]), (0..8).collect::<Vec<_>>());
+        assert_eq!(
+            enabled_slots_from_fuses(&[Some(0), None]),
+            (0..8).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn cezanne_finds_fused_off_cores_from_all_zero_fields() {
         let layout = CoreTempLayout::for_version(0x0040_0005).unwrap();
-        let CoreMap::IdleFields(fields) = layout.map else {
+        let CoreMap::ZeroWhenFusedOff(fields) = layout.map else {
             panic!("Cezanne reads its core map from the PM table");
         };
         let mut table = vec![0.0; 372];
