@@ -200,7 +200,7 @@ pub(crate) fn chip_matching(matches: impl Fn(&ChipSpec) -> bool) -> Option<&'sta
 
 fn read_config<P: PortIo>(io: &mut P, slot: Slot, unlock: bool) -> Result<ChipConfig, HwError> {
     if slot == Slot::Primary {
-        match ite::read_config(io, true) {
+        match ite::read_config(io, Slot::Primary, true) {
             Err(HwError::ChipNotFound(_) | HwError::NotIte(_)) => {}
             result => return result,
         }
@@ -218,7 +218,7 @@ fn reread_config<P: PortIo>(
         found,
     };
     let config = match current.chip.map {
-        ChipMap::Ite(_) => ite::read_config(io, false),
+        ChipMap::Ite(_) => ite::read_config(io, current.slot, false),
         ChipMap::Nuvoton(_) | ChipMap::Ec(_) => nuvoton::read_config(io, current.slot, unlock),
     }
     .map_err(|error| match error {
@@ -248,6 +248,47 @@ pub fn detect<P: PortIo>(
     match connect(Slot::Primary) {
         Err(HwError::ChipNotFound(_)) => connect(Slot::Secondary),
         result => result,
+    }
+}
+
+pub fn detect_second<P: PortIo>(
+    primary: &ChipConfig,
+    open: impl FnOnce(Slot) -> Result<P, HwError>,
+    lock: impl FnOnce() -> Result<NamedMutex, HwError>,
+    verify: bool,
+) -> Option<SuperIo<P>> {
+    if primary.slot != Slot::Primary || !matches!(primary.chip.map, ChipMap::Ite(_)) {
+        return None;
+    }
+    let connected = open(Slot::Secondary).and_then(|io| {
+        let lock = lock()?;
+        if verify {
+            SuperIo::probe_second(io, lock)
+        } else {
+            SuperIo::attach_second(io, lock)
+        }
+    });
+    match connected {
+        Ok(chip) if chip.config.base_address == primary.base_address => {
+            tracing::info!(
+                chip = chip.chip().name,
+                "the chip on 0x4E answers at the primary chip's base address; ignoring the alias"
+            );
+            None
+        }
+        Ok(chip) => {
+            tracing::info!(
+                chip = chip.chip().name,
+                base = format_args!("{:#06x}", chip.config.base_address),
+                "found a second fan chip on 0x4E"
+            );
+            Some(chip)
+        }
+        Err(HwError::ChipNotFound(_)) => None,
+        Err(error) => {
+            tracing::warn!(%error, "the second fan chip on 0x4E could not be set up");
+            None
+        }
     }
 }
 
@@ -282,10 +323,19 @@ impl<P: PortIo> SuperIo<P> {
         Self::connect(io, slot, lock, false)
     }
 
-    fn connect(mut io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
+    fn connect(io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
+        Self::connect_with(io, lock, unlock, |io| read_config(io, slot, unlock))
+    }
+
+    fn connect_with(
+        mut io: P,
+        lock: NamedMutex,
+        unlock: bool,
+        read: impl FnOnce(&mut P) -> Result<ChipConfig, HwError>,
+    ) -> Result<Self, HwError> {
         let config = {
             let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-            read_config(&mut io, slot, unlock)?
+            read(&mut io)?
         };
         Ok(Self {
             io,
@@ -299,6 +349,18 @@ impl<P: PortIo> SuperIo<P> {
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
         let mut chip = Self::connect(io, slot, lock, true)?;
+        chip.check_session()?;
+        Ok(chip)
+    }
+
+    pub fn attach_second(io: P, lock: NamedMutex) -> Result<Self, HwError> {
+        Self::connect_with(io, lock, false, |io| {
+            ite::read_config(io, Slot::Secondary, true)
+        })
+    }
+
+    pub fn probe_second(io: P, lock: NamedMutex) -> Result<Self, HwError> {
+        let mut chip = Self::attach_second(io, lock)?;
         chip.check_session()?;
         Ok(chip)
     }
@@ -604,13 +666,14 @@ mod tests {
             (0x8721, "ITE IT8721F"),
             (0x8728, "ITE IT8728F"),
             (0x8772, "ITE IT8772E"),
+            (0x8733, "ITE IT8792E"),
+            (0x8695, "ITE IT87952E"),
+            (0x8790, "ITE IT8790E"),
         ];
         for (chip_id, name) in ite_rows {
             assert_eq!(ite(chip_id), Some(name), "{chip_id:#06x}");
         }
-        for chip_id in [
-            0x8613, 0x8705, 0x8712, 0x8771, 0x8733, 0x8695, 0x0000, 0xFFFF,
-        ] {
+        for chip_id in [0x8613, 0x8705, 0x8712, 0x8771, 0x8883, 0x0000, 0xFFFF] {
             assert_eq!(ite(chip_id), None, "{chip_id:#06x}");
         }
 
@@ -656,13 +719,21 @@ mod tests {
     }
 
     #[test]
-    fn only_the_nct6683d_is_monitor_only() {
+    fn only_the_nct6683d_and_the_second_ite_chips_are_monitor_only() {
         let monitor_only: Vec<&str> = CHIPS
             .iter()
             .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(monitor_only, ["Nuvoton NCT6683D"]);
+        assert_eq!(
+            monitor_only,
+            [
+                "ITE IT8792E",
+                "ITE IT87952E",
+                "ITE IT8790E",
+                "Nuvoton NCT6683D"
+            ]
+        );
     }
 
     #[test]

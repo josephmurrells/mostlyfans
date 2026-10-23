@@ -182,6 +182,7 @@ mod tests {
             mode: fanforge_core::telemetry::HardwareMode::Auto,
             duty: None,
             unavailable: None,
+            monitor_only: false,
         };
         assert!(connected(&reading("gpu/nvidia/gpu-1/fan1")));
         assert!(!connected(&reading("pwm1")));

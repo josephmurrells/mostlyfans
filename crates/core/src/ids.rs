@@ -65,6 +65,29 @@ impl FanId {
         Self(format!("pwm{}", index + 1))
     }
 
+    pub fn for_chip_channel(chip: usize, index: usize) -> Self {
+        match chip {
+            0 => Self::for_channel(index),
+            _ => Self(format!("sio{}/pwm{}", chip + 1, index + 1)),
+        }
+    }
+
+    pub fn header_channel(&self) -> Option<(usize, usize)> {
+        let (chip, channel) = match self.0.split_once('/') {
+            None => (0, self.0.as_str()),
+            Some((prefix, channel)) => {
+                let chip = prefix.strip_prefix("sio")?.parse::<usize>().ok()?;
+                (chip.checked_sub(1).filter(|&chip| chip > 0)?, channel)
+            }
+        };
+        let digits = channel.strip_prefix("pwm")?;
+        if digits.starts_with('0') || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let index = digits.parse::<usize>().ok()?.checked_sub(1)?;
+        Some((chip, index))
+    }
+
     pub fn for_gpu_fan(gpu: &str, index: u32) -> Self {
         Self(format!("{gpu}/fan{}", index + 1))
     }
@@ -89,6 +112,30 @@ mod tests {
         assert!(!SensorId::new("cpu/core").is_display_only());
         assert!(!SensorId::new("cpu/core_voltage").is_display_only());
         assert!(!SensorId::new("cpu/package").is_display_only());
+    }
+
+    #[test]
+    fn header_ids_name_their_chip_and_channel() {
+        assert_eq!(FanId::for_chip_channel(0, 2).as_str(), "pwm3");
+        assert_eq!(FanId::for_chip_channel(1, 0).as_str(), "sio2/pwm1");
+        assert_eq!(FanId::for_chip_channel(1, 0).kind(), FanKind::Header);
+        assert_eq!(FanId::from("pwm1").header_channel(), Some((0, 0)));
+        assert_eq!(FanId::from("pwm12").header_channel(), Some((0, 11)));
+        assert_eq!(FanId::from("sio2/pwm3").header_channel(), Some((1, 2)));
+        for id in [
+            "pwm0",
+            "pwm",
+            "pwm01",
+            "fan1",
+            "sio1/pwm1",
+            "sio0/pwm1",
+            "sio2/fan1",
+            "sio2/pwm0",
+            "gpu/nvidia/x/fan1",
+            "pwm+1",
+        ] {
+            assert_eq!(FanId::from(id).header_channel(), None, "{id}");
+        }
     }
 
     #[test]

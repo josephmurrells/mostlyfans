@@ -162,6 +162,7 @@ impl GpuFans {
                 },
                 duty,
                 unavailable,
+                monitor_only: false,
             });
             if let Some(minimum) = fan.minimum {
                 readings.limits.insert(
