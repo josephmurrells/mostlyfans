@@ -176,6 +176,13 @@ const fn ite(name: &'static str, chip_id: u16, map: IteMap) -> ChipSpec {
     }
 }
 
+const fn second_ite(name: &'static str, chip_id: u16) -> ChipSpec {
+    ChipSpec {
+        fan_control: false,
+        ..ite(name, chip_id, ITE)
+    }
+}
+
 const COUNT_TACH: Tach = Tach::Count {
     registers: &[0x4B0, 0x4B2, 0x4B4, 0x4B6, 0x4B8, 0x4BA, 0x4CC],
 };
@@ -398,7 +405,7 @@ const fn nuvoton(
 const EXACT: u8 = 0xFF;
 const FAMILY: u8 = 0xF0;
 
-pub static CHIPS: [ChipSpec; 28] = [
+pub static CHIPS: [ChipSpec; 31] = [
     ChipSpec {
         name: "ITE IT8655E",
         fan_control: true,
@@ -520,6 +527,9 @@ pub static CHIPS: [ChipSpec; 28] = [
     ite("ITE IT8721F", 0x8721, ITE),
     ite("ITE IT8728F", 0x8728, ITE),
     ite("ITE IT8772E", 0x8772, ITE),
+    ite("ITE IT8792E", 0x8733, ITE),
+    ite("ITE IT87952E", 0x8695, ITE),
+    second_ite("ITE IT8790E", 0x8790),
     nuvoton(
         "Nuvoton NCT6771F",
         (0xB4, 0x70, FAMILY),

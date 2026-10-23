@@ -1,4 +1,4 @@
-use fanforge_core::board::FanLimits;
+use fanforge_core::board::{BoardInfo, FanLimits};
 use fanforge_core::calibration::{self, FanCalibration};
 use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::engine::FanState;
@@ -51,8 +51,34 @@ pub fn rpm(fan: &FanReading) -> String {
     }
 }
 
+pub fn chip_line(name: &str, chip_id: u16, headers: usize, fan_control: bool) -> String {
+    format!(
+        "{name} ({chip_id:#06x}) · {headers} fan headers{}",
+        if fan_control { "" } else { " · monitor only" }
+    )
+}
+
+pub fn chip_lines(board: &BoardInfo) -> Vec<String> {
+    let primary = chip_line(
+        &board.chip_name,
+        board.chip_id,
+        board.fan_headers,
+        board.fan_control,
+    );
+    std::iter::once(primary)
+        .chain(board.chips.iter().skip(1).map(|chip| {
+            chip_line(
+                &chip.chip_name,
+                chip.chip_id,
+                chip.fan_headers,
+                chip.fan_control,
+            )
+        }))
+        .collect()
+}
+
 pub fn connected(fan: &FanReading) -> bool {
-    fan.id.kind() == FanKind::Gpu || fan.rpm.is_some_and(|rpm| rpm > 0)
+    fan.id.kind() == FanKind::Gpu || fan.monitor_only || fan.rpm.is_some_and(|rpm| rpm > 0)
 }
 
 pub fn nothing_driven(state: &ControlState) -> bool {
@@ -182,6 +208,7 @@ mod tests {
             mode: fanforge_core::telemetry::HardwareMode::Auto,
             duty: None,
             unavailable: None,
+            monitor_only: false,
         };
         assert!(connected(&reading("gpu/nvidia/gpu-1/fan1")));
         assert!(!connected(&reading("pwm1")));

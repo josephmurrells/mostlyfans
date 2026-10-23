@@ -585,19 +585,15 @@ fn about(ui: &mut egui::Ui, state: &ControlState) {
                     board.identity.manufacturer, board.identity.product
                 ));
                 ui.end_row();
-                ui.label(widgets::muted("Fan controller"));
-                ui.label(format!(
-                    "{} ({:#06x}) · {} fan headers{}",
-                    board.chip_name,
-                    board.chip_id,
-                    board.fan_headers,
-                    if board.fan_control {
-                        ""
+                for (index, line) in format::chip_lines(board).into_iter().enumerate() {
+                    ui.label(widgets::muted(if index == 0 {
+                        "Fan controller"
                     } else {
-                        " · monitor only"
-                    }
-                ));
-                ui.end_row();
+                        "Second fan controller"
+                    }));
+                    ui.label(line);
+                    ui.end_row();
+                }
             }
             ui.label(widgets::muted("Hardware"));
             let (text, tone) = format::hardware(&state.hardware);
