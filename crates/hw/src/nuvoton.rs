@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use crate::HwError;
 use crate::chips::{ChipMap, NctMap, Tach};
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
     BankDump, CHIP_ID_REG, ChannelState, ChipConfig, ChipReadings, ConfigSpace, ControlKind,
@@ -122,12 +123,17 @@ pub(crate) fn read_config<P: PortIo>(
             if io_lock && unlock {
                 unlock_io_space(space)?;
             }
+            let wiring = match &chip.map {
+                ChipMap::Nuvoton(map) => pinmux::nct_wiring(space, map.pinmux, chip_id, map.fans)?,
+                ChipMap::Ite(_) | ChipMap::Ec(_) => Wiring::ALL,
+            };
             Ok(ChipConfig {
                 chip,
                 slot,
                 chip_id,
                 version: revision,
                 base_address,
+                wiring,
             })
         },
         exit_config,
@@ -421,6 +427,7 @@ pub mod fake {
         pub enter_progress: usize,
         pub config_index: u8,
         pub ldn: u8,
+        pub pins: BTreeMap<(u8, u8), u8>,
         pub bars_found: bool,
         pub lock_register: u8,
         pub hwm_index: u8,
@@ -444,6 +451,15 @@ pub mod fake {
                 enter_progress: 0,
                 config_index: 0,
                 ldn: 0,
+                pins: BTreeMap::from([
+                    ((0, 0x1A), 0x02),
+                    ((0, 0x1C), if id == 0xD8 { 0xC0 } else { 0x00 }),
+                    ((0, 0x1D), 0x10),
+                    ((0, 0x2A), 0x18),
+                    ((0, 0x2D), 0x03),
+                    ((0x12, 0xE0), 0x18),
+                    ((0x12, 0xED), 0x04),
+                ]),
                 bars_found: false,
                 lock_register: 0,
                 hwm_index: 0,
@@ -515,7 +531,10 @@ pub mod fake {
                     IO_LOCK_REG if self.ldn == HWM_LDN => self.lock_register,
                     0x60 if self.ldn == HWM_LDN => (self.base >> 8) as u8,
                     0x61 if self.ldn == HWM_LDN => self.base as u8,
-                    _ => 0,
+                    index => {
+                        let ldn = if index < 0x30 { 0 } else { self.ldn };
+                        self.pins.get(&(ldn, index)).copied().unwrap_or(0)
+                    }
                 },
                 p if p == self.base + ADDRESS_PORT_OFFSET => self.hwm_index,
                 p if p == self.base + DATA_PORT_OFFSET => {
@@ -978,6 +997,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: true,
+            pinmux: pinmux::NctMux::Nct6798,
         }),
     };
 
@@ -997,6 +1017,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: true,
+            pinmux: pinmux::NctMux::Nct6798,
         }),
     };
 

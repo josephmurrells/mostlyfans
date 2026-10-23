@@ -167,6 +167,16 @@ fn detect() -> DiagResult {
         chip.fan_count(),
         chip.temp_names().len()
     );
+    let wiring = chip.wiring();
+    for channel in 0..chip.fan_count() {
+        let note = match (wiring.has_tach(channel), wiring.has_pwm(channel)) {
+            (true, true) => continue,
+            (false, false) => "not wired as a fan header (FanForge hides it)",
+            (true, false) => "speed only (the board uses its control pin for something else)",
+            (false, true) => "control only (the board uses its speed pin for something else)",
+        };
+        println!("  Header {}: {note}", channel + 1);
+    }
     let control = if chip.fan_control() {
         "supported"
     } else {
