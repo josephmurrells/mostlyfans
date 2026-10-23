@@ -1,12 +1,12 @@
 use eframe::egui::{self, ComboBox, Id, Margin, RichText, Slider, SliderClamping, Stroke};
-use fanforge_core::calibration::{
+use mostlyfans_core::calibration::{
     CalibrationOutcome, CalibrationProgress, FanCalibration, MARGIN, Phase,
 };
-use fanforge_core::config::{Config, FanMode, FanSettings, MAX_NAME_LEN};
-use fanforge_core::engine::FanState;
-use fanforge_core::state::ControlState;
-use fanforge_core::telemetry::FanReading;
-use fanforge_core::{Duty, FanId, FanKind};
+use mostlyfans_core::config::{Config, FanMode, FanSettings, MAX_NAME_LEN};
+use mostlyfans_core::engine::FanState;
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::telemetry::FanReading;
+use mostlyfans_core::{Duty, FanId, FanKind};
 
 use crate::connection::{ControlLink, Request};
 use crate::curve_plot::{self, Live};
@@ -70,7 +70,7 @@ impl Group {
     }
 }
 
-const SECOND_CHIP_MONITORED: &str = "FanForge reads these fans but doesn't control them.";
+const SECOND_CHIP_MONITORED: &str = "MostlyFans reads these fans but doesn't control them.";
 
 fn second_chip_note(state: &ControlState) -> Option<String> {
     let chip = state.board.as_ref()?.chips.get(1)?;
@@ -439,7 +439,7 @@ impl FansView {
                 ui.label(widgets::caption(ui, crate::alerts::sentence(reason)));
                 if ui
                     .add_enabled(!blocked, egui::Button::new("Try again"))
-                    .on_hover_text("Give the fan back to FanForge and check it again")
+                    .on_hover_text("Give the fan back to MostlyFans and check it again")
                     .clicked()
                 {
                     page.link.send(Request::RetryFan(fan.clone()));
@@ -454,7 +454,7 @@ impl FansView {
             ui.label(widgets::caption(
                 ui,
                 format!(
-                    "{} is running, so FanForge isn't controlling the graphics card fans.",
+                    "{} is running, so MostlyFans isn't controlling the graphics card fans.",
                     state.gpus.conflicts.join(", ")
                 ),
             ));
@@ -510,7 +510,7 @@ impl FansView {
         ui: &mut egui::Ui,
         fan: &FanId,
         likely_cpu: bool,
-        limits: fanforge_core::board::FanLimits,
+        limits: mostlyfans_core::board::FanLimits,
         calibration: Option<&FanCalibration>,
         settings: &mut FanSettings,
     ) -> bool {
@@ -919,10 +919,10 @@ fn control_card(
             FanMode::Auto => {
                 ui.label(widgets::muted(match fan.kind() {
                     FanKind::Header => {
-                        "The motherboard BIOS controls this fan, as if FanForge were not running."
+                        "The motherboard BIOS controls this fan, as if MostlyFans were not running."
                     }
                     FanKind::Gpu => {
-                        "The graphics driver controls this fan with its own curve, including 0 RPM at idle, as if FanForge were not running."
+                        "The graphics driver controls this fan with its own curve, including 0 RPM at idle, as if MostlyFans were not running."
                     }
                 }));
             }
@@ -1034,7 +1034,7 @@ fn control_card(
 fn advanced_card(
     ui: &mut egui::Ui,
     fan: &FanId,
-    limits: fanforge_core::board::FanLimits,
+    limits: mostlyfans_core::board::FanLimits,
     settings: &mut FanSettings,
 ) -> bool {
     let mut changed = false;

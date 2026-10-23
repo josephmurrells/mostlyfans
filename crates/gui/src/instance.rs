@@ -4,9 +4,9 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use fanforge_control::controller::{DIRECT_RELEASE_BUDGET, QUIT_WAIT};
-use fanforge_win::paths::INSTANCE_MUTEX;
-use fanforge_win::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
+use mostlyfans_control::controller::{DIRECT_RELEASE_BUDGET, QUIT_WAIT};
+use mostlyfans_win::paths::INSTANCE_MUTEX;
+use mostlyfans_win::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
 
 use crate::tray::reveal;
 
@@ -30,15 +30,15 @@ fn exit_wait() -> Duration {
 
 fn show_event_name() -> io::Result<String> {
     Ok(format!(
-        r"Local\FanForge.Show.{}",
-        fanforge_win::current_session_id()?
+        r"Local\MostlyFans.Show.{}",
+        mostlyfans_win::current_session_id()?
     ))
 }
 
 fn refused(error: &io::Error) -> Claim {
     tracing::error!(%error, "single-instance check failed");
     Claim::Refused(format!(
-        "FanForge could not check for another running copy: {error}"
+        "MostlyFans could not check for another running copy: {error}"
     ))
 }
 
@@ -71,7 +71,7 @@ pub fn claim() -> Claim {
     match mutex.acquire(exit_wait()) {
         Ok(true) => primary(mutex),
         Ok(false) => Claim::Refused(
-            "FanForge is already controlling fans in another user session.".to_owned(),
+            "MostlyFans is already controlling fans in another user session.".to_owned(),
         ),
         Err(error) => refused(&error),
     }

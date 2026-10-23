@@ -8,15 +8,15 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Args;
-use fanforge_control::failsafe;
-use fanforge_control::guardian::{
+use mostlyfans_control::failsafe;
+use mostlyfans_control::guardian::{
     self, LinkEvent, NO_HARDWARE_EXIT_CODE, Outcome, ParentLink, Releaser, Signal,
     TERMINATE_EXIT_CODE,
 };
-use fanforge_hw::gpu_fans::{GpuReleaser, nvidia};
-use fanforge_hw::system::{Chip, open_chip};
-use fanforge_win::paths;
-use fanforge_win::{PowerEvent, PowerSubscription, Process};
+use mostlyfans_hw::gpu_fans::{GpuReleaser, nvidia};
+use mostlyfans_hw::system::{Chip, open_chip};
+use mostlyfans_win::paths;
+use mostlyfans_win::{PowerEvent, PowerSubscription, Process};
 
 use crate::logging;
 
@@ -105,7 +105,7 @@ impl ProcessLink {
                 }
             })?;
 
-        let power = fanforge_win::subscribe_power(move |event| {
+        let power = mostlyfans_win::subscribe_power(move |event| {
             if event == PowerEvent::Resume {
                 events_tx.send(LinkEvent::SystemResumed).ok();
             }
@@ -135,12 +135,12 @@ impl ParentLink for ProcessLink {
     }
 
     fn terminate_parent(&mut self, wait: Duration) {
-        tracing::warn!("ending the unresponsive FanForge process");
+        tracing::warn!("ending the unresponsive MostlyFans process");
         if let Err(error) = self.parent.terminate(TERMINATE_EXIT_CODE) {
-            tracing::error!(%error, "could not end the FanForge process");
+            tracing::error!(%error, "could not end the MostlyFans process");
         }
         if !self.parent.wait(Some(wait)).unwrap_or(false) {
-            tracing::error!("FanForge process did not exit in time");
+            tracing::error!("MostlyFans process did not exit in time");
         }
     }
 }
@@ -154,8 +154,8 @@ fn inherited_link(args: &GuardianArgs) -> Option<(Process, File)> {
         tracing::error!("guardian was given the same handle twice");
         return None;
     }
-    let parent = unsafe { fanforge_win::inherited_process(parent) };
-    let pipe = unsafe { fanforge_win::inherited_pipe(pipe) };
+    let parent = unsafe { mostlyfans_win::inherited_process(parent) };
+    let pipe = unsafe { mostlyfans_win::inherited_pipe(pipe) };
     match (parent, pipe) {
         (Some(parent), Some(pipe)) => Some((parent, pipe)),
         _ => {
@@ -201,14 +201,14 @@ fn run(args: &GuardianArgs) -> ExitCode {
     let mut link = match ProcessLink::start(parent, pipe) {
         Ok(link) => link,
         Err(error) => {
-            tracing::error!(%error, "guardian could not start watching FanForge");
+            tracing::error!(%error, "guardian could not start watching MostlyFans");
             return ExitCode::from(USAGE_EXIT_CODE);
         }
     };
-    tracing::info!("guardian watching FanForge");
-    match guardian::run(&mut link, &mut releaser, &fanforge_win::unbiased_time) {
+    tracing::info!("guardian watching MostlyFans");
+    match guardian::run(&mut link, &mut releaser, &mostlyfans_win::unbiased_time) {
         Outcome::CleanExit => {
-            tracing::info!("FanForge released the fans and exited; guardian stopping");
+            tracing::info!("MostlyFans released the fans and exited; guardian stopping");
             ExitCode::SUCCESS
         }
         Outcome::Released(reason) => {

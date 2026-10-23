@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, Id, RichText, vec2};
-use fanforge_core::state::ControlState;
-use fanforge_core::telemetry::{FanReading, SensorReading};
-use fanforge_core::{FanId, FanKind, SensorId};
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::telemetry::{FanReading, SensorReading};
+use mostlyfans_core::{FanId, FanKind, SensorId};
 
 use crate::format;
 use crate::history::History;
@@ -81,7 +81,7 @@ pub fn ordered_fans(state: &ControlState) -> Vec<&FanReading> {
     fans
 }
 
-pub fn unnamed_fans(state: &ControlState, config: &fanforge_core::config::Config) -> Vec<FanId> {
+pub fn unnamed_fans(state: &ControlState, config: &mostlyfans_core::config::Config) -> Vec<FanId> {
     state
         .readings
         .fans
@@ -157,7 +157,7 @@ pub fn show(ui: &mut egui::Ui, page: &OverviewPage<'_>) -> Option<OverviewAction
     widgets::section_heading(ui, "Fans");
     if state.readings.fans.is_empty() && page.fans.is_empty() {
         ui.label(widgets::muted(
-            "No fan headers found. FanForge needs the PawnIO driver and a supported Super I/O chip.",
+            "No fan headers found. MostlyFans needs the PawnIO driver and a supported Super I/O chip.",
         ));
         return action;
     }
@@ -205,7 +205,7 @@ fn absent_tile(ui: &mut egui::Ui, id: &str, missing: bool) -> bool {
             ui.label(widgets::value("Missing", theme::SECTION).weak());
             ui.label(widgets::caption(
                 ui,
-                "Pinned, but FanForge can't find it any more.",
+                "Pinned, but MostlyFans can't find it any more.",
             ));
             unpin = ui
                 .button(widgets::with_icon(icons::UNPIN, "Unpin"))

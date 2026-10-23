@@ -1,6 +1,6 @@
 use std::os::windows::io::OwnedHandle;
 
-use fanforge_win::{borrow_handle, own_handle, read_local_machine_string, wide};
+use mostlyfans_win::{borrow_handle, own_handle, read_local_machine_string, wide};
 use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GENERIC_READ, GENERIC_WRITE,
 };

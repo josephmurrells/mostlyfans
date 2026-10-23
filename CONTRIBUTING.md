@@ -1,16 +1,16 @@
-# Contributing to FanForge
+# Contributing to MostlyFans
 
 Thanks for helping. Bug reports, hardware reports and pull requests are all welcome.
 
 ## Reporting bugs and hardware
 
-Use the [issue forms](https://github.com/josephmurrells/fanforge/issues/new/choose). The most useful things to include are:
+Use the [issue forms](https://github.com/josephmurrells/mostlyfans/issues/new/choose). The most useful things to include are:
 
 - your fan controller chip (**Settings → About → Fan controller**);
 - the latest log file (**Settings → Open log folder**);
-- for motherboard fan problems, the output of `fanforge-diag detect` from an administrator terminal.
+- for motherboard fan problems, the output of `mostlyfans-diag detect` from an administrator terminal.
 
-Reports from boards FanForge hasn't been tested on are valuable even when everything works. The [README](README.md#supported-hardware) and [docs/technical.md](docs/technical.md#chip-support) say which chips have been tested on real hardware.
+Reports from boards MostlyFans hasn't been tested on are valuable even when everything works. The [README](README.md#supported-hardware) and [docs/technical.md](docs/technical.md#chip-support) say which chips have been tested on real hardware.
 
 ## Building and testing
 
@@ -22,13 +22,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs the same checks on `windows-latest`, plus a `cargo check` on the minimum supported Rust version (1.95). Debug builds don't ask for administrator rights, so the tests run unelevated; the app itself and most `fanforge-diag` commands need an elevated terminal and real hardware.
+CI runs the same checks on `windows-latest`, plus a `cargo check` on the minimum supported Rust version (1.95). Debug builds don't ask for administrator rights, so the tests run unelevated; the app itself and most `mostlyfans-diag` commands need an elevated terminal and real hardware.
 
 To check UI changes without the hardware, render every page to PNG files:
 
 ```powershell
-$env:FANFORGE_SCREENSHOTS = "$PWD\screenshots"
-cargo test -p fanforge-gui render_screenshots -- --ignored
+$env:MOSTLYFANS_SCREENSHOTS = "$PWD\screenshots"
+cargo test -p mostlyfans-gui render_screenshots -- --ignored
 ```
 
 ## Code style
@@ -40,6 +40,6 @@ cargo test -p fanforge-gui render_screenshots -- --ignored
 
 ## Licensing of contributions
 
-FanForge is licensed under the [GPL-3.0-or-later](LICENSE). By submitting a contribution you agree that it's your own work, or that you have the right to submit it, and that it's licensed under the same terms.
+MostlyFans is licensed under the [GPL-3.0-or-later](LICENSE). By submitting a contribution you agree that it's your own work, or that you have the right to submit it, and that it's licensed under the same terms.
 
 Please don't copy code from the Linux kernel drivers: they're GPL-2.0-only, which isn't compatible with GPL-3.0. Reading them as a reference for register addresses and procedures is fine, as the existing code does. Code ported from LibreHardwareMonitor (MPL-2.0) must keep or add the MPL-2.0 header in that file.

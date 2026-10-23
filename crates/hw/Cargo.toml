@@ -1,6 +1,6 @@
 [package]
-name = "fanforge-hw"
-description = "Hardware access for FanForge: PawnIO driver bindings, ITE Super I/O and AMD SMN sensors."
+name = "mostlyfans-hw"
+description = "Hardware access for MostlyFans: PawnIO driver bindings, ITE Super I/O and AMD SMN sensors."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,8 @@ publish.workspace = true
 test-support = []
 
 [dependencies]
-fanforge-core.workspace = true
-fanforge-win.workspace = true
+mostlyfans-core.workspace = true
+mostlyfans-win.workspace = true
 nvml-wrapper.workspace = true
 serde.workspace = true
 thiserror.workspace = true

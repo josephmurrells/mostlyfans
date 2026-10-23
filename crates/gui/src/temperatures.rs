@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, RichText, vec2};
-use fanforge_core::SensorId;
-use fanforge_core::state::ControlState;
-use fanforge_core::telemetry::SensorReading;
+use mostlyfans_core::SensorId;
+use mostlyfans_core::state::ControlState;
+use mostlyfans_core::telemetry::SensorReading;
 
 use crate::format;
 use crate::history::History;
@@ -68,7 +68,7 @@ pub struct TemperaturesPage<'a> {
 
 fn core_index(id: &SensorId) -> Option<usize> {
     id.as_str()
-        .strip_prefix(fanforge_core::ids::CORE_SENSOR_PREFIX)
+        .strip_prefix(mostlyfans_core::ids::CORE_SENSOR_PREFIX)
         .and_then(|index| index.parse().ok())
 }
 
@@ -113,7 +113,7 @@ pub fn show(ui: &mut egui::Ui, page: &TemperaturesPage<'_>) -> Option<Temperatur
         widgets::page_title(
             ui,
             "Temperatures",
-            Some("Every sensor FanForge can read. Pin the ones you want on the Overview."),
+            Some("Every sensor MostlyFans can read. Pin the ones you want on the Overview."),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if ui
@@ -146,7 +146,7 @@ pub fn show(ui: &mut egui::Ui, page: &TemperaturesPage<'_>) -> Option<Temperatur
                     .id_salt(("not-reporting", group.title()))
                     .show(ui, |ui| {
                         let note = if group == Group::Motherboard {
-                            "These channels haven't given a usable reading since FanForge started; usually nothing is plugged in."
+                            "These channels haven't given a usable reading since MostlyFans started; usually nothing is plugged in."
                         } else {
                             "These sensors have no usable reading right now."
                         };
@@ -262,7 +262,7 @@ mod tests {
 
     use super::*;
     use crate::fixtures;
-    use fanforge_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
+    use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, Tuning};
 
     fn sensor(id: &str, celsius: Option<f32>) -> SensorReading {
         SensorReading {

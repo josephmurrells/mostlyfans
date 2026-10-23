@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use fanforge_core::FanId;
-use fanforge_core::store;
+use mostlyfans_core::FanId;
+use mostlyfans_core::store;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

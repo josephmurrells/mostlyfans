@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_win::paths::APP_NAME;
 use thiserror::Error;
 use windows_service::service::{ServiceAccess, ServiceState};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 pub const SERVICE_NAME: &str = "FanForge";
+const SERVICE_DIRECTORY: &str = "FanForge";
 pub const SERVICE_LABEL: &str = "the old FanForge service";
 const SERVICE_EXECUTABLE: &str = "fanforge-service.exe";
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -72,8 +72,8 @@ fn stop_and_delete() -> Result<(), LegacyError> {
 }
 
 fn service_binary() -> io::Result<PathBuf> {
-    Ok(fanforge_win::program_files_dir()?
-        .join(APP_NAME)
+    Ok(mostlyfans_win::program_files_dir()?
+        .join(SERVICE_DIRECTORY)
         .join(SERVICE_EXECUTABLE))
 }
 
@@ -87,7 +87,7 @@ fn remove_binary() -> Result<Removal, LegacyError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Removal::Complete),
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "service binary is locked; deleting it at reboot");
-            fanforge_win::delete_at_reboot(&path)
+            mostlyfans_win::delete_at_reboot(&path)
                 .map_err(|source| LegacyError::Binary { path, source })?;
             Ok(Removal::BinaryRemovedAtReboot)
         }

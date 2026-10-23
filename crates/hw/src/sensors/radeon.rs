@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::ffi::{CStr, c_void};
 use std::time::Duration;
 
-use fanforge_core::SensorId;
-use fanforge_core::telemetry::SensorReading;
-use fanforge_win::{RawSymbol, SystemLibrary};
+use mostlyfans_core::SensorId;
+use mostlyfans_core::telemetry::SensorReading;
+use mostlyfans_win::{RawSymbol, SystemLibrary};
 use windows::Win32::System::Memory::{GetProcessHeap, HEAP_FLAGS, HeapAlloc};
 
 use super::{SensorSource, unique_labels};

@@ -6,10 +6,10 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use fanforge_win::paths::{self, APP_NAME};
+use mostlyfans_win::paths::{self, APP_NAME};
 
-pub const TASK_NAME: &str = "FanForge";
-pub const EXECUTABLE_NAME: &str = "fanforge.exe";
+pub const TASK_NAME: &str = "MostlyFans";
+pub const EXECUTABLE_NAME: &str = "mostlyfans.exe";
 pub const MINIMIZED_FLAG: &str = "--minimized";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TASK_FILE: &str = "autostart-task.xml";
@@ -23,7 +23,7 @@ pub enum AutostartState {
 }
 
 pub fn managed_executable() -> io::Result<PathBuf> {
-    Ok(fanforge_win::program_files_dir()?
+    Ok(mostlyfans_win::program_files_dir()?
         .join(APP_NAME)
         .join(EXECUTABLE_NAME))
 }
@@ -60,7 +60,7 @@ fn refresh_copy(current: &Path, managed: &Path) -> io::Result<bool> {
 
 fn remove_copy(current: &Path, managed: &Path) -> io::Result<()> {
     if same_path(current, managed) {
-        fanforge_win::delete_at_reboot(managed)?;
+        mostlyfans_win::delete_at_reboot(managed)?;
     } else {
         match fs::remove_file(managed) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -96,7 +96,7 @@ pub fn task_xml(user_sid: &str, executable: &Path) -> String {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts FanForge fan control when you sign in.</Description>
+    <Description>Starts MostlyFans fan control when you sign in.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -172,8 +172,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    fanforge_win::run_captured(
-        Command::new(fanforge_win::system_dir()?.join("schtasks.exe"))
+    mostlyfans_win::run_captured(
+        Command::new(mostlyfans_win::system_dir()?.join("schtasks.exe"))
             .args(arguments)
             .creation_flags(CREATE_NO_WINDOW),
     )
@@ -190,7 +190,7 @@ fn succeeded(output: Output) -> io::Result<()> {
 }
 
 fn register(executable: &Path) -> io::Result<()> {
-    let xml = task_xml(&fanforge_win::current_user_sid()?, executable);
+    let xml = task_xml(&mostlyfans_win::current_user_sid()?, executable);
     let file = paths::data_dir().join(TASK_FILE);
     fs::write(&file, utf16_with_bom(&xml))?;
     let result = schtasks([
@@ -267,7 +267,7 @@ mod tests {
     fn the_task_never_expires_and_ignores_batteries() {
         let xml = task_xml(
             "S-1-5-21-1-2-3-1001",
-            Path::new(r"C:\Program Files\FanForge\fanforge.exe"),
+            Path::new(r"C:\Program Files\MostlyFans\mostlyfans.exe"),
         );
         for expected in [
             "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
@@ -285,7 +285,7 @@ mod tests {
         }
         assert_eq!(
             command_from_xml(&xml),
-            Some(PathBuf::from(r"C:\Program Files\FanForge\fanforge.exe"))
+            Some(PathBuf::from(r"C:\Program Files\MostlyFans\mostlyfans.exe"))
         );
     }
 
@@ -301,10 +301,10 @@ mod tests {
 
     #[test]
     fn quoted_commands_are_read_back() {
-        let xml = r#"<Exec><Command>"C:\Program Files\FanForge\fanforge.exe"</Command></Exec>"#;
+        let xml = r#"<Exec><Command>"C:\Program Files\MostlyFans\mostlyfans.exe"</Command></Exec>"#;
         assert_eq!(
             command_from_xml(xml),
-            Some(PathBuf::from(r"C:\Program Files\FanForge\fanforge.exe"))
+            Some(PathBuf::from(r"C:\Program Files\MostlyFans\mostlyfans.exe"))
         );
         assert_eq!(command_from_xml("<Task/>"), None);
     }
@@ -312,12 +312,12 @@ mod tests {
     #[test]
     fn paths_compare_case_insensitively() {
         assert!(same_path(
-            Path::new(r"C:\Program Files\FanForge\fanforge.exe"),
-            Path::new(r"c:\program files\fanforge\FANFORGE.EXE")
+            Path::new(r"C:\Program Files\MostlyFans\mostlyfans.exe"),
+            Path::new(r"c:\program files\mostlyfans\MOSTLYFANS.EXE")
         ));
         assert!(!same_path(
-            Path::new(r"C:\Program Files\FanForge\fanforge.exe"),
-            Path::new(r"C:\Users\me\Downloads\fanforge.exe")
+            Path::new(r"C:\Program Files\MostlyFans\mostlyfans.exe"),
+            Path::new(r"C:\Users\me\Downloads\mostlyfans.exe")
         ));
     }
 
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn the_task_targets_the_protected_copy() {
         let managed = managed_executable().unwrap();
-        assert!(managed.starts_with(fanforge_win::program_files_dir().unwrap()));
+        assert!(managed.starts_with(mostlyfans_win::program_files_dir().unwrap()));
         assert!(managed.ends_with(Path::new(APP_NAME).join(EXECUTABLE_NAME)));
     }
 

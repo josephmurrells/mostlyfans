@@ -1,5 +1,5 @@
 name: Hardware report
-description: Tell us how FanForge works on your board, chip or graphics card, including when everything works.
+description: Tell us how MostlyFans works on your board, chip or graphics card, including when everything works.
 labels: [hardware]
 body:
   - type: input
@@ -19,7 +19,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: FanForge version or commit
+      label: MostlyFans version or commit
     validations:
       required: true
   - type: checkboxes
@@ -29,7 +29,7 @@ body:
       options:
         - label: Every fan header is listed, and none that aren't on the board
         - label: Fans follow curves
-        - label: Fans go back to BIOS control after Quit FanForge
+        - label: Fans go back to BIOS control after Quit MostlyFans
         - label: Fans go back to BIOS control after End task in Task Manager
         - label: Graphics card fans follow curves and go back to the driver
   - type: textarea
@@ -40,8 +40,8 @@ body:
   - type: textarea
     id: diag
     attributes:
-      label: fanforge-diag detect output
-      description: Run `fanforge-diag detect` from an administrator terminal and paste the output.
+      label: mostlyfans-diag detect output
+      description: Run `mostlyfans-diag detect` from an administrator terminal and paste the output.
       render: text
     validations:
       required: true

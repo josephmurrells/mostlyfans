@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use fanforge_core::SensorId;
-use fanforge_core::telemetry::SensorReading;
+use mostlyfans_core::SensorId;
+use mostlyfans_core::telemetry::SensorReading;
 
 pub const STALE_CADENCES: u32 = 3;
 

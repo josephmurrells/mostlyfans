@@ -1,5 +1,5 @@
-use fanforge_core::engine::FanState;
-use fanforge_core::state::{ControlState, HardwareStatus};
+use mostlyfans_core::engine::FanState;
+use mostlyfans_core::state::{ControlState, HardwareStatus};
 
 use crate::connection::ControlStatus;
 use crate::theme::Tone;

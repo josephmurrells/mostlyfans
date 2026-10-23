@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Margin, RichText, Stroke};
-use fanforge_core::engine::FanState;
-use fanforge_core::state::{ControlState, HardwareStatus};
-use fanforge_core::{FanId, FanKind};
+use mostlyfans_core::engine::FanState;
+use mostlyfans_core::state::{ControlState, HardwareStatus};
+use mostlyfans_core::{FanId, FanKind};
 
 use crate::connection::ControlStatus;
 use crate::icons;
@@ -187,12 +187,12 @@ pub fn collect(
                 ));
             } else if let Some(board) = unverified {
                 alert = alert.detail(format!(
-                    "FanForge doesn't support fan control on the {}, so the motherboard fans stay with the BIOS after you resume.",
+                    "MostlyFans doesn't support fan control on the {}, so the motherboard fans stay with the BIOS after you resume.",
                     board.chip_name
                 ));
             } else if !state.conflicts.is_empty() {
                 alert = alert.detail(format!(
-                    "{} is running, so FanForge stays monitor-only after you resume until it closes.",
+                    "{} is running, so MostlyFans stays monitor-only after you resume until it closes.",
                     state.conflicts.join(", ")
                 ));
             }
@@ -202,7 +202,7 @@ pub fn collect(
                 Alert::new(
                     Severity::MonitorOnly,
                     format!(
-                        "Monitor-only mode: the BIOS set up the fan outputs of the {} with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                        "Monitor-only mode: the BIOS set up the fan outputs of the {} with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so MostlyFans only reads temperatures and fan speeds and leaves the fans to the BIOS.",
                         board.chip_name
                     ),
                 )
@@ -211,7 +211,7 @@ pub fn collect(
         } else if state.monitor_only {
             let text = if let Some(board) = unverified {
                 format!(
-                    "Monitor-only mode: FanForge doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                    "Monitor-only mode: MostlyFans doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
                     board.chip_name
                 )
             } else if state.conflicts.is_empty() {
@@ -237,7 +237,7 @@ pub fn collect(
             alerts.push(Alert::new(
                 Severity::MonitorOnly,
                 format!(
-                    "{} is running, so FanForge isn't controlling the graphics card fans. Your other fans are still controlled.",
+                    "{} is running, so MostlyFans isn't controlling the graphics card fans. Your other fans are still controlled.",
                     state.gpus.conflicts.join(", ")
                 ),
             ));
@@ -496,7 +496,7 @@ mod tests {
         let texts: Vec<&str> = alerts.iter().map(|alert| alert.text.as_str()).collect();
         assert!(texts.contains(&"Critical temperature: the fans are under BIOS control"));
         assert!(texts.contains(
-            &"Monitor-only mode: FanForge doesn't support fan control on the Nuvoton NCT6798D, so it only reads temperatures and fan speeds and leaves the fans to the BIOS."
+            &"Monitor-only mode: MostlyFans doesn't support fan control on the Nuvoton NCT6798D, so it only reads temperatures and fan speeds and leaves the fans to the BIOS."
         ));
         assert!(!texts.iter().any(|text| text.contains("100%")));
 
@@ -530,7 +530,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             alert.text,
-            "Monitor-only mode: the BIOS set up the fan outputs of the ITE IT8628E with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
+            "Monitor-only mode: the BIOS set up the fan outputs of the ITE IT8628E with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so MostlyFans only reads temperatures and fan speeds and leaves the fans to the BIOS."
         );
         assert!(alert.detail.as_deref().unwrap().contains("BIOS setup"));
         assert!(
