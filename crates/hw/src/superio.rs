@@ -342,6 +342,10 @@ pub(crate) trait Session {
     fn wiring(&mut self, pins: Wiring) -> Result<Wiring, HwError> {
         Ok(pins)
     }
+
+    fn restore_exact(&mut self, channel: usize, saved: ChannelState) -> Result<(), HwError> {
+        self.restore(channel, Some(saved))
+    }
 }
 
 #[derive(Debug)]
@@ -517,9 +521,29 @@ impl<P: PortIo> SuperIo<P> {
         saved: Option<ChannelState>,
         budget: Duration,
     ) -> Result<(), HwError> {
+        self.patiently(budget, |chip| chip.restore(channel, saved))
+    }
+
+    pub fn restore_exact_patiently(
+        &mut self,
+        channel: usize,
+        saved: ChannelState,
+        budget: Duration,
+    ) -> Result<(), HwError> {
+        self.check_channel(channel)?;
+        self.patiently(budget, |chip| {
+            chip.transaction(|session| session.restore_exact(channel, saved))
+        })
+    }
+
+    fn patiently(
+        &mut self,
+        budget: Duration,
+        mut attempt: impl FnMut(&mut Self) -> Result<(), HwError>,
+    ) -> Result<(), HwError> {
         let deadline = Instant::now() + budget;
         loop {
-            match self.restore(channel, saved) {
+            match attempt(self) {
                 Err(HwError::LockTimeout(_)) if Instant::now() < deadline => continue,
                 Err(HwError::VerifyFailed { .. } | HwError::ReadNotAcknowledged(_))
                     if Instant::now() < deadline =>

@@ -69,7 +69,7 @@ fn with_second_chip(
         return primary;
     }
     let remaining = budget.saturating_sub(started.elapsed());
-    let second = second::release_from_disk(snapshot_path, remaining).inspect_err(|error| {
+    let second = second::release_from_disk(None, snapshot_path, remaining).inspect_err(|error| {
         tracing::error!(%error, "fans on the second chip may still be at FanForge's last speed");
     });
     primary.and(second)

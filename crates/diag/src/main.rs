@@ -433,26 +433,29 @@ fn watch(
 }
 
 fn restore() -> DiagResult {
-    let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
+    let path = paths::bios_snapshot_path();
+    let snapshot = BiosSnapshot::load(&path)?;
     let mut chip = open_chip()?;
-    if !chip.can_release() {
+    let primary = if chip.can_release() {
+        force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3).map(|()| {
+            println!("all {} channels returned to BIOS control", chip.fan_count());
+        })
+    } else {
         println!(
             "the {} is monitor-only; FanForge never drives its fans, so there is nothing to restore",
             chip.chip().name
         );
-        return Ok(());
-    }
-    force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3)?;
-    println!("all {} channels returned to BIOS control", chip.fan_count());
-    let path = paths::bios_snapshot_path();
+        Ok(())
+    };
     if fanforge_hw::second::pending(&path) {
-        drop(chip);
-        fanforge_hw::second::release_from_disk(&path, RELEASE_BUDGET * 3)?;
-        println!(
-            "the second chip's fans and Gigabyte's fan controller are back under BIOS control"
-        );
+        match fanforge_hw::second::release_from_disk(Some(&chip), &path, RELEASE_BUDGET * 3) {
+            Ok(()) => println!(
+                "the second chip's fans and Gigabyte's fan controller are back under BIOS control"
+            ),
+            Err(error) => println!("the second chip could not be fully restored: {error}"),
+        }
     }
-    Ok(())
+    Ok(primary?)
 }
 
 fn describe(sample: Result<FanSample, String>) -> String {
