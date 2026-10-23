@@ -20,7 +20,7 @@ A few terms used below: a **fan header** is a fan socket on the motherboard; **d
 
 ## Getting started
 
-1. Download `mostlyfans.exe` from the [Releases](https://github.com/josephmurrells/mostlyfans/releases) page (until the first release is published, [build it from source](#building-from-source)) and put it anywhere you like. There's nothing to install.
+1. Download `MostlyFans-<version>-windows-x64.zip` from the [Releases](https://github.com/josephmurrells/mostlyfans/releases) page and extract it anywhere you like. There's nothing to install. The folder also holds `mostlyfans-diag.exe` (for bug reports) and the licence files; keep them together.
 2. Run it and accept the administrator prompt.
 3. If PawnIO isn't installed, click **Install PawnIO**. MostlyFans downloads the official installer, checks it hasn't been tampered with and installs it. Fan control then starts on its own, unless Windows asks for a restart first.
 4. On the Overview, click **Start setup** under **Set up your fans**. It walks you through each header: **Identify** spins the fan at full speed for 3 seconds so you can see which one it is, then you name it and set its **Header type** (**Case fan** allows lower speeds than **CPU fan or pump**). You can do the same later on the **Fans** page.
@@ -86,7 +86,7 @@ To see which chip you have, open **Settings → About → Fan controller**. Head
 - **Other fan controllers** put MostlyFans into monitoring-only mode while they run (see [Safety](#safety)).
 - **MSI Afterburner** and similar GPU tools are fine for overlays and overclocking. While one runs, MostlyFans leaves the graphics card fans to it and keeps controlling the rest. If you want MostlyFans to drive the graphics card fans, close the tool, or turn its fan control off and restart it so the fans go back to the driver.
 - **Anti-cheat:** MostlyFans uses PawnIO, a signed kernel driver, to reach the hardware. Some anti-cheat systems are wary of hardware-access drivers. PawnIO stays installed after you quit MostlyFans. If a game objects, uninstalling PawnIO from **Settings > Apps** removes it, but other tools that use PawnIO (such as FanControl and LibreHardwareMonitor) will stop working too.
-- **Windows warnings:** MostlyFans isn't code-signed yet, so Windows SmartScreen and the administrator prompt show "unknown publisher".
+- **Windows warnings:** MostlyFans isn't code-signed yet, so Windows SmartScreen and the administrator prompt show "unknown publisher". To check a download is genuine, compare it with the release's `SHA256SUMS.txt`, or, with the [GitHub CLI](https://cli.github.com), run `gh attestation verify <the zip> -R josephmurrells/mostlyfans`, which confirms it was built by this repository's release workflow.
 
 ## Troubleshooting
 
@@ -97,7 +97,7 @@ To see which chip you have, open **Settings → About → Fan controller**. Head
 
 ## Updating
 
-Quit MostlyFans from the tray, replace `mostlyfans.exe` with the new one, and run it once. If **Start with Windows** is on, its copy updates itself.
+Quit MostlyFans from the tray, replace the extracted folder (or at least `mostlyfans.exe` and `mostlyfans-diag.exe`) with the new release, and run `mostlyfans.exe` once. If **Start with Windows** is on, its copy updates itself.
 
 **Coming from FanForge:** MostlyFans keeps its settings in a new folder and doesn't take over FanForge's. The two never run at the same time: whichever starts second refuses to start. (FanForge words this as "FanForge is already controlling fans in another user session"; it means MostlyFans.)
 
