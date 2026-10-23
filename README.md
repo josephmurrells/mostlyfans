@@ -73,7 +73,7 @@ To see which chip you have, open **Settings → About → Fan controller**. On a
 
 **Temperatures**
 
-- **CPU:** AMD Ryzen and Intel Core. Per-core temperatures on Intel, and on 8- and 16-core Ryzen 3000 and 5000 desktop CPUs (6- and 12-core models not yet). Per-core readings are for display; curves use the overall CPU temperature.
+- **CPU:** AMD Ryzen and Intel Core. Per-core temperatures on Intel, on Ryzen 3000 and 5000 desktop CPUs (6 to 16 cores), and on Ryzen 5000G APUs. Per-core readings are for display; curves use the overall CPU temperature.
 - **GPU:** NVIDIA through the driver's NVML, and AMD Radeon through Adrenalin (edge, hotspot and memory). Radeon support hasn't been tested on real hardware yet.
 - **Drives:** NVMe and SATA SSDs. Spinning hard disks aren't polled, so they can still spin down.
 

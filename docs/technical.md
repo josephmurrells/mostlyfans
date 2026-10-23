@@ -85,7 +85,7 @@ NVIDIA only so far, on cards whose driver reports a fan speed range and control 
 Read every 2 s on their own thread. Display only: `Readings::temperature` returns `None` for `cpu/core<N>` ids, and the config rejects them as a curve or safety sensor.
 
 - **Intel:** `IA32_THERM_STATUS` per physical core (one affinity hop per core, processor groups handled), with P/E labels from the core's efficiency class on hybrid CPUs.
-- **AMD:** the SMU PM table through PawnIO's `RyzenSMU` module. The layout depends on the PM table version, so only allow-listed versions (from `ryzen_monitor`, Ryzen 3000 and 5000, 8 and 16 cores) are used, and only when the table's core count matches the CPU's physical core count, which excludes 6- and 12-core parts until the core-disable map is ported. Only `0x380905` (Ryzen 7 5700X3D, index 188) has been confirmed against HWiNFO on hardware. Every round is cross-checked: all cores plausible, and the hottest core on each CCD within range of that CCD's temperature (or Tctl). 3 failed rounds in a row turn per-core readings off until restart.
+- **AMD:** the SMU PM table through PawnIO's `RyzenSMU` module. The layout depends on the PM table version, so only allow-listed versions (from `ryzen_monitor`: Matisse and Vermeer with 8 or 16 slots, and Cezanne `0x400005`) are used. Fused-off cores are skipped as `ryzen_monitor` does. On Matisse and Vermeer the CCD fuse (SMN `0x5D218`, bits 22+) and each CCD's core-disable fuse (SMN `0x30081800` + `0x238` on Matisse or `0x598` on Vermeer, plus `0x2000000` per CCD) are read through the `AMDFamily17` module. On Cezanne a slot is fused off when all its power, voltage, FIT, IDD, clock, C0, CC1 and IRM fields read 0. Enabled cores are numbered in order (Core0 to Core11 on a 12-core part), and per-core readings are used only when the enabled count matches the CPU's physical core count. Only `0x380905` (Ryzen 7 5700X3D, index 188, no cores fused off) has been confirmed against HWiNFO on hardware; the fuse map and the 6-, 12- and Cezanne paths are untested. Every round is cross-checked: all cores plausible, and the hottest core on each CCD within range of that CCD's temperature (or Tctl). 3 failed rounds in a row turn per-core readings off until restart.
 
 ## Diagnostics (`fanforge-diag`)
 
@@ -94,7 +94,7 @@ Run from an elevated terminal, with FanForge quit for `dump` and `set-pwm`. `det
 - `detect`: the board, the chip(s) found on ports 0x2E and 0x4E, header and temperature counts, and whether fan control is supported.
 - `read`: one reading of every sensor and fan.
 - `temps`: GPU and drive temperatures, without PawnIO or administrator rights.
-- `pm-table [--raw]`: the CPU code name, SMU firmware and PM table version, Tctl, CCD and per-core temperatures if the layout is known; compare them with HWiNFO's "Core0 (CCD1)" values. The list shows every core slot in the table, so on parts with cores fused off it includes slots HWiNFO skips and the numbering can differ. `--raw` prints every value so an unknown version can be mapped (`fanforge-diag pm-table --raw | Out-File -Encoding utf8 pm-table.txt`). It asks the SMU to refresh the table, the same request HWiNFO and ZenTimings make, holding `Global\Access_PCI`; it changes no settings and works while FanForge runs.
+- `pm-table [--raw]`: the CPU code name, SMU firmware and PM table version, Tctl, CCD and per-core temperatures if the layout is known; compare them with HWiNFO's "Core0 (CCD1)" values. It prints the enabled-core map (from the fuses or the PM table), then every core slot in the table, labelling enabled ones with the numbers the app uses and marking fused-off slots. `--raw` prints every value so an unknown version can be mapped (`fanforge-diag pm-table --raw | Out-File -Encoding utf8 pm-table.txt`). It asks the SMU to refresh the table, the same request HWiNFO and ZenTimings make, holding `Global\Access_PCI`; it changes no settings and works while FanForge runs.
 - `dump --out file.json` and `diff a.json b.json`: snapshot every register (read only; the bank register is put back as found) and compare two snapshots.
 - `set-pwm --channel 2 --duty 40`: sets one fan to a fixed speed, returning it to the BIOS after the timeout, on Ctrl+C or when the console closes. Refuses below 30% and on monitor-only chips.
 - `gpu`: every NVIDIA GPU fan with its range, speed, target, RPM and mode (no administrator rights needed).
@@ -106,7 +106,7 @@ Run from an elevated terminal, with FanForge quit for `dump` and `set-pwm`. `det
 
 - AMD Radeon fan control.
 - The AMD GPU (ADL) path hasn't been tested on a Radeon. A curve bound to a Radeon whose PCI id changed sees a missing sensor and its fan goes to 100% (or BIOS control with the fallback off) until the sensor is picked again.
-- AMD per-core temperatures on 6- and 12-core parts, and PM table layouts beyond the allow-list.
+- AMD PM table layouts beyond the allow-list (Zen 4 and later, Threadripper, mobile APUs other than Cezanne). The 6- and 12-core and Cezanne per-core paths haven't been tested on hardware.
 - The secondary IT879xE chip on larger Gigabyte boards, and the other chips listed under "Not supported yet".
 - System fan headers on MSI 800-series boards with the NCT6687D.
 - Code signing.
