@@ -5,7 +5,8 @@ Licensed under the GNU General Public License v3.0 or later (see LICENSE).
 FanForge includes or is derived from the following third-party work.
 
 PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
-crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin)
+crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin,
+crates/hw/modules/IsaBridgeEC.bin)
   Copyright (C) namazso
   https://github.com/namazso/PawnIO.Modules
   Licensed under the GNU Lesser General Public License v2.1; the license text
@@ -45,7 +46,15 @@ Linux nct6775 driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/nct6775-core.c
   Reference for the Nuvoton temperature source numbers (SMBus master, PECI,
   PCH and DIMM sources) in crates/hw/src/chips.rs, cross-checked with
-  LibreHardwareMonitor where it lists them. No code was copied.
+  LibreHardwareMonitor where it lists them, and for the fan and PWM pin
+  selection rules in crates/hw/src/pinmux.rs (nct6775-platform.c). No code was
+  copied.
+
+Linux it87 driver (mainline and frankcrawford/it87)
+  https://github.com/torvalds/linux/blob/master/drivers/hwmon/it87.c
+  https://github.com/frankcrawford/it87
+  Reference for the ITE PWM configuration check and the fan and PWM pin
+  selection rules in crates/hw/src/pinmux.rs. No code was copied.
 
 Linux nct6687d driver (out of tree)
   https://github.com/Fred78290/nct6687d

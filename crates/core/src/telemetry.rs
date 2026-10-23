@@ -32,6 +32,8 @@ pub struct FanReading {
     pub duty: Option<Duty>,
     #[serde(default)]
     pub unavailable: Option<String>,
+    #[serde(default)]
+    pub monitor_only: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

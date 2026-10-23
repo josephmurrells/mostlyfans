@@ -73,6 +73,8 @@ pub enum HwError {
     ReleaseOutOfTime(usize),
     #[error("fan channel {0} does not exist")]
     InvalidChannel(usize),
+    #[error("fan header {} has no control pin on this board", .0 + 1)]
+    NoControlPin(usize),
     #[error("unsupported CPU: {0}")]
     UnsupportedCpu(String),
     #[error("unknown fan `{0}`")]

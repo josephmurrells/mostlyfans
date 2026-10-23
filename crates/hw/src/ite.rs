@@ -5,8 +5,10 @@
 // Derived from LibreHardwareMonitor (https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 
 use crate::HwError;
+use crate::chips::ChipMap;
 use crate::chips::IteMap;
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT};
+use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
     BankDump, CHIP_ID_REG, ChannelState, ChipConfig, ChipReadings, ConfigSpace, ControlKind,
@@ -19,6 +21,10 @@ pub(crate) const EC_LDN: u8 = 0x04;
 
 const CONFIG_PORT: u16 = 0x2E;
 const ENTER_SEQUENCE: [u8; 4] = [0x87, 0x01, 0x55, 0x55];
+const SECONDARY_ENTER_SEQUENCE: [u8; 4] = [0x87, 0x01, 0x55, 0xAA];
+const NO_CHIP: u16 = 0xFFFF;
+const REENTERED_IT8792E: u16 = 0x8883;
+pub const SECOND_CHIP_IDS: [u16; 3] = [0x8790, 0x8733, 0x8695];
 const CONFIG_CONTROL_REG: u8 = 0x02;
 const CONFIG_EXIT_VALUE: u8 = 0x02;
 const CHIP_VERSION_REG: u8 = 0x22;
@@ -38,6 +44,9 @@ const VENDOR_ID_REG: u8 = 0x58;
 const VENDOR_IDS: [u8; 2] = [0x90, 0x7F];
 const MAIN_CONTROL_REG: u8 = 0x13;
 const FAN_CONTROL_REG: u8 = 0x14;
+const EXTRA_FAN_REG: u8 = 0x0B;
+const PWM6_ENABLED: u8 = 0x08;
+const PWM6_CHANNEL: usize = 5;
 const PWM_CONFIGURED: u8 = 0x87;
 const MAIN_CONTROL_CHANNELS: usize = 3;
 const PWM_DUTY_REGS: [u8; 6] = [0x63, 0x6B, 0x73, 0x7B, 0xA3, 0xAB];
@@ -72,37 +81,86 @@ pub(crate) fn is_ite_id(chip_id: u16) -> bool {
     matches!(chip_id >> 8, 0x86 | 0x87)
 }
 
-pub(crate) fn read_config<P: PortIo>(io: &mut P, probing: bool) -> Result<ChipConfig, HwError> {
-    with_config_space(
-        io,
-        CONFIG_PORT,
-        &ENTER_SEQUENCE,
-        |space| {
-            let chip_id = space.read_word(CHIP_ID_REG)?;
-            let chip = match chip_matching(|chip| chip.matches_ite(chip_id)) {
-                Some(chip) => chip,
-                None if matches!(chip_id, 0x0000 | 0xFFFF) => {
-                    return Err(HwError::ChipNotFound(chip_id));
-                }
-                None if is_ite_id(chip_id) || !probing => {
-                    return Err(HwError::UnsupportedChip(chip_id));
-                }
-                None => return Err(HwError::NotIte(chip_id)),
+fn with_slot_config<P: PortIo, T>(
+    io: &mut P,
+    slot: Slot,
+    action: impl FnOnce(&mut ConfigSpace<'_, P>) -> Result<T, HwError>,
+) -> Result<T, HwError> {
+    match slot {
+        Slot::Primary => with_config_space(io, CONFIG_PORT, &ENTER_SEQUENCE, action, exit_config),
+        Slot::Secondary => {
+            let port = slot.config_port();
+            let entered = with_config_space(
+                io,
+                port,
+                &[],
+                |space| space.read_word(CHIP_ID_REG),
+                |_, _| Ok(()),
+            )? != NO_CHIP;
+            let enter: &[u8] = if entered {
+                &[]
+            } else {
+                &SECONDARY_ENTER_SEQUENCE
             };
-            let version = space.read(CHIP_VERSION_REG)? & 0x0F;
-            space.io.find_bars()?;
-            space.select(EC_LDN)?;
-            let base_address = space.read_base_address()?;
-            Ok(ChipConfig {
-                chip,
-                slot: Slot::Primary,
-                chip_id,
-                version,
-                base_address,
-            })
-        },
-        exit_config,
-    )
+            with_config_space(io, port, enter, action, |_, _| Ok(()))
+        }
+    }
+}
+
+fn second_chip_id(chip_id: u16) -> Result<u16, HwError> {
+    if chip_id == REENTERED_IT8792E {
+        tracing::debug!(
+            "the chip on 0x4E reports 0x8883 (an IT8792E entered twice); leaving it alone"
+        );
+    }
+    if SECOND_CHIP_IDS.contains(&chip_id) {
+        Ok(chip_id)
+    } else {
+        Err(HwError::ChipNotFound(chip_id))
+    }
+}
+
+pub(crate) fn read_config<P: PortIo>(
+    io: &mut P,
+    slot: Slot,
+    probing: bool,
+) -> Result<ChipConfig, HwError> {
+    with_slot_config(io, slot, |space| {
+        let chip_id = space.read_word(CHIP_ID_REG)?;
+        let chip_id = match slot {
+            Slot::Primary if SECOND_CHIP_IDS.contains(&chip_id) => {
+                return Err(HwError::UnsupportedChip(chip_id));
+            }
+            Slot::Primary => chip_id,
+            Slot::Secondary => second_chip_id(chip_id)?,
+        };
+        let chip = match chip_matching(|chip| chip.matches_ite(chip_id)) {
+            Some(chip) => chip,
+            None if matches!(chip_id, 0x0000 | 0xFFFF) => {
+                return Err(HwError::ChipNotFound(chip_id));
+            }
+            None if is_ite_id(chip_id) || !probing => {
+                return Err(HwError::UnsupportedChip(chip_id));
+            }
+            None => return Err(HwError::NotIte(chip_id)),
+        };
+        let version = space.read(CHIP_VERSION_REG)? & 0x0F;
+        space.io.find_bars()?;
+        space.select(EC_LDN)?;
+        let base_address = space.read_base_address()?;
+        let wiring = match &chip.map {
+            ChipMap::Ite(map) => pinmux::ite_wiring(space, map.pinmux, map.fans)?,
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Wiring::ALL,
+        };
+        Ok(ChipConfig {
+            chip,
+            slot,
+            chip_id,
+            version,
+            base_address,
+            wiring,
+        })
+    })
 }
 
 struct Ec<'a, P: PortIo> {
@@ -204,6 +262,17 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         Ok(!self.map.polarity_check || self.ec.read(FAN_CONTROL_REG)? & PWM_CONFIGURED != 0)
     }
 
+    fn wiring(&mut self, pins: Wiring) -> Result<Wiring, HwError> {
+        let gated = self.map.pwm6_gate
+            && self.map.fans > PWM6_CHANNEL
+            && self.ec.read(EXTRA_FAN_REG)? & PWM6_ENABLED == 0;
+        Ok(if gated {
+            pins.without_pwm(PWM6_CHANNEL)
+        } else {
+            pins
+        })
+    }
+
     fn verify_vendor(&mut self) -> Result<(), HwError> {
         let vendor = self.ec.read(VENDOR_ID_REG)?;
         if !VENDOR_IDS.contains(&vendor) {
@@ -259,6 +328,28 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         self.ec.write_verified(PWM_DUTY_REGS[channel], duty)
     }
 
+    fn restore_exact(&mut self, channel: usize, saved: ChannelState) -> Result<(), HwError> {
+        if saved.kind != ControlKind::Ite {
+            return self.restore(channel, None);
+        }
+        self.ec.write(PWM_DUTY_REGS[channel], saved.duty)?;
+        self.ec
+            .write_verified(self.map.pwm_control[channel], saved.control)?;
+        if channel < MAIN_CONTROL_CHANNELS {
+            let main = self.ec.read(MAIN_CONTROL_REG)?;
+            let bit = 1 << channel;
+            let wanted = if saved.main_enabled {
+                main | bit
+            } else {
+                main & !bit
+            };
+            if wanted != main {
+                self.ec.write_verified(MAIN_CONTROL_REG, wanted)?;
+            }
+        }
+        Ok(())
+    }
+
     fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError> {
         let saved = saved.filter(|state| state.kind == ControlKind::Ite);
         let register = self.map.pwm_control[channel];
@@ -293,19 +384,15 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
 
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
     map: &IteMap,
 ) -> Result<RegisterDump, HwError> {
     let (global_config, ec_ldn_config) = {
         let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-        with_config_space(
-            io,
-            CONFIG_PORT,
-            &ENTER_SEQUENCE,
-            |space| space.dump(EC_LDN, &EC_LDN_DUMP_REGS),
-            exit_config,
-        )?
+        with_slot_config(io, config.slot, |space| {
+            space.dump(EC_LDN, &EC_LDN_DUMP_REGS)
+        })?
     };
 
     let bank_register = {
@@ -350,6 +437,68 @@ pub(crate) fn dump<P: PortIo>(
     })
 }
 
+const SMFI_LDN: u8 = 0x0F;
+const LDN_ACTIVE_REG: u8 = 0x30;
+
+pub(crate) fn smfi_active<P: PortIo>(
+    io: &mut P,
+    lock: &BusLock,
+    config: &ChipConfig,
+) -> Result<bool, HwError> {
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_slot_config(io, config.slot, |space| {
+        space.select(SMFI_LDN)?;
+        let first = space.read(LDN_ACTIVE_REG)?;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let second = space.read(LDN_ACTIVE_REG)?;
+        space.select(EC_LDN)?;
+        Ok(first == second && first != 0)
+    })
+}
+
+pub(crate) fn pwm_configured<P: PortIo>(
+    io: &mut P,
+    lock: &BusLock,
+    config: &ChipConfig,
+    map: &IteMap,
+) -> Result<bool, HwError> {
+    if !map.polarity_check {
+        return Ok(true);
+    }
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    let mut ec = Ec::new(io, config.base_address, map);
+    let original = if map.bank_select {
+        Some(ec.read(BANK_REG)?).filter(|bank| bank & BANK_MASK != 0)
+    } else {
+        None
+    };
+    let value = match original {
+        Some(original) => {
+            let wanted = original & !BANK_MASK;
+            let value = ec
+                .write(BANK_REG, wanted)
+                .and_then(|()| ec.read(BANK_REG))
+                .and_then(|read| {
+                    if read == wanted {
+                        ec.read(FAN_CONTROL_REG)
+                    } else {
+                        Err(HwError::VerifyFailed {
+                            register: u16::from(BANK_REG),
+                            written: wanted,
+                            read,
+                        })
+                    }
+                });
+            let restored = ec.write(BANK_REG, original);
+            let value = value?;
+            restored?;
+            value
+        }
+        None => ec.read(FAN_CONTROL_REG)?,
+    };
+    Ok(value & PWM_CONFIGURED != 0)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake {
     use std::sync::{Arc, Mutex, PoisonError};
@@ -361,11 +510,15 @@ pub mod fake {
     #[derive(Debug, Clone)]
     pub struct FakeIte {
         pub chip_id: u16,
+        pub port: u16,
+        pub key: [u8; 4],
         pub base: u16,
         pub config_mode: bool,
         pub enter_progress: usize,
         pub config_index: u8,
         pub ldn: u8,
+        pub pins: [u8; 256],
+        pub smfi_active: bool,
         pub bars_found: bool,
         pub ec_index: u8,
         pub bank_register: u8,
@@ -386,6 +539,10 @@ pub mod fake {
             for channel in 0..MAIN_CONTROL_CHANNELS {
                 Self::fill_channel(&mut banks[0], &crate::chips::CHIPS[0], channel);
             }
+            let mut pins = [0u8; 256];
+            pins[0x26] = 0x30;
+            pins[0x27] = 0x02;
+            pins[0x29] = 0x80;
             banks[0][usize::from(TEMP_BASE_REG)] = 41;
             banks[0][usize::from(TEMP_BASE_REG) + 1] = 0x80;
             for bank in &mut banks[1..] {
@@ -393,11 +550,15 @@ pub mod fake {
             }
             Self {
                 chip_id: IT8655E_ID,
+                port: CONFIG_PORT,
+                key: ENTER_SEQUENCE,
                 base: 0x290,
                 config_mode: false,
                 enter_progress: 0,
                 config_index: 0,
                 ldn: 0,
+                pins,
+                smfi_active: false,
                 bars_found: false,
                 ec_index: 0,
                 bank_register: 0,
@@ -411,11 +572,24 @@ pub mod fake {
             }
         }
 
+        pub fn second(chip_id: u16) -> Self {
+            Self {
+                port: 0x4E,
+                key: SECONDARY_ENTER_SEQUENCE,
+                base: 0x2A0,
+                ..Self::chip(chip_id)
+            }
+        }
+
         pub fn chip(chip_id: u16) -> Self {
             let mut fake = Self::new();
             fake.chip_id = chip_id;
             fake.banks[0][usize::from(CONFIGURATION_REG)] = CONFIGURATION_READY;
             fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
+            fake.banks[0][usize::from(EXTRA_FAN_REG)] = PWM6_ENABLED;
+            if chip_id == 0x8665 {
+                fake.pins[0x26] = 0x10;
+            }
             if let Some(spec) = chip_matching(|chip| chip.matches_ite(chip_id)) {
                 for channel in 0..spec.fan_count() {
                     Self::fill_channel(&mut fake.banks[0], spec, channel);
@@ -425,7 +599,7 @@ pub mod fake {
         }
 
         fn fill_channel(bank: &mut [u8; 256], spec: &crate::chips::ChipSpec, channel: usize) {
-            let crate::chips::ChipMap::Ite(map) = &spec.map else {
+            let ChipMap::Ite(map) = &spec.map else {
                 return;
             };
             bank[usize::from(map.pwm_control[channel])] = AUTO_MODE_BIT | channel as u8;
@@ -458,15 +632,18 @@ pub mod fake {
                 return Err(HwError::ReadNotAcknowledged(self.ec_index));
             }
             Ok(match port {
-                0x2F if self.config_mode => match self.config_index {
+                p if p == self.port + 1 && self.config_mode => match self.config_index {
                     0x20 => (self.chip_id >> 8) as u8,
                     0x21 => self.chip_id as u8,
                     0x22 => 0x01,
                     0x60 if self.ldn == EC_LDN => (self.base >> 8) as u8,
                     0x61 if self.ldn == EC_LDN => self.base as u8,
+                    0x30 if self.ldn == 0x0F => u8::from(self.smfi_active),
+                    index @ 0x23..=0x2F => self.pins[usize::from(index)],
+                    index if self.ldn == 0x07 => self.pins[usize::from(index)],
                     _ => 0,
                 },
-                0x2F => 0xFF,
+                p if p == self.port + 1 => 0xFF,
                 p if p == self.base + ADDRESS_PORT_OFFSET => {
                     if self.echo_index {
                         self.ec_index
@@ -489,26 +666,26 @@ pub mod fake {
             if self.offline || (self.is_ec_port(port) && !self.bars_found) {
                 return Err(HwError::AccessDenied);
             }
-            let index = if port == 0x2F {
+            let index = if port == self.port + 1 {
                 self.config_index
             } else {
                 self.ec_index
             };
             self.writes.push((port, value, index));
             match port {
-                CONFIG_PORT if self.config_mode => self.config_index = value,
-                CONFIG_PORT => {
-                    if value == ENTER_SEQUENCE[self.enter_progress] {
+                p if p == self.port && self.config_mode => self.config_index = value,
+                p if p == self.port => {
+                    if value == self.key[self.enter_progress] {
                         self.enter_progress += 1;
                     } else {
-                        self.enter_progress = usize::from(value == ENTER_SEQUENCE[0]);
+                        self.enter_progress = usize::from(value == self.key[0]);
                     }
-                    if self.enter_progress == ENTER_SEQUENCE.len() {
+                    if self.enter_progress == self.key.len() {
                         self.config_mode = true;
                         self.enter_progress = 0;
                     }
                 }
-                0x2F if self.config_mode => match self.config_index {
+                p if p == self.port + 1 && self.config_mode => match self.config_index {
                     0x07 => self.ldn = value,
                     CONFIG_CONTROL_REG if value & CONFIG_EXIT_VALUE != 0 => {
                         self.config_mode = false;
@@ -578,6 +755,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    use crate::mutex::NamedMutex;
     use std::thread;
     use std::time::Duration;
 
@@ -615,7 +793,8 @@ mod tests {
                 slot: Slot::Primary,
                 chip_id: IT8655E_ID,
                 version: 1,
-                base_address: 0x290
+                base_address: 0x290,
+                wiring: Wiring::ALL,
             }
         );
         assert!(chip.fan_control());
@@ -630,7 +809,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::UnsupportedChip(0x8613))
         ));
         assert!(!io.config_mode);
@@ -640,7 +819,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::ChipNotFound(0xFFFF))
         ));
     }
@@ -652,12 +831,133 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::NotIte(0xD42B))
         ));
         assert!(io.config_mode);
         assert_eq!(io.exits, 0);
         assert!(io.writes.iter().all(|&(port, ..)| port == CONFIG_PORT));
+    }
+
+    fn config_writes(fake: &FakeIte, port: u16) -> Vec<u8> {
+        fake.writes
+            .iter()
+            .filter(|(written, ..)| *written == port)
+            .map(|&(_, value, _)| value)
+            .collect()
+    }
+
+    #[test]
+    fn a_second_chip_on_4e_is_entered_with_its_own_key_and_never_exited() {
+        let mut chip =
+            SuperIo::probe_second(FakeIte::second(0x8733), BusLock::new(lock("second"))).unwrap();
+        assert_eq!(chip.chip().name, "ITE IT8792E");
+        assert_eq!(chip.config().slot, Slot::Secondary);
+        assert_eq!(chip.config().base_address, 0x2A0);
+        assert!(chip.fan_control());
+        assert_eq!(chip.read().unwrap().rpm.len(), 3);
+        chip.reinitialize().unwrap();
+        chip.dump().unwrap();
+        assert!(chip.io.config_mode);
+        assert_eq!(chip.io.exits, 0);
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, ..)| port != CONFIG_PORT && port != CONFIG_PORT + 1)
+        );
+        assert_eq!(&config_writes(&chip.io, 0x4E)[..2], &[0x20, 0x21]);
+        assert_eq!(
+            config_writes(&chip.io, 0x4E)
+                .windows(4)
+                .filter(|window| *window == SECONDARY_ENTER_SEQUENCE)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_second_chip_already_in_config_mode_is_not_entered_again() {
+        let mut fake = FakeIte::second(0x8695);
+        fake.config_mode = true;
+        let chip = SuperIo::attach_second(fake, BusLock::new(lock("second-entered"))).unwrap();
+        assert_eq!(chip.chip().name, "ITE IT87952E");
+        assert!(!config_writes(&chip.io, 0x4E).contains(&0x87));
+        assert_eq!(chip.io.exits, 0);
+    }
+
+    #[test]
+    fn only_the_second_chip_ids_are_taken_from_4e() {
+        for chip_id in [0x8883, 0x8686, 0xD42B, 0xFFFF] {
+            let mut fake = FakeIte::second(chip_id);
+            assert!(
+                matches!(
+                    read_config(&mut fake, Slot::Secondary, true),
+                    Err(HwError::ChipNotFound(found)) if found == chip_id
+                ),
+                "{chip_id:#06x}"
+            );
+            assert_eq!(fake.exits, 0);
+            assert!(!fake.bars_found);
+        }
+    }
+
+    #[test]
+    fn a_second_chip_is_looked_for_only_beside_a_primary_ite_and_never_as_an_alias() {
+        let primary = probe(FakeIte::chip(0x8689), "second-primary");
+        let found = crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0x8733)), true);
+        assert!(found.describe().ends_with("IT8792E on 0x4E"));
+        assert_eq!(
+            found.chip().map(|chip| chip.chip().name),
+            Some("ITE IT8792E")
+        );
+
+        let alias = crate::superio::detect_second(
+            &primary,
+            |_| {
+                Ok(FakeIte {
+                    base: 0x290,
+                    ..FakeIte::second(0x8733)
+                })
+            },
+            true,
+        );
+        assert!(alias.describe().contains("the same chip twice"));
+        assert!(alias.chip().is_none());
+
+        let mut nuvoton = probe(FakeIte::chip(0x8689), "second-nuvoton");
+        nuvoton.config.chip = chip_matching(|chip| chip.matches_nuvoton(0xD4, 0x2B)).unwrap();
+        let opened = std::cell::Cell::new(false);
+        let none = crate::superio::detect_second(
+            &nuvoton,
+            |_| {
+                opened.set(true);
+                Err(HwError::AccessDenied)
+            },
+            true,
+        );
+        assert!(matches!(none, crate::superio::SecondProbe::NotLooked));
+        assert!(!opened.get());
+
+        let empty = crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0xFFFF)), true);
+        assert_eq!(empty.describe(), "none on 0x4E");
+        let reentered =
+            crate::superio::detect_second(&primary, |_| Ok(FakeIte::second(0x8883)), true);
+        assert!(reentered.describe().contains("0x8883"));
+        let refused = crate::superio::detect_second(&primary, |_| Err(HwError::AccessDenied), true);
+        assert!(refused.describe().contains("could not be set up"));
+    }
+
+    #[test]
+    fn second_chip_ids_are_refused_on_the_primary_port_as_before() {
+        for chip_id in SECOND_CHIP_IDS {
+            let mut io = FakeIte::chip(chip_id);
+            assert!(matches!(
+                read_config(&mut io, Slot::Primary, true),
+                Err(HwError::UnsupportedChip(found)) if found == chip_id
+            ));
+            assert!(!io.config_mode);
+        }
     }
 
     #[test]
@@ -669,7 +969,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    read_config(&mut io, true),
+                    read_config(&mut io, Slot::Primary, true),
                     Err(HwError::InvalidBaseAddress { .. })
                 ),
                 "base {base:#x}"
@@ -1117,9 +1417,63 @@ mod tests {
             chip.set_duty(0, 0x80),
             Err(HwError::NoFanControl("ITE IT8628E"))
         ));
+        assert!(chip.pwm_misconfigured());
         chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x01;
         chip.reinitialize().unwrap();
         assert!(chip.fan_control());
+        assert!(!chip.pwm_misconfigured());
+    }
+
+    #[test]
+    fn the_read_only_pwm_check_leaves_the_bank_as_it_found_it() {
+        let mut fake = FakeIte::chip(0x8686);
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x70;
+        fake.banks[2][usize::from(FAN_CONTROL_REG)] = 0x87;
+        fake.bank_register = 0x40 | 0x01;
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("pwm-check")).unwrap();
+        assert!(!chip.check_pwm_configuration().unwrap());
+        assert_eq!(chip.io.bank_register, 0x41);
+        assert!(chip.fan_control());
+
+        chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert_eq!(chip.io.bank_register, 0x41);
+
+        chip.io.bank_register = 0x00;
+        let writes = data_writes(&chip.io).len();
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert_eq!(data_writes(&chip.io).len(), writes);
+    }
+
+    #[test]
+    fn a_failed_pwm_check_still_puts_the_bank_back() {
+        let mut fake = FakeIte::chip(0x8686);
+        fake.bank_register = 0x40 | 0x01;
+        fake.unreadable_registers.push(FAN_CONTROL_REG);
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("pwm-check-error")).unwrap();
+        assert!(matches!(
+            chip.check_pwm_configuration(),
+            Err(HwError::ReadNotAcknowledged(FAN_CONTROL_REG))
+        ));
+        assert_eq!(chip.io.bank_register, 0x41);
+
+        chip.io.unreadable_registers.clear();
+        chip.io.stuck_registers.push(BANK_REG);
+        assert!(matches!(
+            chip.check_pwm_configuration(),
+            Err(HwError::VerifyFailed { .. })
+        ));
+        assert_eq!(chip.io.bank_register, 0x41);
+    }
+
+    #[test]
+    fn the_it8655e_skips_the_pwm_check() {
+        let mut fake = FakeIte::new();
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x00;
+        let mut chip = probe(fake, "pwm-8655");
+        assert!(chip.fan_control());
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert!(!chip.pwm_misconfigured());
     }
 
     #[test]

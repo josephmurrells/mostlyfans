@@ -21,7 +21,9 @@ use fanforge_hw::sensors::{self, SensorSource};
 use fanforge_hw::smu::{self, CoreTempLayout, RyzenSmu};
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::superio::RegisterDump;
-use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, attach_chip, force_all_auto, open_chip};
+use fanforge_hw::system::{
+    Chip, Hardware, RELEASE_BUDGET, attach_chip, attach_second_chip, force_all_auto, open_chip,
+};
 use fanforge_win::InstanceMutex;
 use fanforge_win::paths::{self, INSTANCE_MUTEX};
 
@@ -53,6 +55,13 @@ enum Command {
     Dump {
         #[arg(long, help = "Write to this file instead of stdout")]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u8).range(1..=2),
+            help = "Which fan chip: 1 (first) or 2 (the second chip on 0x4E)"
+        )]
+        slot: u8,
     },
     #[command(
         about = "Print the AMD SMU PM table version and the per-core temperatures it holds (no settings are changed)"
@@ -113,7 +122,7 @@ fn main() -> ExitCode {
         Command::Detect => detect(),
         Command::Read => read(),
         Command::Temps => temps(),
-        Command::Dump { out } => dump(out.as_deref()),
+        Command::Dump { out, slot } => dump(out.as_deref(), slot),
         Command::PmTable { raw } => pm_table(raw),
         Command::Diff { before, after } => diff(&before, &after),
         Command::SetPwm {
@@ -153,6 +162,16 @@ fn detect() -> DiagResult {
     let identity = detect_identity();
     println!("Board: {} {}", identity.manufacturer, identity.product);
     let mut chip = attach_chip()?;
+    describe_chip(&mut chip)?;
+    let second = attach_second_chip(&chip);
+    println!("Second fan chip: {}", second.describe());
+    if let Some(mut second) = second.chip() {
+        describe_chip(&mut second)?;
+    }
+    Ok(())
+}
+
+fn describe_chip(chip: &mut Chip) -> DiagResult {
     let config = chip.config();
     println!(
         "Super I/O: {} (chip {:#06x} version {}) on port {:#04x}, base {:#06x}",
@@ -167,10 +186,22 @@ fn detect() -> DiagResult {
         chip.fan_count(),
         chip.temp_names().len()
     );
-    let control = if chip.fan_control() {
-        "supported"
-    } else {
+    let wiring = chip.wiring();
+    for channel in 0..chip.fan_count() {
+        let note = match (wiring.has_tach(channel), wiring.has_pwm(channel)) {
+            (true, true) => continue,
+            (false, false) => "not wired as a fan header (FanForge hides it)",
+            (true, false) => "speed only (the board uses its control pin for something else)",
+            (false, true) => "control only (the board uses its speed pin for something else)",
+        };
+        println!("  Header {}: {note}", channel + 1);
+    }
+    let control = if !chip.chip().fan_control {
         "monitor only (FanForge doesn't support fan control on this chip)"
+    } else if !chip.check_pwm_configuration()? {
+        "monitor only (the BIOS set up the fan outputs with inverted polarity, a known BIOS fault that Linux it87 also won't drive; check the fan settings in the BIOS setup)"
+    } else {
+        "supported"
     };
     println!("Fan control: {control}");
     if chip.io_space_locked()? {
@@ -234,8 +265,19 @@ fn read() -> DiagResult {
     Ok(())
 }
 
-fn dump(out: Option<&Path>) -> DiagResult {
-    let json = serde_json::to_string_pretty(&attach_chip()?.dump()?)?;
+fn dump(out: Option<&Path>, slot: u8) -> DiagResult {
+    let mut primary = attach_chip()?;
+    let dump = if slot == 2 {
+        let second = attach_second_chip(&primary);
+        let described = second.describe();
+        second
+            .chip()
+            .ok_or_else(|| format!("no second fan chip to dump: {described}"))?
+            .dump()?
+    } else {
+        primary.dump()?
+    };
+    let json = serde_json::to_string_pretty(&dump)?;
     match out {
         Some(path) => {
             fs::write(path, json)?;
@@ -428,18 +470,29 @@ fn watch(
 }
 
 fn restore() -> DiagResult {
-    let snapshot = BiosSnapshot::load(&paths::bios_snapshot_path())?;
+    let path = paths::bios_snapshot_path();
+    let snapshot = BiosSnapshot::load(&path)?;
     let mut chip = open_chip()?;
-    if !chip.can_release() {
+    let primary = if chip.can_release() {
+        force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3).map(|()| {
+            println!("all {} channels returned to BIOS control", chip.fan_count());
+        })
+    } else {
         println!(
             "the {} is monitor-only; FanForge never drives its fans, so there is nothing to restore",
             chip.chip().name
         );
-        return Ok(());
+        Ok(())
+    };
+    if fanforge_hw::second::pending(&path) {
+        match fanforge_hw::second::release_from_disk(Some(&chip), &path, RELEASE_BUDGET * 3) {
+            Ok(()) => println!(
+                "the second chip's fans and Gigabyte's fan controller are back under BIOS control"
+            ),
+            Err(error) => println!("the second chip could not be fully restored: {error}"),
+        }
     }
-    force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3)?;
-    println!("all {} channels returned to BIOS control", chip.fan_count());
-    Ok(())
+    Ok(primary?)
 }
 
 fn describe(sample: Result<FanSample, String>) -> String {
