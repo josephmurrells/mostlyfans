@@ -38,7 +38,9 @@ Linux k10temp driver
 ryzen_monitor
   https://github.com/hattedsquirrel/ryzen_monitor
   Reference for the per-core temperature (CORE_TEMP) positions in the AMD SMU
-  PM table versions listed in crates/hw/src/smu.rs. No code was copied.
+  PM table versions listed in crates/hw/src/smu.rs, and for the CCD and
+  core-disable fuse addresses and the Cezanne fused-off core rule. No code was
+  copied.
 
 Linux nct6775 driver
   https://github.com/torvalds/linux/blob/master/drivers/hwmon/nct6775-core.c

@@ -16,7 +16,7 @@ use fanforge_hw::board::detect_identity;
 use fanforge_hw::gpu_fans::nvidia::NvidiaFans;
 use fanforge_hw::gpu_fans::{FanDriver, FanSample, GpuDesc};
 use fanforge_hw::pawnio;
-use fanforge_hw::sensors::cores::CoreTempSource;
+use fanforge_hw::sensors::cores::{CoreTempSource, enabled_slots};
 use fanforge_hw::sensors::{self, SensorSource};
 use fanforge_hw::smu::{self, CoreTempLayout, RyzenSmu};
 use fanforge_hw::snapshot::BiosSnapshot;
@@ -311,7 +311,12 @@ fn pm_table(raw: bool) -> DiagResult {
         table.version, table.base
     );
     let values = smu.read_pm_table()?;
-    match AmdCpu::open().and_then(|cpu| cpu.read()) {
+    let cpu = AmdCpu::open();
+    match cpu
+        .as_ref()
+        .map_err(ToString::to_string)
+        .and_then(|cpu| cpu.read().map_err(|error| error.to_string()))
+    {
         Ok(temps) => {
             println!("{:<16} {:>8.1} °C", "Tctl", temps.tctl);
             for (index, celsius) in temps.ccds {
@@ -322,11 +327,47 @@ fn pm_table(raw: bool) -> DiagResult {
     }
     match CoreTempLayout::for_version(table.version) {
         Some(layout) => {
+            let enabled = match &cpu {
+                Ok(cpu) => enabled_slots(&layout, &smu, cpu).map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            match &enabled {
+                Ok(slots) => println!(
+                    "Enabled cores: {} of {} slots ({:?})",
+                    slots.len(),
+                    layout.cores,
+                    slots
+                ),
+                Err(error) => println!("Enabled cores: unknown ({error})"),
+            }
+            match fanforge_win::topology::physical_cores() {
+                Ok(cores) => {
+                    let verdict = match &enabled {
+                        Ok(slots) if slots.len() == cores.len() => {
+                            "matches, so FanForge shows per-core temperatures"
+                        }
+                        Ok(_) => "doesn't match, so FanForge hides per-core temperatures",
+                        Err(_) => "can't be compared",
+                    };
+                    println!("Windows reports {} physical cores; {verdict}", cores.len());
+                }
+                Err(error) => println!("Windows physical cores: unknown ({error})"),
+            }
             println!(
-                "Per-core temperatures (ryzen_monitor layout, index {}, unverified; slots of fused-off cores are listed too):",
+                "Per-core temperatures by table slot (ryzen_monitor layout, index {}):",
                 layout.offset
             );
-            for core in layout.core_temps(&values).unwrap_or_default() {
+            for core in layout
+                .core_temps(&values, &layout.all_slots())
+                .unwrap_or_default()
+            {
+                let label = match &enabled {
+                    Ok(slots) => match slots.iter().position(|&slot| slot == core.core) {
+                        Some(index) => format!("Core{index} (CCD{})", core.ccd),
+                        None => format!("slot {} (CCD{}) fused off", core.core, core.ccd),
+                    },
+                    Err(_) => format!("slot {} (CCD{})", core.core, core.ccd),
+                };
                 let flag = if core.celsius == 0.0 {
                     "  zero"
                 } else if is_plausible(core.celsius) {
@@ -334,11 +375,7 @@ fn pm_table(raw: bool) -> DiagResult {
                 } else {
                     "  out of range"
                 };
-                println!(
-                    "{:<16} {:>8.1} °C{flag}",
-                    format!("Core{} (CCD{})", core.core, core.ccd),
-                    core.celsius
-                );
+                println!("{label:<28} {:>8.1} °C{flag}", core.celsius);
             }
         }
         None => println!(

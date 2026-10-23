@@ -8,7 +8,7 @@ use super::SensorSource;
 use crate::HwError;
 use crate::amd::{AmdCpu, CpuInfo, CpuTemps};
 use crate::intel::IntelCpu;
-use crate::smu::{CoreTemp, CoreTempLayout, RyzenSmu};
+use crate::smu::{self, CCD_FUSE, CoreMap, CoreTemp, CoreTempLayout, RyzenSmu};
 
 const CADENCE: Duration = Duration::from_secs(2);
 const CORE_FLOOR: f32 = 10.0;
@@ -82,6 +82,7 @@ struct AmdCores {
     smu: RyzenSmu,
     cpu: AmdCpu,
     layout: CoreTempLayout,
+    slots: Vec<usize>,
     check: LayoutCheck,
     unchecked: u32,
 }
@@ -155,21 +156,29 @@ fn open() -> Result<State, String> {
                     table.version
                 ));
             };
-            if layout.cores != cores.len() {
-                return unsupported(&format!(
-                    "PM table has {} core slots but the CPU has {} cores",
-                    layout.cores,
-                    cores.len()
-                ));
-            }
             let cpu = match opened(AmdCpu::open())? {
                 Ok(cpu) => cpu,
                 Err(state) => return Ok(state),
             };
+            let slots = match opened(enabled_slots(&layout, &smu, &cpu))? {
+                Ok(slots) => slots,
+                Err(state) => return Ok(state),
+            };
+            if slots.is_empty() && matches!(layout.map, CoreMap::ZeroWhenFusedOff(_)) {
+                return Err("the PM table doesn't report any active cores yet".to_owned());
+            }
+            if slots.len() != cores.len() {
+                return unsupported(&format!(
+                    "PM table has {} enabled core slots but the CPU has {} cores",
+                    slots.len(),
+                    cores.len()
+                ));
+            }
             Ok(State::Open(Backend::Amd(Box::new(AmdCores {
                 smu,
                 cpu,
                 layout,
+                slots,
                 check: LayoutCheck::default(),
                 unchecked: 0,
             }))))
@@ -192,6 +201,33 @@ fn open() -> Result<State, String> {
     }
 }
 
+pub fn enabled_slots(
+    layout: &CoreTempLayout,
+    smu: &RyzenSmu,
+    cpu: &AmdCpu,
+) -> Result<Vec<usize>, HwError> {
+    match layout.map {
+        CoreMap::Fuses { offset } => {
+            let ccd_fuse = cpu.read_smn_word(CCD_FUSE)?;
+            let fuses = smu::core_fuse_addresses(offset, ccd_fuse, layout.ccds())
+                .into_iter()
+                .map(|address| {
+                    address
+                        .map(|address| cpu.read_smn_word(address))
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(smu::enabled_slots_from_fuses(&fuses))
+        }
+        CoreMap::ZeroWhenFusedOff(fields) => {
+            let table = smu.read_pm_table()?;
+            layout.active_slots(&table, fields).ok_or_else(|| {
+                HwError::UnsupportedCpu("the PM table is shorter than its layout".to_owned())
+            })
+        }
+    }
+}
+
 fn reading(index: usize, label: String, celsius: Option<f32>) -> SensorReading {
     SensorReading {
         id: SensorId::core(index),
@@ -204,7 +240,7 @@ impl AmdCores {
     fn read(&mut self) -> Result<AmdRead, HwError> {
         let reference = self.cpu.read();
         let table = self.smu.read_pm_table()?;
-        let Some(cores) = self.layout.core_temps(&table) else {
+        let Some(cores) = self.layout.core_temps(&table, &self.slots) else {
             return Ok(AmdRead::WrongLayout);
         };
         match reference {
