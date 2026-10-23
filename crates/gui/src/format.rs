@@ -1,4 +1,4 @@
-use fanforge_core::board::FanLimits;
+use fanforge_core::board::{BoardInfo, FanLimits};
 use fanforge_core::calibration::{self, FanCalibration};
 use fanforge_core::config::{Config, FanMode, FanSettings};
 use fanforge_core::engine::FanState;
@@ -49,6 +49,32 @@ pub fn rpm(fan: &FanReading) -> String {
         Some(rpm) => format!("{rpm} rpm"),
         None => "no signal".to_owned(),
     }
+}
+
+pub fn chip_line(name: &str, chip_id: u16, headers: usize, fan_control: bool) -> String {
+    format!(
+        "{name} ({chip_id:#06x}) · {headers} fan headers{}",
+        if fan_control { "" } else { " · monitor only" }
+    )
+}
+
+pub fn chip_lines(board: &BoardInfo) -> Vec<String> {
+    let primary = chip_line(
+        &board.chip_name,
+        board.chip_id,
+        board.fan_headers,
+        board.fan_control,
+    );
+    std::iter::once(primary)
+        .chain(board.chips.iter().skip(1).map(|chip| {
+            chip_line(
+                &chip.chip_name,
+                chip.chip_id,
+                chip.fan_headers,
+                chip.fan_control,
+            )
+        }))
+        .collect()
 }
 
 pub fn connected(fan: &FanReading) -> bool {
