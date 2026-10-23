@@ -22,6 +22,7 @@ const OUTPUT_FULL: u8 = 0x01;
 const ECIO_MAJOR_VERSION: u8 = 1;
 const IT8792E_ID: u16 = 0x8733;
 const IT87952E_ID: u16 = 0x8695;
+const IT8790E_ID: u16 = 0x8790;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Generation {
@@ -36,7 +37,13 @@ pub fn generation(chip_id: u16, g23: [u8; 2], g1: [u8; 2]) -> Generation {
     match g23 {
         [0x01, 0x00] if newer => Generation::G3,
         [0x00, 0x01 | 0x03 | 0x04] if chip_id == IT8792E_ID => Generation::G2,
-        _ if g1[0] != 0 && g1[1] != 0 && g1 != [0xFF, 0xFF] => Generation::G1,
+        _ if matches!(chip_id, IT8790E_ID | IT8792E_ID)
+            && g1[0] != 0
+            && g1[1] != 0
+            && g1 != [0xFF, 0xFF] =>
+        {
+            Generation::G1
+        }
         _ => Generation::Unknown,
     }
 }
@@ -455,6 +462,7 @@ mod tests {
         assert_eq!(generation(0x8733, [0, 3], [0, 0]), Generation::G2);
         assert_eq!(generation(0x8695, [0, 3], [0, 0]), Generation::Unknown);
         assert_eq!(generation(0x8790, [0, 0], [2, 1]), Generation::G1);
+        assert_eq!(generation(0x8695, [0, 0], [2, 1]), Generation::Unknown);
         assert_eq!(
             generation(0x8790, [0xFF, 0xFF], [0xFF, 0xFF]),
             Generation::Unknown

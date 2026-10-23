@@ -119,7 +119,12 @@ impl Hardware<LpcIo> {
             .chip()
             .map(|mut found| {
                 let control = second::discover(&mut found, board, second::open_isa_bridge);
-                SecondChip::new(found, control, second::snapshot_path(snapshot_path))
+                SecondChip::new(
+                    found,
+                    control,
+                    second::snapshot_path(snapshot_path),
+                    second::open_isa_bridge,
+                )
             });
         let cpu = Cpu::open().map_err(|error| error.to_string());
         if let Err(error) = &cpu {
@@ -243,11 +248,16 @@ impl<P: PortIo> Hardware<P> {
     }
 
     pub fn initialize_channels(&mut self, take_control: bool) -> Result<(), HwError> {
+        let result = self.initialize_primary(take_control);
         if let Some(second) = &mut self.second
             && let Err(error) = second.initialize(take_control)
         {
             tracing::error!(%error, "could not set up the second fan chip's fans");
         }
+        result
+    }
+
+    fn initialize_primary(&mut self, take_control: bool) -> Result<(), HwError> {
         if !self.chip.can_release() {
             return Ok(());
         }
@@ -435,13 +445,13 @@ impl<P: PortIo> Hardware<P> {
     }
 
     fn release(&mut self, owned_only: bool) -> Result<(), HwError> {
-        if let Some(owner) = self.foreign_owner.filter(|_| !self.chip.can_release()) {
-            return Err(HwError::ForeignSnapshot {
+        let started = Instant::now();
+        let primary = if let Some(owner) = self.foreign_owner.filter(|_| !self.chip.can_release()) {
+            Err(HwError::ForeignSnapshot {
                 owner,
                 found: self.chip.config().chip_id,
-            });
-        }
-        let primary = if self.chip.can_release() {
+            })
+        } else if self.chip.can_release() {
             let result = self.release_channels(owned_only);
             if let Err(error) = self.persist_snapshot() {
                 tracing::warn!(%error, "failed to persist BIOS snapshot after release");
@@ -451,7 +461,12 @@ impl<P: PortIo> Hardware<P> {
             Ok(())
         };
         let second = match &mut self.second {
-            Some(second) => second.release(owned_only, RELEASE_BUDGET),
+            Some(second) => {
+                let remaining = RELEASE_BUDGET
+                    .saturating_sub(started.elapsed())
+                    .max(second::SHORT_BUDGET);
+                second.release(owned_only, remaining)
+            }
             None => Ok(()),
         };
         primary.and(second)
@@ -523,6 +538,7 @@ mod tests {
                 chip,
                 Err("monitor only in tests".to_owned()),
                 second::snapshot_path(path),
+                || Err(HwError::AccessDenied),
             )
         }));
         (hardware, primary, second)

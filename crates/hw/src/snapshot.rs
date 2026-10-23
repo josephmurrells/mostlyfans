@@ -112,6 +112,14 @@ impl BiosSnapshot {
         self.owned.insert(FanId::for_channel(index))
     }
 
+    pub fn claim_exact(&mut self, index: usize, current: ChannelState) -> bool {
+        if self.is_owned(index) {
+            return false;
+        }
+        self.channels.insert(FanId::for_channel(index), current);
+        self.owned.insert(FanId::for_channel(index))
+    }
+
     pub fn release(&mut self, index: usize) -> bool {
         self.owned.remove(&FanId::for_channel(index))
     }

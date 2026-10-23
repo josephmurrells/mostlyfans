@@ -26,7 +26,11 @@ pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 const FAILURES_BEFORE_BACKOFF: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(10);
 const SNAPSHOT_FILE: &str = "bios_snapshot_sio2.toml";
-const SHORT_BUDGET: Duration = Duration::from_millis(400);
+pub const SHORT_BUDGET: Duration = Duration::from_millis(400);
+const LOST_CONTACT_BUDGET: Duration = Duration::from_millis(500);
+const FAILING_RELEASE_BUDGET: Duration = Duration::from_millis(200);
+const RETRY_PAUSE: Duration = Duration::from_millis(20);
+pub const PRIMARY_SHARE: f32 = 0.6;
 const IT8792E_ID: u16 = 0x8733;
 const NOT_GIGABYTE: &str = "FanForge only controls the second fan chip on Gigabyte boards";
 const NO_ROUTE: &str = "FanForge can't reach Gigabyte's fan controller on this board";
@@ -171,13 +175,20 @@ pub struct SecondChip<P: PortIo> {
     failures: u32,
     pub(crate) retry_at: Option<Instant>,
     pub(crate) backoff: Duration,
-    control: Result<Control, String>,
+    control: Option<Control>,
+    blocked: Option<String>,
+    open_bridge: BridgeOpener,
     snapshot: BiosSnapshot,
     snapshot_path: PathBuf,
 }
 
 impl<P: PortIo> SecondChip<P> {
-    pub fn new(chip: SuperIo<P>, control: Result<Control, String>, snapshot_path: PathBuf) -> Self {
+    pub fn new(
+        chip: SuperIo<P>,
+        control: Result<Control, String>,
+        snapshot_path: PathBuf,
+        open_bridge: BridgeOpener,
+    ) -> Self {
         let chip_id = chip.config().chip_id;
         let snapshot = BiosSnapshot::load_for(&snapshot_path, chip_id).unwrap_or_else(|error| {
             tracing::error!(%error, "the second chip's BIOS snapshot is unreadable");
@@ -186,22 +197,28 @@ impl<P: PortIo> SecondChip<P> {
                 ..BiosSnapshot::for_chip(chip_id)
             }
         });
-        if let Err(reason) = &control {
-            tracing::info!(reason, "the second fan chip is monitor only");
-        }
+        let (control, blocked) = match control {
+            Ok(control) => (Some(control), None),
+            Err(reason) => {
+                tracing::info!(reason, "the second fan chip is monitor only");
+                (None, Some(reason))
+            }
+        };
         Self {
             chip,
             failures: 0,
             retry_at: None,
             backoff: BACKOFF,
             control,
+            blocked,
+            open_bridge,
             snapshot,
             snapshot_path,
         }
     }
 
     pub fn controllable(&self) -> bool {
-        self.control.is_ok()
+        self.control.is_some() && self.blocked.is_none()
     }
 
     pub fn snapshot(&self) -> &BiosSnapshot {
@@ -219,7 +236,7 @@ impl<P: PortIo> SecondChip<P> {
             fan_control: self.controllable(),
             pwm_misconfigured: self.chip.pwm_misconfigured(),
             fan_headers: wired_headers(&self.chip).count(),
-            note: self.control.as_ref().err().cloned(),
+            note: self.blocked.clone(),
         }
     }
 
@@ -240,15 +257,29 @@ impl<P: PortIo> SecondChip<P> {
         action: impl FnOnce(&mut dyn H2Ram) -> Result<T, HwError>,
     ) -> Result<T, HwError> {
         let name = self.chip.chip().name;
-        let control = self
-            .control
-            .as_mut()
-            .map_err(|_| HwError::NoFanControl(name))?;
+        let control = self.control.as_mut().ok_or(HwError::NoFanControl(name))?;
         h2ram(&mut self.chip, control, action)
+    }
+
+    fn ensure_route(&mut self) {
+        if self.control.is_some() || !self.owns_any() {
+            return;
+        }
+        match route_for_release(&mut self.chip, &self.snapshot, self.open_bridge) {
+            Ok(control) => self.control = Some(control),
+            Err(reason) => tracing::error!(
+                reason,
+                "Gigabyte's fan controller can't be reached to switch it back on"
+            ),
+        }
     }
 
     fn backing_off(&self) -> bool {
         self.retry_at.is_some_and(|at| Instant::now() < at)
+    }
+
+    fn failing(&self) -> bool {
+        self.failures > 0
     }
 
     fn failed(&mut self, error: &HwError) {
@@ -262,6 +293,9 @@ impl<P: PortIo> SecondChip<P> {
     }
 
     pub fn reinitialize(&mut self) {
+        if let Some(control) = &mut self.control {
+            control.handed_over = false;
+        }
         if self.backing_off() {
             return;
         }
@@ -269,29 +303,51 @@ impl<P: PortIo> SecondChip<P> {
             self.failed(&error);
             return;
         }
-        if let Ok(control) = &mut self.control {
-            control.handed_over = false;
-            if let Route::Smfi { bridge, open } = &mut control.route {
-                match open().and_then(|mut fresh| {
-                    let present = self
-                        .chip
-                        .with_bus(|_| gigabyte::smfi_present(fresh.as_mut()))?;
-                    Ok(present.then_some(fresh))
-                }) {
-                    Ok(Some(fresh)) => *bridge = fresh,
-                    Ok(None) | Err(_) => {
-                        tracing::warn!(
-                            "the ISA bridge window is gone after resume; keeping the old handle"
-                        );
-                    }
+        let Some(control) = &mut self.control else {
+            return;
+        };
+        if let Route::Smfi { bridge, open } = &mut control.route {
+            let open = *open;
+            *bridge = Box::new(Closed);
+            match open().and_then(|mut fresh| {
+                let present = self
+                    .chip
+                    .with_bus(|_| gigabyte::smfi_present(fresh.as_mut()))?;
+                Ok(present.then_some(fresh))
+            }) {
+                Ok(Some(fresh)) => *bridge = fresh,
+                Ok(None) | Err(_) => {
+                    tracing::warn!("the ISA bridge window is gone after resume");
+                    self.blocked = Some(NO_ROUTE.to_owned());
+                    return;
                 }
+            }
+        }
+        let chip_id = self.chip.config().chip_id;
+        match self.h2ram(|ram| ram.generation(chip_id)) {
+            Ok(generation) => {
+                if let Some(control) = &mut self.control
+                    && control.generation != generation
+                {
+                    tracing::info!(
+                        ?generation,
+                        "Gigabyte's fan controller reports a new generation after resume"
+                    );
+                    control.generation = generation;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not read Gigabyte's fan controller after resume")
             }
         }
     }
 
     fn read_chip(&mut self) -> Result<ChipReadings, HwError> {
         let mut readings = self.chip.read()?;
-        let g3 = matches!(&self.control, Ok(control) if control.generation == Generation::G3);
+        let g3 = self
+            .control
+            .as_ref()
+            .is_some_and(|control| control.generation == Generation::G3);
         if g3 {
             let counts = self.h2ram(|ram| ram.g3_tachs())?;
             for (rpm, count) in readings.rpm.iter_mut().zip(counts) {
@@ -307,7 +363,7 @@ impl<P: PortIo> SecondChip<P> {
         }
         match self.read_chip() {
             Ok(readings) => {
-                if self.failures > 0 {
+                if self.failing() {
                     tracing::info!(
                         chip = self.chip.chip().name,
                         "the second fan chip answers again"
@@ -319,11 +375,11 @@ impl<P: PortIo> SecondChip<P> {
             }
             Err(error) => {
                 self.failed(&error);
-                if !self.snapshot.owned.is_empty() {
+                if self.failures == 1 && self.owns_any() {
                     tracing::error!(
                         "lost contact with the second fan chip while controlling it; handing its fans back"
                     );
-                    if let Err(error) = self.release(false, RELEASE_BUDGET) {
+                    if let Err(error) = self.release(false, LOST_CONTACT_BUDGET) {
                         tracing::error!(%error, "could not hand the second chip's fans back");
                     }
                 }
@@ -346,12 +402,12 @@ impl<P: PortIo> SecondChip<P> {
         }
         let wiring = self.chip.wiring();
         let controllable = self.controllable();
+        let lost = readings.is_none() && controllable;
         for index in wired_headers(&self.chip) {
             let state = readings
                 .as_ref()
                 .and_then(|readings| readings.channels.get(index));
             let manual = state.is_some_and(|state| !state.is_auto());
-            let lost = readings.is_none() && controllable && self.snapshot.is_owned(index);
             fans.push(FanReading {
                 id: FanId::for_chip_channel(SECOND_CHIP, index),
                 label: format!("{} ({label})", default_fan_name(index)),
@@ -368,16 +424,16 @@ impl<P: PortIo> SecondChip<P> {
                     .filter(|_| manual && controllable)
                     .map(|state| Duty::from_raw(state.duty)),
                 unavailable: lost.then(|| LOST_CONTACT.to_owned()),
-                monitor_only: !controllable || (readings.is_none() && !lost),
+                monitor_only: !controllable,
             });
         }
     }
 
-    fn handover(&mut self) -> Result<(), HwError> {
+    fn handover(&mut self, halted: &AtomicBool) -> Result<(), HwError> {
         if self
             .control
             .as_ref()
-            .is_ok_and(|control| control.handed_over)
+            .is_some_and(|control| control.handed_over)
         {
             return Ok(());
         }
@@ -391,11 +447,8 @@ impl<P: PortIo> SecondChip<P> {
                 );
             }
             self.snapshot.smartfan = Some(current);
-            self.snapshot.smartfan_route = self
-                .control
-                .as_ref()
-                .ok()
-                .map(|control| control.route.kind());
+            self.snapshot.smartfan_route =
+                self.control.as_ref().map(|control| control.route.kind());
             if let Err(error) = self.persist() {
                 self.snapshot.smartfan = None;
                 self.snapshot.smartfan_route = None;
@@ -403,58 +456,97 @@ impl<P: PortIo> SecondChip<P> {
             }
         }
         if current != 0 {
-            let written = self
-                .h2ram(|ram| ram.write(SMARTFAN_ENABLE, 0, Instant::now() + OPERATION_DEADLINE));
-            if let Err(error) = written {
-                tracing::error!(%error, "switching Gigabyte's fan controller off failed; switching it back on");
-                self.restore_smartfan();
-                self.control = Err(format!(
-                    "Gigabyte's fan controller couldn't be switched off: {error}"
-                ));
-                return Err(error);
+            let write = |ram: &mut dyn H2Ram| {
+                if halted.load(Ordering::SeqCst) {
+                    return Err(HwError::Halted);
+                }
+                ram.write(SMARTFAN_ENABLE, 0, Instant::now() + OPERATION_DEADLINE)
+            };
+            let written = match self.h2ram(write) {
+                Err(HwError::FanConfigTimeout(_)) => self.h2ram(write),
+                result => result,
+            };
+            match written {
+                Ok(()) => {}
+                Err(HwError::Halted) => return Err(HwError::Halted),
+                Err(error) => {
+                    tracing::error!(%error, "switching Gigabyte's fan controller off failed; switching it back on");
+                    self.blocked = Some(format!(
+                        "Gigabyte's fan controller couldn't be switched off: {error}"
+                    ));
+                    if let Err(restore) = self.restore_smartfan(Instant::now() + SHORT_BUDGET) {
+                        tracing::error!(%restore, "and switching it back on failed too");
+                    }
+                    self.persist_logged();
+                    return Err(error);
+                }
             }
             thread::sleep(SETTLE);
+            if halted.load(Ordering::SeqCst) {
+                if let Err(error) = self.restore_smartfan(Instant::now() + SHORT_BUDGET) {
+                    tracing::error!(%error, "could not switch Gigabyte's fan controller back on after a halt");
+                }
+                self.persist_logged();
+                return Err(HwError::Halted);
+            }
         }
-        if let Ok(control) = &mut self.control {
+        if let Some(control) = &mut self.control {
             control.handed_over = true;
         }
         Ok(())
     }
 
-    fn restore_smartfan(&mut self) -> bool {
+    fn restore_smartfan(&mut self, deadline: Instant) -> Result<(), HwError> {
         let saved = self.snapshot.smartfan;
-        let result = self.h2ram(|ram| {
-            let deadline = Instant::now() + OPERATION_DEADLINE * 2;
-            let current = match saved {
-                Some(_) => 0,
-                None => ram.read(SMARTFAN_ENABLE, deadline)?,
-            };
-            ram.write(
-                SMARTFAN_ENABLE,
-                gigabyte::restored_smartfan(saved, current),
-                deadline,
-            )
-        });
-        match result {
+        let result = loop {
+            let attempt = self.h2ram(|ram| {
+                let operation = deadline.min(Instant::now() + OPERATION_DEADLINE * 2);
+                let current = match saved {
+                    Some(_) => 0,
+                    None => ram.read(SMARTFAN_ENABLE, operation)?,
+                };
+                ram.write(
+                    SMARTFAN_ENABLE,
+                    gigabyte::restored_smartfan(saved, current),
+                    operation,
+                )
+            });
+            match attempt {
+                Err(HwError::LockTimeout(_) | HwError::FanConfigTimeout(_))
+                    if Instant::now() + RETRY_PAUSE < deadline =>
+                {
+                    thread::sleep(RETRY_PAUSE);
+                }
+                result => break result,
+            }
+        };
+        match &result {
             Ok(()) => {
-                if let Ok(control) = &mut self.control {
+                if let Some(control) = &mut self.control {
                     control.handed_over = false;
                 }
                 if self.snapshot.owned.is_empty() {
                     self.snapshot.smartfan = None;
                     self.snapshot.smartfan_route = None;
                 }
-                true
             }
             Err(error) => {
                 tracing::error!(%error, "could not switch Gigabyte's fan controller back on");
-                false
             }
         }
+        result
     }
 
     fn needs_smartfan_restore(&self) -> bool {
-        self.snapshot.smartfan.is_some() || (self.snapshot.lost && self.controllable())
+        self.snapshot.smartfan.is_some() || (self.snapshot.lost && self.control.is_some())
+    }
+
+    fn release_budget(&self) -> Duration {
+        if self.failing() {
+            FAILING_RELEASE_BUDGET
+        } else {
+            RELEASE_BUDGET
+        }
     }
 
     pub fn apply(
@@ -465,7 +557,7 @@ impl<P: PortIo> SecondChip<P> {
     ) -> Result<(), HwError> {
         match action {
             Action::SetDuty(duty) => {
-                if self.control.is_err() {
+                if !self.controllable() {
                     return Err(HwError::NoFanControl(self.chip.chip().name));
                 }
                 if !self.chip.wiring().has_pwm(channel) {
@@ -476,14 +568,14 @@ impl<P: PortIo> SecondChip<P> {
                 }
                 if !self.snapshot.is_owned(channel) {
                     let current = self.chip.channel_states()?[channel];
-                    self.handover()?;
-                    self.snapshot.claim(channel, current);
+                    self.handover(halted)?;
+                    self.snapshot.claim_exact(channel, current);
                     if let Err(error) = self.persist() {
                         self.snapshot.release(channel);
                         return Err(error);
                     }
                 } else {
-                    self.handover()?;
+                    self.handover(halted)?;
                 }
                 self.chip
                     .set_duty_unless_halted(channel, duty.to_raw(), halted)
@@ -492,33 +584,42 @@ impl<P: PortIo> SecondChip<P> {
                 if !self.snapshot.is_owned(channel) {
                     return Ok(());
                 }
-                self.chip.restore_patiently(
-                    channel,
-                    self.snapshot.channel(channel),
-                    RELEASE_BUDGET,
-                )?;
+                let deadline = Instant::now() + self.release_budget();
+                self.restore_channel(channel, deadline)?;
                 self.snapshot.release(channel);
-                if self.snapshot.owned.is_empty() && self.needs_smartfan_restore() {
-                    self.restore_smartfan();
-                }
+                let restored = if self.snapshot.owned.is_empty() && self.needs_smartfan_restore() {
+                    self.restore_smartfan(deadline.max(Instant::now() + SHORT_BUDGET))
+                } else {
+                    Ok(())
+                };
                 self.persist_logged();
-                Ok(())
+                restored
             }
         }
     }
 
-    pub fn initialize(&mut self, take_control: bool) -> Result<(), HwError> {
-        if !self.controllable() {
-            return Ok(());
+    fn restore_channel(&mut self, channel: usize, deadline: Instant) -> Result<(), HwError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(HwError::ReleaseOutOfTime(channel));
         }
-        let states = self.chip.channel_states()?;
-        let changed = self.snapshot.refresh(&states);
-        let result = if take_control {
-            self.release(true, RELEASE_BUDGET)
-        } else {
-            if changed {
+        match self.snapshot.channel(channel) {
+            Some(saved) => self.chip.restore_exact_patiently(channel, saved, remaining),
+            None => self.chip.restore_patiently(channel, None, remaining),
+        }
+    }
+
+    pub fn initialize(&mut self, take_control: bool) -> Result<(), HwError> {
+        self.ensure_route();
+        if self.controllable() {
+            let states = self.chip.channel_states()?;
+            if self.snapshot.refresh(&states) && !take_control {
                 self.persist_logged();
             }
+        }
+        let result = if take_control && (self.owns_any() || self.needs_smartfan_restore()) {
+            self.release(true, RELEASE_BUDGET)
+        } else {
             Ok(())
         };
         if result.is_ok() && self.snapshot.lost {
@@ -530,26 +631,19 @@ impl<P: PortIo> SecondChip<P> {
 
     pub fn release(&mut self, owned_only: bool, budget: Duration) -> Result<(), HwError> {
         let deadline = Instant::now() + budget;
+        self.ensure_route();
         let restore = self.needs_smartfan_restore();
-        let mut restored = false;
+        let mut smartfan = None;
         if restore && budget < SHORT_BUDGET {
-            restored = self.restore_smartfan();
+            smartfan = Some(self.restore_smartfan(deadline));
         }
-        let widen = !owned_only && self.snapshot.lost && self.controllable();
+        let widen = !owned_only && self.snapshot.lost && self.control.is_some();
         let mut first_error = None;
         for channel in 0..self.chip.fan_count() {
             if !(widen || self.snapshot.is_owned(channel)) {
                 continue;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                first_error.get_or_insert(HwError::ReleaseOutOfTime(channel));
-                continue;
-            }
-            match self
-                .chip
-                .restore_patiently(channel, self.snapshot.channel(channel), remaining)
-            {
+            match self.restore_channel(channel, deadline) {
                 Ok(()) => {
                     self.snapshot.release(channel);
                 }
@@ -559,14 +653,55 @@ impl<P: PortIo> SecondChip<P> {
                 }
             }
         }
-        if restore && !restored {
-            self.restore_smartfan();
-        } else if restored && self.snapshot.owned.is_empty() {
-            self.snapshot.smartfan = None;
-            self.snapshot.smartfan_route = None;
-        }
+        let smartfan = match smartfan {
+            Some(result) => {
+                if result.is_ok() && self.snapshot.owned.is_empty() {
+                    self.snapshot.smartfan = None;
+                    self.snapshot.smartfan_route = None;
+                }
+                result
+            }
+            None if restore => self.restore_smartfan(deadline.max(Instant::now() + SHORT_BUDGET)),
+            None => Ok(()),
+        };
         self.persist_logged();
-        first_error.map_or(Ok(()), Err)
+        match first_error {
+            Some(error) => Err(error),
+            None => smartfan,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Closed;
+
+impl Bridge for Closed {
+    fn second_window(&mut self) -> Result<Option<u64>, HwError> {
+        Ok(None)
+    }
+
+    fn current_state(&mut self) -> Result<gigabyte::BridgeState, HwError> {
+        Err(HwError::NoFanControl("the closed ISA bridge window"))
+    }
+
+    fn set_state(&mut self, _: gigabyte::BridgeState) -> Result<(), HwError> {
+        Err(HwError::NoFanControl("the closed ISA bridge window"))
+    }
+
+    fn map(&mut self) -> Result<(), HwError> {
+        Err(HwError::NoFanControl("the closed ISA bridge window"))
+    }
+
+    fn unmap(&mut self) -> Result<(), HwError> {
+        Ok(())
+    }
+
+    fn read_byte(&mut self, _: u16) -> Result<u8, HwError> {
+        Err(HwError::NoFanControl("the closed ISA bridge window"))
+    }
+
+    fn write_byte(&mut self, _: u16, _: u8) -> Result<(), HwError> {
+        Err(HwError::NoFanControl("the closed ISA bridge window"))
     }
 }
 
@@ -578,37 +713,47 @@ pub fn pending(primary_snapshot: &Path) -> bool {
         })
 }
 
-pub const PRIMARY_SHARE: Duration = Duration::from_millis(1200);
-
 pub fn split_budget(primary_snapshot: &Path, budget: Duration) -> (Duration, bool) {
     if pending(primary_snapshot) {
-        (budget.min(PRIMARY_SHARE), true)
+        (budget.mul_f32(PRIMARY_SHARE), true)
     } else {
         (budget, false)
     }
 }
 
-pub fn release_from_disk(primary_snapshot: &Path, budget: Duration) -> Result<(), HwError> {
+pub fn release_from_disk(
+    primary: Option<&SuperIo<crate::port::LpcIo>>,
+    primary_snapshot: &Path,
+    budget: Duration,
+) -> Result<(), HwError> {
+    let deadline = Instant::now() + budget;
     if !pending(primary_snapshot) {
         return Ok(());
     }
     let path = snapshot_path(primary_snapshot);
-    let primary = crate::system::open_chip()?;
-    let Some(mut chip) =
-        crate::superio::detect_second(&primary, crate::port::LpcIo::open, true).chip()
+    let opened;
+    let primary = match primary {
+        Some(primary) => primary,
+        None => {
+            opened = crate::system::open_chip()?;
+            &opened
+        }
+    };
+    let Some(chip) = crate::superio::detect_second(primary, crate::port::LpcIo::open, true).chip()
     else {
         tracing::error!("the second fan chip is gone, so its fans can't be handed back");
         return Err(HwError::ChipNotFound(0xFFFF));
     };
-    let snapshot = BiosSnapshot::load(&path).unwrap_or_else(|_| BiosSnapshot::lost());
-    let control = route_for_release(&mut chip, &snapshot, open_isa_bridge);
-    if let Err(reason) = &control {
-        tracing::error!(
-            reason,
-            "Gigabyte's fan controller can't be reached to switch it back on"
-        );
+    let mut second = SecondChip::new(
+        chip,
+        Err("released from disk".to_owned()),
+        path,
+        open_isa_bridge,
+    );
+    if Instant::now() < deadline {
+        second.ensure_route();
     }
-    SecondChip::new(chip, control, path).release(false, budget)
+    second.release(false, deadline.saturating_duration_since(Instant::now()))
 }
 
 pub fn route_for_release<P: PortIo>(
@@ -696,7 +841,12 @@ mod tests {
         let mut chip = SuperIo::probe_second(fake.clone(), lock).unwrap();
         assert!(std::ptr::eq(chip.chip(), controllable_spec()));
         let control = discover(&mut chip, board, || Err(HwError::AccessDenied));
-        (SecondChip::new(chip, control, path.to_owned()), fake)
+        (
+            SecondChip::new(chip, control, path.to_owned(), || {
+                Err(HwError::AccessDenied)
+            }),
+            fake,
+        )
     }
 
     fn gigabyte_amd() -> Board {
@@ -721,9 +871,99 @@ mod tests {
         assert_eq!(split_budget(&primary, budget), (budget, false));
         snapshot.smartfan = Some(0x01);
         snapshot.save(&snapshot_path(&primary)).unwrap();
-        assert_eq!(split_budget(&primary, budget), (PRIMARY_SHARE, true));
+        assert_eq!(
+            split_budget(&primary, budget),
+            (budget.mul_f32(PRIMARY_SHARE), true)
+        );
         let empty = tempfile::tempdir().unwrap();
-        assert!(release_from_disk(&empty.path().join("bios_snapshot.toml"), budget).is_ok());
+        assert!(release_from_disk(None, &empty.path().join("bios_snapshot.toml"), budget).is_ok());
+    }
+
+    static HALTED: AtomicBool = AtomicBool::new(true);
+
+    #[test]
+    fn a_halt_during_the_handover_never_switches_smartfan_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SNAPSHOT_FILE);
+        let (mut second, fake) = rig("halted", &path, gigabyte_amd());
+        assert!(matches!(second.handover(&HALTED), Err(HwError::Halted)));
+        assert_eq!(smartfan(&fake), 0x01);
+        assert!(fake.ecio.lock().unwrap().writes.is_empty());
+        assert_eq!(BiosSnapshot::load(&path).unwrap().smartfan, Some(0x01));
+        second.release(false, RELEASE_BUDGET).unwrap();
+        assert!(!pending(&dir.path().join("bios_snapshot.toml")));
+    }
+
+    #[test]
+    fn a_failed_smartfan_restore_is_reported_within_its_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SNAPSHOT_FILE);
+        let (mut second, fake) = rig("restore-error", &path, gigabyte_amd());
+        second
+            .apply(0, Action::SetDuty(Duty::new(60.0)), &RUNNING)
+            .unwrap();
+        fake.ecio.lock().unwrap().stuck = true;
+        let started = Instant::now();
+        assert!(second.release(false, Duration::from_millis(600)).is_err());
+        assert!(started.elapsed() < Duration::from_millis(900));
+        assert_eq!(BiosSnapshot::load(&path).unwrap().smartfan, Some(0x01));
+    }
+
+    #[test]
+    fn a_header_smartfan_drove_in_software_mode_gets_its_exact_bytes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SNAPSHOT_FILE);
+        let (mut second, fake) = rig("exact", &path, gigabyte_amd());
+        fake.ite.with(|chip| {
+            chip.banks[0][0x16] = 0x05;
+            chip.banks[0][0x6B] = 0x33;
+        });
+        second
+            .apply(1, Action::SetDuty(Duty::new(80.0)), &RUNNING)
+            .unwrap();
+        assert_eq!(
+            fake.ite.with(|chip| chip.reg(0x6B)),
+            Duty::new(80.0).to_raw()
+        );
+        second.apply(1, Action::Release, &RUNNING).unwrap();
+        assert_eq!(
+            fake.ite.with(|chip| (chip.reg(0x16), chip.reg(0x6B))),
+            (0x05, 0x33)
+        );
+        assert_eq!(smartfan(&fake), 0x01);
+    }
+
+    #[test]
+    fn a_crash_left_handover_is_undone_even_when_discovery_fails_this_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SNAPSHOT_FILE);
+        {
+            let (mut second, _) = rig("orphan-a", &path, gigabyte_amd());
+            second
+                .apply(1, Action::SetDuty(Duty::new(70.0)), &RUNNING)
+                .unwrap();
+        }
+        let (mut second, fake) = rig("orphan-b", &path, Board::default());
+        assert!(!second.controllable());
+        second.initialize(true).unwrap();
+        assert_eq!(smartfan(&fake), 0x01);
+        assert_eq!(fake.ite.with(|chip| chip.reg(0x16)) & 0x80, 0x80);
+        assert!(!pending(&dir.path().join("bios_snapshot.toml")));
+    }
+
+    #[test]
+    fn a_failing_chip_gets_short_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SNAPSHOT_FILE);
+        let (mut second, fake) = rig("failing", &path, gigabyte_amd());
+        second
+            .apply(0, Action::SetDuty(Duty::new(60.0)), &RUNNING)
+            .unwrap();
+        second.failures = 1;
+        fake.ite.with(|chip| chip.stuck_registers.push(0x15));
+        let started = Instant::now();
+        assert!(second.apply(0, Action::Release, &RUNNING).is_err());
+        assert!(started.elapsed() < Duration::from_millis(600));
     }
 
     #[test]
@@ -863,7 +1103,8 @@ mod tests {
         let mut fans = Vec::new();
         second.read_into(&mut sensors, &mut fans);
         let fan = &fans[1];
-        assert!(fan.unavailable.is_some() || fan.monitor_only);
+        assert_eq!(fan.unavailable.as_deref(), Some(LOST_CONTACT));
+        assert!(!fan.monitor_only);
         fake.ecio.lock().unwrap().stuck = false;
         second.release(false, RELEASE_BUDGET).unwrap();
         assert_eq!(smartfan(&fake), 0x01);
@@ -897,7 +1138,7 @@ mod tests {
         let control = discover(&mut chip, gigabyte_amd(), bridge).unwrap();
         assert_eq!(control.generation, Generation::G2);
         assert!(matches!(control.route, Route::Smfi { .. }));
-        let mut second = SecondChip::new(chip, Ok(control), path.clone());
+        let mut second = SecondChip::new(chip, Ok(control), path.clone(), bridge);
         second
             .apply(0, Action::SetDuty(Duty::new(60.0)), &RUNNING)
             .unwrap();

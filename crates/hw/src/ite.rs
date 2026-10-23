@@ -328,6 +328,28 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
         self.ec.write_verified(PWM_DUTY_REGS[channel], duty)
     }
 
+    fn restore_exact(&mut self, channel: usize, saved: ChannelState) -> Result<(), HwError> {
+        if saved.kind != ControlKind::Ite {
+            return self.restore(channel, None);
+        }
+        self.ec.write(PWM_DUTY_REGS[channel], saved.duty)?;
+        self.ec
+            .write_verified(self.map.pwm_control[channel], saved.control)?;
+        if channel < MAIN_CONTROL_CHANNELS {
+            let main = self.ec.read(MAIN_CONTROL_REG)?;
+            let bit = 1 << channel;
+            let wanted = if saved.main_enabled {
+                main | bit
+            } else {
+                main & !bit
+            };
+            if wanted != main {
+                self.ec.write_verified(MAIN_CONTROL_REG, wanted)?;
+            }
+        }
+        Ok(())
+    }
+
     fn restore(&mut self, channel: usize, saved: Option<ChannelState>) -> Result<(), HwError> {
         let saved = saved.filter(|state| state.kind == ControlKind::Ite);
         let register = self.map.pwm_control[channel];
