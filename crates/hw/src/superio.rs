@@ -391,6 +391,21 @@ impl<P: PortIo> SuperIo<P> {
         Ok(chip)
     }
 
+    pub(crate) fn with_bus<T>(
+        &mut self,
+        action: impl FnOnce(&mut P) -> Result<T, HwError>,
+    ) -> Result<T, HwError> {
+        let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
+        action(&mut self.io)
+    }
+
+    pub fn smfi_active(&mut self) -> Result<bool, HwError> {
+        match &self.config.chip.map {
+            ChipMap::Ite(_) => ite::smfi_active(&mut self.io, &self.lock, &self.config),
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Ok(false),
+        }
+    }
+
     pub fn bus_lock(&self) -> Arc<BusLock> {
         Arc::clone(&self.lock)
     }
@@ -769,15 +784,7 @@ mod tests {
             .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(
-            monitor_only,
-            [
-                "ITE IT8792E",
-                "ITE IT87952E",
-                "ITE IT8790E",
-                "Nuvoton NCT6683D"
-            ]
-        );
+        assert_eq!(monitor_only, ["ITE IT8790E", "Nuvoton NCT6683D"]);
     }
 
     #[test]

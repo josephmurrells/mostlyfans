@@ -15,6 +15,7 @@ pub mod nuvoton;
 pub mod pawnio;
 pub mod pinmux;
 pub mod port;
+pub mod second;
 pub mod sensors;
 pub mod smu;
 pub mod snapshot;
