@@ -10,7 +10,7 @@ use crate::calibration::{
 };
 use crate::config::{Config, FanMode, FanSettings};
 use crate::curve::{CurveError, CurveEvaluator, HysteresisState, Tuning, find_curve};
-use crate::response::{Observation, Tracker, Verdict};
+use crate::response::{NO_RESPONSE, Observation, Tracker, Verdict};
 use crate::safety::CriticalGuard;
 use crate::telemetry::{FanReading, HardwareMode, Readings};
 use crate::{CurveId, Duty, FanId, FanKind};
@@ -100,6 +100,14 @@ enum Target {
     Failed(String),
 }
 
+pub const CHIP_OVERRIDDEN: &str = "Gigabyte's fan controller keeps overriding the fans on the second chip, so FanForge handed all of them back to it";
+
+fn extra_chip(fan: &FanId) -> Option<usize> {
+    fan.header_channel()
+        .map(|(chip, _)| chip)
+        .filter(|&chip| chip > 0)
+}
+
 #[derive(Debug)]
 pub struct Engine {
     config: Config,
@@ -114,6 +122,7 @@ pub struct Engine {
     calibration_clamped: bool,
     calibration_report: Option<CalibrationReport>,
     calibration_result: Option<(FanId, FanCalibration)>,
+    overridden_chip: Option<usize>,
 }
 
 impl Engine {
@@ -131,6 +140,7 @@ impl Engine {
             calibration_clamped: false,
             calibration_report: None,
             calibration_result: None,
+            overridden_chip: None,
         }
     }
 
@@ -163,6 +173,30 @@ impl Engine {
     }
 
     pub fn clear_fault(&mut self, fan: &FanId) {
+        let chip = extra_chip(fan).filter(|_| {
+            self.fans
+                .get(fan)
+                .is_some_and(|runtime| runtime.fault.as_deref() == Some(CHIP_OVERRIDDEN))
+        });
+        if let Some(chip) = chip {
+            let siblings: Vec<FanId> = self
+                .fans
+                .iter()
+                .filter(|(other, runtime)| {
+                    other != &fan
+                        && extra_chip(other) == Some(chip)
+                        && runtime.fault.as_deref() == Some(CHIP_OVERRIDDEN)
+                })
+                .map(|(other, _)| other.clone())
+                .collect();
+            for sibling in siblings {
+                self.clear_one_fault(&sibling);
+            }
+        }
+        self.clear_one_fault(fan);
+    }
+
+    fn clear_one_fault(&mut self, fan: &FanId) {
         if let Some(runtime) = self.fans.get_mut(fan) {
             runtime.fault = None;
             runtime.response_fault = false;
@@ -489,7 +523,28 @@ impl Engine {
             }
             outcome.fans.push(status);
         }
+        if let Some(chip) = self.overridden_chip.take() {
+            self.hand_back_chip(chip, &mut outcome);
+        }
         outcome
+    }
+
+    fn hand_back_chip(&mut self, chip: usize, outcome: &mut TickOutcome) {
+        for status in &mut outcome.fans {
+            let skip = matches!(
+                status.state,
+                FanState::Faulted(_) | FanState::MonitorOnly | FanState::Unavailable(_)
+            );
+            if skip || extra_chip(&status.id) != Some(chip) {
+                continue;
+            }
+            let runtime = self.fans.entry(status.id.clone()).or_default();
+            runtime.response_fault = true;
+            outcome.commands.retain(|command| command.fan != status.id);
+            outcome
+                .commands
+                .push(fault(runtime, status, CHIP_OVERRIDDEN.to_owned()));
+        }
     }
 
     fn override_state(
@@ -751,6 +806,14 @@ impl Engine {
             }
             Verdict::Fault(reason) => {
                 runtime.response_fault = true;
+                let chip = extra_chip(&status.id).filter(|_| reason == NO_RESPONSE);
+                let reason = match chip {
+                    Some(chip) => {
+                        self.overridden_chip = Some(chip);
+                        CHIP_OVERRIDDEN.to_owned()
+                    }
+                    None => reason,
+                };
                 Some(fault(runtime, status, reason))
             }
         }
@@ -2542,6 +2605,70 @@ mod tests {
                 .then(|| command_for(&outcome, "pwm1"))
         });
         assert_eq!(faulted, Some(Some(Action::Release)));
+    }
+
+    #[test]
+    fn a_second_chip_header_that_does_not_follow_hands_back_the_whole_chip() {
+        let mut rig = Rig::new(
+            config_with(&[
+                (
+                    "sio2/pwm1",
+                    FanMode::Curve {
+                        curve: "cpu".into(),
+                    },
+                ),
+                (
+                    "sio2/pwm2",
+                    FanMode::Manual {
+                        duty: Duty::new(60.0),
+                    },
+                ),
+            ]),
+            open_limits(),
+        );
+        rig.readings.fans[0].id = "sio2/pwm1".into();
+        rig.readings.fans[1].id = "sio2/pwm2".into();
+        rig.set_curve_temp(Some(45.0));
+        for _ in 0..12 {
+            rig.tick();
+        }
+        rig.set_curve_temp(Some(70.0));
+        let outcome = (0..12)
+            .map(|_| rig.tick())
+            .find(|outcome| {
+                matches!(
+                    Rig::status(outcome, "sio2/pwm1").state,
+                    FanState::Faulted(_)
+                )
+            })
+            .unwrap();
+        for fan in ["sio2/pwm1", "sio2/pwm2"] {
+            assert_eq!(
+                Rig::status(&outcome, fan).state,
+                FanState::Faulted(CHIP_OVERRIDDEN.to_owned()),
+                "{fan}"
+            );
+            assert_eq!(command_for(&outcome, fan), Some(Action::Release), "{fan}");
+        }
+        assert_eq!(
+            outcome
+                .commands
+                .iter()
+                .filter(|command| command.fan.as_str() == "sio2/pwm2")
+                .count(),
+            1
+        );
+        let later = rig.tick();
+        assert_eq!(command_for(&later, "sio2/pwm2"), None);
+
+        rig.engine.clear_fault(&"sio2/pwm2".into());
+        let retried = rig.tick();
+        for fan in ["sio2/pwm1", "sio2/pwm2"] {
+            assert!(
+                !matches!(Rig::status(&retried, fan).state, FanState::Faulted(_)),
+                "{fan}"
+            );
+        }
     }
 
     #[test]
