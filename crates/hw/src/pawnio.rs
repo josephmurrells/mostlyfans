@@ -16,6 +16,7 @@ pub const LPC_IO_MODULE: &[u8] = include_bytes!("../modules/LpcIO.bin");
 pub const AMD_FAMILY_17_MODULE: &[u8] = include_bytes!("../modules/AMDFamily17.bin");
 pub const INTEL_MSR_MODULE: &[u8] = include_bytes!("../modules/IntelMSR.bin");
 pub const RYZEN_SMU_MODULE: &[u8] = include_bytes!("../modules/RyzenSMU.bin");
+pub const ISA_BRIDGE_EC_MODULE: &[u8] = include_bytes!("../modules/IsaBridgeEC.bin");
 
 const DEVICE_PATH: &str = r"\\?\GLOBALROOT\Device\PawnIO";
 const UNINSTALL_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO";
