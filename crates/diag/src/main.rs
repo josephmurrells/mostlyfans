@@ -21,7 +21,9 @@ use fanforge_hw::sensors::{self, SensorSource};
 use fanforge_hw::smu::{self, CoreTempLayout, RyzenSmu};
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::superio::RegisterDump;
-use fanforge_hw::system::{Chip, Hardware, RELEASE_BUDGET, attach_chip, force_all_auto, open_chip};
+use fanforge_hw::system::{
+    Chip, Hardware, RELEASE_BUDGET, attach_chip, attach_second_chip, force_all_auto, open_chip,
+};
 use fanforge_win::InstanceMutex;
 use fanforge_win::paths::{self, INSTANCE_MUTEX};
 
@@ -53,6 +55,13 @@ enum Command {
     Dump {
         #[arg(long, help = "Write to this file instead of stdout")]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u8).range(1..=2),
+            help = "Which fan chip: 1 (first) or 2 (the second chip on 0x4E)"
+        )]
+        slot: u8,
     },
     #[command(
         about = "Print the AMD SMU PM table version and the per-core temperatures it holds (no settings are changed)"
@@ -113,7 +122,7 @@ fn main() -> ExitCode {
         Command::Detect => detect(),
         Command::Read => read(),
         Command::Temps => temps(),
-        Command::Dump { out } => dump(out.as_deref()),
+        Command::Dump { out, slot } => dump(out.as_deref(), slot),
         Command::PmTable { raw } => pm_table(raw),
         Command::Diff { before, after } => diff(&before, &after),
         Command::SetPwm {
@@ -153,6 +162,16 @@ fn detect() -> DiagResult {
     let identity = detect_identity();
     println!("Board: {} {}", identity.manufacturer, identity.product);
     let mut chip = attach_chip()?;
+    describe_chip(&mut chip)?;
+    if let Some(mut second) = attach_second_chip(&chip.config()) {
+        println!();
+        println!("Second fan chip:");
+        describe_chip(&mut second)?;
+    }
+    Ok(())
+}
+
+fn describe_chip(chip: &mut Chip) -> DiagResult {
     let config = chip.config();
     println!(
         "Super I/O: {} (chip {:#06x} version {}) on port {:#04x}, base {:#06x}",
@@ -246,8 +265,16 @@ fn read() -> DiagResult {
     Ok(())
 }
 
-fn dump(out: Option<&Path>) -> DiagResult {
-    let json = serde_json::to_string_pretty(&attach_chip()?.dump()?)?;
+fn dump(out: Option<&Path>, slot: u8) -> DiagResult {
+    let mut primary = attach_chip()?;
+    let dump = if slot == 2 {
+        attach_second_chip(&primary.config())
+            .ok_or("no second fan chip answers on 0x4E")?
+            .dump()?
+    } else {
+        primary.dump()?
+    };
+    let json = serde_json::to_string_pretty(&dump)?;
     match out {
         Some(path) => {
             fs::write(path, json)?;

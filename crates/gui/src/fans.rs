@@ -43,12 +43,34 @@ pub enum HeaderType {
     Case,
 }
 
-fn group_name(kind: FanKind) -> &'static str {
-    match kind {
-        FanKind::Header => "Motherboard",
-        FanKind::Gpu => "Graphics card",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Board,
+    SecondChip,
+    Gpu,
+}
+
+impl Group {
+    fn of(fan: &FanId) -> Self {
+        match fan.kind() {
+            FanKind::Gpu => Self::Gpu,
+            FanKind::Header if fan.header_channel().is_some_and(|(chip, _)| chip > 0) => {
+                Self::SecondChip
+            }
+            FanKind::Header => Self::Board,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Board => "Motherboard",
+            Self::SecondChip => "Motherboard (second chip)",
+            Self::Gpu => "Graphics card",
+        }
     }
 }
+
+const SECOND_CHIP_NOTE: &str = "FanForge reads these fans but doesn't control them yet. On some Gigabyte boards their speeds may read low or 0.";
 
 pub fn absent_gpu_fans(config: &Config, state: &ControlState) -> Vec<FanId> {
     if state.gpus.fans.is_empty() {
@@ -159,15 +181,18 @@ impl FansView {
                         .readings
                         .fans
                         .iter()
-                        .any(|reading| reading.id.kind() == FanKind::Gpu);
+                        .any(|reading| Group::of(&reading.id) != Group::Board);
                     let mut group = None;
                     for reading in &state.readings.fans {
-                        let kind = reading.id.kind();
+                        let kind = Group::of(&reading.id);
                         if grouped && group != Some(kind) {
                             if group.is_some() {
                                 ui.add_space(SPACE_S);
                             }
-                            ui.label(widgets::caption(ui, group_name(kind)));
+                            ui.label(widgets::caption(ui, kind.name()));
+                            if kind == Group::SecondChip {
+                                ui.label(widgets::caption(ui, SECOND_CHIP_NOTE));
+                            }
                             group = Some(kind);
                         }
                         self.list_row(ui, page.draft, state, reading);
@@ -330,9 +355,11 @@ impl FansView {
                 touched = true;
             }
             ui.label(RichText::new(icons::RENAME).color(theme::of(ui).text_muted));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                identify(ui, page, fan, block, status.map(|status| &status.state));
-            });
+            if !reading.monitor_only {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    identify(ui, page, fan, block, status.map(|status| &status.state));
+                });
+            }
         });
         let mut subtitle = reading.label.clone();
         if likely_cpu {
@@ -342,7 +369,7 @@ impl FansView {
             subtitle.push_str(&format!(" · minimum {} (driver)", hardware_limits.floor));
         }
         ui.label(widgets::muted(subtitle));
-        if let Some(reason) = block {
+        if let Some(reason) = block.filter(|_| !reading.monitor_only) {
             ui.label(widgets::caption(
                 ui,
                 format!("Identify is unavailable: {reason}."),
@@ -415,6 +442,17 @@ impl FansView {
             ));
         }
         ui.add_space(SPACE_M);
+
+        if reading.monitor_only {
+            widgets::card(ui, |ui| {
+                widgets::card_title(ui, "Control", Some("What sets this fan's speed."));
+                ui.label(widgets::muted(SECOND_CHIP_NOTE));
+            });
+            if touched {
+                detail.settings = Some(edited);
+            }
+            return detail;
+        }
 
         if !page.setup_skipped && unnamed.contains(fan) {
             setup_strip(ui, fan, unnamed, &mut detail);
@@ -782,6 +820,20 @@ fn setup_strip(ui: &mut egui::Ui, fan: &FanId, unnamed: &[FanId], detail: &mut D
         });
 }
 
+pub fn follow_candidates(
+    draft: &Config,
+    state: &ControlState,
+    fan: &FanId,
+) -> Vec<(FanId, String)> {
+    state
+        .readings
+        .fans
+        .iter()
+        .filter(|other| &other.id != fan && other.id.kind() == fan.kind() && !other.monitor_only)
+        .map(|other| (other.id.clone(), format::fan_name(draft, state, &other.id)))
+        .collect()
+}
+
 fn control_card(
     ui: &mut egui::Ui,
     page: &FanPage<'_>,
@@ -795,13 +847,7 @@ fn control_card(
     let mut result = None;
     widgets::card(ui, |ui| {
         widgets::card_title(ui, "Control", Some("What sets this fan's speed."));
-        let others: Vec<(FanId, String)> = state
-            .readings
-            .fans
-            .iter()
-            .filter(|other| &other.id != fan && other.id.kind() == fan.kind())
-            .map(|other| (other.id.clone(), format::fan_name(draft, state, &other.id)))
-            .collect();
+        let others = follow_candidates(draft, state, fan);
         let current = ModeKind::of(mode);
         let mut kind = current;
         widgets::segmented(

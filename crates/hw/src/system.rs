@@ -17,7 +17,7 @@ use crate::cpu::{CPU_SENSOR, Cpu};
 use crate::mutex::{ISA_BUS, NamedMutex};
 use crate::port::{LpcIo, PortIo};
 use crate::snapshot::BiosSnapshot;
-use crate::superio::{ChipReadings, SuperIo, detect, detect_second};
+use crate::superio::{ChipConfig, ChipReadings, SuperIo, detect, detect_second};
 
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 pub const NO_CONTROL_PIN: &str = "the board uses this header's control pin for something else";
@@ -34,6 +34,10 @@ pub fn open_chip() -> Result<Chip, HwError> {
 
 pub fn attach_chip() -> Result<Chip, HwError> {
     detect(LpcIo::open, || NamedMutex::open(ISA_BUS), false)
+}
+
+pub fn attach_second_chip(primary: &ChipConfig) -> Option<Chip> {
+    detect_second(primary, LpcIo::open, || NamedMutex::open(ISA_BUS), false)
 }
 
 pub fn channel_index(fan: &FanId, channels: usize) -> Option<usize> {

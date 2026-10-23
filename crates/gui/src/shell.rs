@@ -407,17 +407,9 @@ impl Shell {
                             "{} {}",
                             board.identity.manufacturer, board.identity.product
                         ));
-                        ui.label(widgets::muted(format!(
-                            "{} ({:#06x}) · {} fan headers{}",
-                            board.chip_name,
-                            board.chip_id,
-                            board.fan_headers,
-                            if board.fan_control {
-                                ""
-                            } else {
-                                " · monitor only"
-                            }
-                        )));
+                        for line in format::chip_lines(board) {
+                            ui.label(widgets::muted(line));
+                        }
                     }
                 });
                 ui.add_space(SPACE_S);
