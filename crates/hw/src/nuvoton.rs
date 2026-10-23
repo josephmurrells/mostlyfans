@@ -981,6 +981,49 @@ mod tests {
         );
     }
 
+    fn wiring_with(id: u8, revision: u8, pins: &[((u8, u8), u8)]) -> Wiring {
+        let mut fake = FakeNct::new(id, revision);
+        fake.pins.extend(pins.iter().copied());
+        read_config(&mut fake, Slot::Primary, false).unwrap().wiring
+    }
+
+    #[test]
+    fn hardware_monitor_and_ldn_12_pin_registers_are_read_from_their_own_device() {
+        let nct6798 = [((0, 0x2B), 0x04), ((0, 0x1D), 0x0C), ((0, 0x2D), 0x00)];
+        let in_ldn_12 = wiring_with(
+            0xD4,
+            0x2B,
+            &[&nct6798[..], &[((0x12, 0xEB), 0x0C)]].concat(),
+        );
+        assert!(in_ldn_12.has_tach(6) && in_ldn_12.has_pwm(6));
+        let in_hwm = wiring_with(
+            0xD4,
+            0x2B,
+            &[&nct6798[..], &[((0x0B, 0xEB), 0x0C)]].concat(),
+        );
+        assert!(!in_hwm.is_wired(6));
+
+        let nct6799 = [((0, 0x2A), 0x00), ((0x12, 0xE0), 0x00)];
+        let in_hwm = wiring_with(
+            0xD8,
+            0x02,
+            &[&nct6799[..], &[((0x0B, 0xE6), 0x28)]].concat(),
+        );
+        assert!(in_hwm.has_tach(5) && in_hwm.has_pwm(5));
+        let in_ldn_12 = wiring_with(
+            0xD8,
+            0x02,
+            &[&nct6799[..], &[((0x12, 0xE6), 0x28)]].concat(),
+        );
+        assert!(!in_ldn_12.is_wired(5));
+    }
+
+    #[test]
+    fn a_chip_linux_reads_as_another_model_shows_every_header() {
+        assert_eq!(wiring_with(0xD4, 0x2A, &[((0, 0x1C), 0xFF)]), Wiring::ALL);
+        assert!(!wiring_with(0xD4, 0x2B, &[((0, 0x1C), 0xFF)]).is_wired(2));
+    }
+
     static MONITOR_ONLY_6798: ChipSpec = ChipSpec {
         name: "test NCT6798D",
         fan_control: false,
