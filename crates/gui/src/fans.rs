@@ -70,7 +70,21 @@ impl Group {
     }
 }
 
-const SECOND_CHIP_NOTE: &str = "FanForge reads these fans but doesn't control them yet. On some Gigabyte boards their speeds may read low or 0.";
+const SECOND_CHIP_MONITORED: &str = "FanForge reads these fans but doesn't control them.";
+
+fn second_chip_note(state: &ControlState) -> Option<String> {
+    let chip = state.board.as_ref()?.chips.get(1)?;
+    if chip.fan_control {
+        return None;
+    }
+    Some(match &chip.note {
+        Some(reason) => format!(
+            "{SECOND_CHIP_MONITORED} {}.",
+            crate::alerts::sentence(reason)
+        ),
+        None => SECOND_CHIP_MONITORED.to_owned(),
+    })
+}
 
 pub fn absent_gpu_fans(config: &Config, state: &ControlState) -> Vec<FanId> {
     if state.gpus.fans.is_empty() {
@@ -190,8 +204,10 @@ impl FansView {
                                 ui.add_space(SPACE_S);
                             }
                             ui.label(widgets::caption(ui, kind.name()));
-                            if kind == Group::SecondChip {
-                                ui.label(widgets::caption(ui, SECOND_CHIP_NOTE));
+                            if kind == Group::SecondChip
+                                && let Some(note) = second_chip_note(state)
+                            {
+                                ui.label(widgets::caption(ui, note));
                             }
                             group = Some(kind);
                         }
@@ -448,7 +464,9 @@ impl FansView {
         if reading.monitor_only {
             widgets::card(ui, |ui| {
                 widgets::card_title(ui, "Control", Some("What sets this fan's speed."));
-                ui.label(widgets::muted(SECOND_CHIP_NOTE));
+                ui.label(widgets::muted(
+                    second_chip_note(state).unwrap_or_else(|| SECOND_CHIP_MONITORED.to_owned()),
+                ));
             });
             if touched {
                 detail.settings = Some(edited);

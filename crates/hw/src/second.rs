@@ -578,6 +578,39 @@ pub fn pending(primary_snapshot: &Path) -> bool {
         })
 }
 
+pub const PRIMARY_SHARE: Duration = Duration::from_millis(1200);
+
+pub fn split_budget(primary_snapshot: &Path, budget: Duration) -> (Duration, bool) {
+    if pending(primary_snapshot) {
+        (budget.min(PRIMARY_SHARE), true)
+    } else {
+        (budget, false)
+    }
+}
+
+pub fn release_from_disk(primary_snapshot: &Path, budget: Duration) -> Result<(), HwError> {
+    if !pending(primary_snapshot) {
+        return Ok(());
+    }
+    let path = snapshot_path(primary_snapshot);
+    let primary = crate::system::open_chip()?;
+    let Some(mut chip) =
+        crate::superio::detect_second(&primary, crate::port::LpcIo::open, true).chip()
+    else {
+        tracing::error!("the second fan chip is gone, so its fans can't be handed back");
+        return Err(HwError::ChipNotFound(0xFFFF));
+    };
+    let snapshot = BiosSnapshot::load(&path).unwrap_or_else(|_| BiosSnapshot::lost());
+    let control = route_for_release(&mut chip, &snapshot, open_isa_bridge);
+    if let Err(reason) = &control {
+        tracing::error!(
+            reason,
+            "Gigabyte's fan controller can't be reached to switch it back on"
+        );
+    }
+    SecondChip::new(chip, control, path).release(false, budget)
+}
+
 pub fn route_for_release<P: PortIo>(
     chip: &mut SuperIo<P>,
     snapshot: &BiosSnapshot,
@@ -675,6 +708,22 @@ mod tests {
 
     fn smartfan(fake: &Board2) -> u8 {
         fake.ecio.lock().unwrap().ram[&SMARTFAN_ENABLE]
+    }
+
+    #[test]
+    fn the_first_chip_keeps_the_whole_budget_unless_the_second_owns_something() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("bios_snapshot.toml");
+        let budget = Duration::from_secs(2);
+        assert_eq!(split_budget(&primary, budget), (budget, false));
+        let mut snapshot = BiosSnapshot::for_chip(0x8733);
+        snapshot.save(&snapshot_path(&primary)).unwrap();
+        assert_eq!(split_budget(&primary, budget), (budget, false));
+        snapshot.smartfan = Some(0x01);
+        snapshot.save(&snapshot_path(&primary)).unwrap();
+        assert_eq!(split_budget(&primary, budget), (PRIMARY_SHARE, true));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(release_from_disk(&empty.path().join("bios_snapshot.toml"), budget).is_ok());
     }
 
     #[test]
