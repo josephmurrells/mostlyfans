@@ -122,7 +122,7 @@ Run from an elevated terminal, with FanForge quit for `dump` and `set-pwm`. `det
 - AMD Radeon fan control.
 - The AMD GPU (ADL) path hasn't been tested on a Radeon. A curve bound to a Radeon whose PCI id changed sees a missing sensor and its fan goes to 100% (or BIOS control with the fallback off) until the sensor is picked again.
 - AMD per-core temperatures on 6- and 12-core parts, and PM table layouts beyond the allow-list.
-- Fan control on the secondary IT879xE chip on larger Gigabyte boards (it's monitored), and the other chips listed under "Not supported yet". Second-chip detection is untested on hardware.
+- Fan control on the IT8790E second chip, and the other chips listed under "Not supported yet". Second-chip detection and the Gigabyte SmartFan handover are untested on hardware.
 - System fan headers on MSI 800-series boards with the NCT6687D.
 - Code signing.
 
