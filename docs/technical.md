@@ -15,7 +15,7 @@ How FanForge works under the hood: the code layout, how each chip is driven, the
 
 ## Chip support
 
-FanForge supports fan control on a chip when public sources (LibreHardwareMonitor, the Linux drivers and, for Nuvoton, the datasheets) agree on its whole control procedure: how to take a fan over, what to save and how to hand it back. Each row's `fan_control` flag in `crates/hw/src/chips.rs` decides it. There are no per-motherboard profiles: every header the chip exposes is listed as Fan 1, Fan 2, … and the user names them.
+FanForge supports fan control on a chip when public sources (LibreHardwareMonitor, the Linux drivers and, for Nuvoton, the datasheets) agree on its whole control procedure: how to take a fan over, what to save and how to hand it back. Each row's `fan_control` flag in `crates/hw/src/chips.rs` decides it. There are no per-motherboard profiles: every header the chip exposes and the board wires as a fan header (see Header wiring below) is listed as Fan 1, Fan 2, … and the user names them.
 
 | Chip | Fan control | How it's driven |
 |---|---|---|
@@ -27,9 +27,10 @@ FanForge supports fan control on a chip when public sources (LibreHardwareMonito
 | Nuvoton NCT6683D | Monitor only | Same controller, but the sources disagree on how to finish a fan change. |
 
 - **Monitor-only chips:** FanForge reads temperatures, fan speeds and fan modes and never writes a fan register, including on quit, crash and sleep, because the BIOS keeps the fans throughout. It doesn't touch `bios_snapshot.toml` either.
+- **Header wiring (pin-mux):** a chip's fan pins can double as GPIO or other functions, so FanForge reads the board's pin selection at setup, as the Linux `it87` (mainline and `frankcrawford/it87`) and `nct6775` drivers do, and applies it per header. A header with neither its speed (tach) nor its control (PWM) pin wired is hidden. One with only the speed pin is listed but not available for control, and FanForge never writes its duty. One with only the control pin shows no RPM, so the response check never runs on it. Ids keep their channel numbers, so hiding a header never renames the others. The rules come from config registers `0x25`–`0x2D` and GPIO register `0xD3` on ITE chips, plus EC register `0x0B` bit 3 for PWM6 on the IT8620E, IT8686E, IT8688E, IT8689E and IT8696E. On Nuvoton they come from config registers `0x1A`–`0x2F`, the hardware monitor's `0x30`/`0xE6` and LDN `0x12`'s `0xE0`/`0xEB`/`0xED`. Where the sources disagree, FanForge shows every header: the IT8628E's PWM6 gate (mainline only), the NCT6771F/NCT6775F (0xB47x) and the NCT6796D-R (0xD42A, which Linux reads as an NCT6798D). On Nuvoton, the rules apply only when the chip id is one Linux knows (`id & 0xFFF8`). Headers 1 and 2 are always present on Nuvoton.
 - **Shared IDs:** NCT6796D-R shares its ID with NCT5585D, and NCT6799D with NCT6796D-S. FanForge can't tell them apart, so temperature labels may be off on the second chip of each pair. Both chips of each pair use the same fan-control registers.
 - **Nuvoton I/O lock:** on NCT679x boards where the firmware locks the hardware-monitor I/O space, FanForge clears the lock whenever it sets up the chip (startup, resume and recovery after a failed read or an abandoned bus mutex), as the Linux `nct6775` driver does. It's a single config-space write. If the lock doesn't clear, FanForge reports it. `fanforge-diag read` and `set-pwm` clear it the same way; `detect` and `dump` never do, and the dump's LDN section shows register `0x28` as it was at that moment (bit 4 set means locked; anything that cleared it since boot, including FanForge itself, shows as unlocked).
-- **Not supported yet:** ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips on larger Gigabyte boards, Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips, and tach-only headers (e.g. the IT8686E's 6th tach).
+- **Not supported yet:** ITE IT8705F/12F/16F/18F/20F/26F/71E (7-bit duty), the secondary IT879xE chips on larger Gigabyte boards, Nuvoton NCT610xD/NCT6701D, Winbond and Fintek chips, and the extra tach-only inputs some chips have beyond their PWM channels (e.g. the IT8686E's 6th tach).
 
 ## Safety internals
 
@@ -91,7 +92,7 @@ Read every 2 s on their own thread. Display only: `Readings::temperature` return
 
 Run from an elevated terminal, with FanForge quit for `dump` and `set-pwm`. `detect`, `read`, `dump` and `diff` work on every supported chip.
 
-- `detect`: the board, the chip(s) found on ports 0x2E and 0x4E, header and temperature counts, and whether fan control is supported.
+- `detect`: the board, the chip(s) found on ports 0x2E and 0x4E, header and temperature counts, headers the board wired to something else (from the config-space pin selection; the IT8620-family PWM6 gate in the EC isn't checked here), and whether fan control is supported.
 - `read`: one reading of every sensor and fan.
 - `temps`: GPU and drive temperatures, without PawnIO or administrator rights.
 - `pm-table [--raw]`: the CPU code name, SMU firmware and PM table version, Tctl, CCD and per-core temperatures if the layout is known; compare them with HWiNFO's "Core0 (CCD1)" values. The list shows every core slot in the table, so on parts with cores fused off it includes slots HWiNFO skips and the numbering can differ. `--raw` prints every value so an unknown version can be mapped (`fanforge-diag pm-table --raw | Out-File -Encoding utf8 pm-table.txt`). It asks the SMU to refresh the table, the same request HWiNFO and ZenTimings make, holding `Global\Access_PCI`; it changes no settings and works while FanForge runs.

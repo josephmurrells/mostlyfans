@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fanforge_core::board::{
-    BoardIdentity, BoardInfo, FanLimits, default_fan_name, fan_limits, temp_label, temp_sensor_id,
+    BoardIdentity, BoardInfo, FanLimits, default_fan_name, temp_label, temp_sensor_id,
 };
 use fanforge_core::engine::{Action, Command};
 use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
@@ -19,6 +19,7 @@ use crate::snapshot::BiosSnapshot;
 use crate::superio::{SuperIo, detect};
 
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
+pub const NO_CONTROL_PIN: &str = "the board uses this header's control pin for something else";
 
 pub type Chip = SuperIo<LpcIo>;
 
@@ -151,13 +152,24 @@ impl<P: PortIo> Hardware<P> {
             chip_id: self.chip.config().chip_id,
             chip_name: self.chip.chip().name.to_owned(),
             fan_control: self.chip.fan_control(),
-            fan_headers: self.chip.fan_count(),
-            likely_cpu_fan: Some(FanId::for_channel(0)),
+            fan_headers: self.headers().count(),
+            likely_cpu_fan: self
+                .chip
+                .wiring()
+                .is_wired(0)
+                .then(|| FanId::for_channel(0)),
         }
     }
 
+    fn headers(&self) -> impl Iterator<Item = usize> + use<P> {
+        let wiring = self.chip.wiring();
+        (0..self.chip.fan_count()).filter(move |&channel| wiring.is_wired(channel))
+    }
+
     pub fn fan_limits(&self) -> BTreeMap<FanId, FanLimits> {
-        fan_limits(self.chip.fan_count())
+        self.headers()
+            .map(|channel| (FanId::for_channel(channel), FanLimits::default()))
+            .collect()
     }
 
     pub fn warnings(&self) -> Vec<String> {
@@ -228,10 +240,12 @@ impl<P: PortIo> Hardware<P> {
                 celsius: *temp,
             });
         }
+        let wiring = self.chip.wiring();
         let fans = chip
             .channels
             .iter()
             .enumerate()
+            .filter(|&(index, _)| wiring.is_wired(index))
             .map(|(index, state)| {
                 let mode = if state.is_auto() {
                     HardwareMode::Auto
@@ -241,10 +255,10 @@ impl<P: PortIo> Hardware<P> {
                 FanReading {
                     id: FanId::for_channel(index),
                     label: default_fan_name(index),
-                    rpm: chip.rpm[index],
+                    rpm: chip.rpm[index].filter(|_| wiring.has_tach(index)),
                     mode,
                     duty: (mode == HardwareMode::Manual).then(|| Duty::from_raw(state.duty)),
-                    unavailable: None,
+                    unavailable: (!wiring.has_pwm(index)).then(|| NO_CONTROL_PIN.to_owned()),
                 }
             })
             .collect();
@@ -273,6 +287,9 @@ impl<P: PortIo> Hardware<P> {
         match command.action {
             Action::SetDuty(_) if !self.fan_control() => {
                 Err(HwError::NoFanControl(self.chip.chip().name))
+            }
+            Action::SetDuty(_) if !self.chip.wiring().has_pwm(channel) => {
+                Err(HwError::NoControlPin(channel))
             }
             Action::Release if !self.chip.can_release() || !self.resettable(channel, false) => {
                 Ok(())
@@ -743,6 +760,69 @@ mod tests {
     }
 
     #[test]
+    fn headers_the_board_wired_to_something_else_are_hidden_or_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.toml");
+        let mut ite = FakeIte::chip(0x8689);
+        ite.pins[0x29] = 0x02;
+        ite.pins[0x27] |= 0x80;
+        ite.pins[0x26] = 0x20;
+        let fake = SharedFake::new(ite);
+        let mut hardware = hardware("8689-pins", &fake, &path);
+        let info = hardware.board_info();
+        assert_eq!(info.fan_headers, 5);
+        assert_eq!(info.likely_cpu_fan, Some(FanId::from("pwm1")));
+        assert_eq!(
+            hardware
+                .fan_limits()
+                .keys()
+                .map(FanId::as_str)
+                .collect::<Vec<_>>(),
+            ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"]
+        );
+
+        hardware.initialize_channels(true).unwrap();
+        let readings = hardware.read().unwrap();
+        let ids: Vec<&str> = readings.fans.iter().map(|fan| fan.id.as_str()).collect();
+        assert_eq!(ids, ["pwm1", "pwm2", "pwm3", "pwm4", "pwm5"]);
+        assert_eq!(
+            readings.fans[1].unavailable.as_deref(),
+            Some(NO_CONTROL_PIN)
+        );
+        assert_eq!(readings.fans[1].rpm, Some(1136));
+        assert_eq!(readings.fans[2].rpm, None);
+        assert!(readings.fans[2].unavailable.is_none());
+        assert_eq!(readings.fans[4].rpm, None);
+
+        let before = fake.with(|chip| chip.writes.len());
+        assert!(matches!(
+            hardware.apply(&set("pwm2", 60.0), &RUNNING),
+            Err(HwError::NoControlPin(1))
+        ));
+        assert_eq!(fake.with(|chip| chip.writes.len()), before);
+        assert!(!hardware.owns_any());
+        hardware.apply(&set("pwm3", 60.0), &RUNNING).unwrap();
+    }
+
+    #[test]
+    fn the_it8689e_drops_pwm6_when_the_ec_has_it_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ite = FakeIte::chip(0x8689);
+        ite.banks[0][0x0B] = 0x00;
+        let fake = SharedFake::new(ite);
+        let it8689e = hardware("8689-pwm6", &fake, &dir.path().join("snapshot.toml"));
+        assert_eq!(it8689e.board_info().fan_headers, 6);
+        assert!(it8689e.chip.wiring().has_tach(5));
+        assert!(!it8689e.chip.wiring().has_pwm(5));
+
+        let mut ite = FakeIte::chip(0x8628);
+        ite.banks[0][0x0B] = 0x00;
+        let fake = SharedFake::new(ite);
+        let it8628e = hardware("8628-pwm6", &fake, &dir.path().join("other.toml"));
+        assert!(it8628e.chip.wiring().has_pwm(5));
+    }
+
+    #[test]
     fn unverified_chips_are_monitored_without_touching_fans_or_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.toml");
@@ -859,6 +939,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: false,
+            pinmux: crate::pinmux::NctMux::Nct6779,
         }),
     };
 

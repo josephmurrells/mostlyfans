@@ -12,6 +12,7 @@ pub mod ite;
 pub mod mutex;
 pub mod nuvoton;
 pub mod pawnio;
+pub mod pinmux;
 pub mod port;
 pub mod sensors;
 pub mod smu;

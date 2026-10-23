@@ -5,8 +5,10 @@
 // Derived from LibreHardwareMonitor (https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
 
 use crate::HwError;
+use crate::chips::ChipMap;
 use crate::chips::IteMap;
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
     BankDump, CHIP_ID_REG, ChannelState, ChipConfig, ChipReadings, ConfigSpace, ControlKind,
@@ -38,6 +40,9 @@ const VENDOR_ID_REG: u8 = 0x58;
 const VENDOR_IDS: [u8; 2] = [0x90, 0x7F];
 const MAIN_CONTROL_REG: u8 = 0x13;
 const FAN_CONTROL_REG: u8 = 0x14;
+const EXTRA_FAN_REG: u8 = 0x0B;
+const PWM6_ENABLED: u8 = 0x08;
+const PWM6_CHANNEL: usize = 5;
 const PWM_CONFIGURED: u8 = 0x87;
 const MAIN_CONTROL_CHANNELS: usize = 3;
 const PWM_DUTY_REGS: [u8; 6] = [0x63, 0x6B, 0x73, 0x7B, 0xA3, 0xAB];
@@ -93,12 +98,17 @@ pub(crate) fn read_config<P: PortIo>(io: &mut P, probing: bool) -> Result<ChipCo
             space.io.find_bars()?;
             space.select(EC_LDN)?;
             let base_address = space.read_base_address()?;
+            let wiring = match &chip.map {
+                ChipMap::Ite(map) => pinmux::ite_wiring(space, map.pinmux, map.fans)?,
+                ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Wiring::ALL,
+            };
             Ok(ChipConfig {
                 chip,
                 slot: Slot::Primary,
                 chip_id,
                 version,
                 base_address,
+                wiring,
             })
         },
         exit_config,
@@ -202,6 +212,17 @@ impl<'a, P: PortIo> Session<'a, P> {
 impl<P: PortIo> crate::superio::Session for Session<'_, P> {
     fn control_usable(&mut self) -> Result<bool, HwError> {
         Ok(!self.map.polarity_check || self.ec.read(FAN_CONTROL_REG)? & PWM_CONFIGURED != 0)
+    }
+
+    fn wiring(&mut self, pins: Wiring) -> Result<Wiring, HwError> {
+        let gated = self.map.pwm6_gate
+            && self.map.fans > PWM6_CHANNEL
+            && self.ec.read(EXTRA_FAN_REG)? & PWM6_ENABLED == 0;
+        Ok(if gated {
+            pins.without_pwm(PWM6_CHANNEL)
+        } else {
+            pins
+        })
     }
 
     fn verify_vendor(&mut self) -> Result<(), HwError> {
@@ -366,6 +387,7 @@ pub mod fake {
         pub enter_progress: usize,
         pub config_index: u8,
         pub ldn: u8,
+        pub pins: [u8; 256],
         pub bars_found: bool,
         pub ec_index: u8,
         pub bank_register: u8,
@@ -386,6 +408,10 @@ pub mod fake {
             for channel in 0..MAIN_CONTROL_CHANNELS {
                 Self::fill_channel(&mut banks[0], &crate::chips::CHIPS[0], channel);
             }
+            let mut pins = [0u8; 256];
+            pins[0x26] = 0x30;
+            pins[0x27] = 0x02;
+            pins[0x29] = 0x80;
             banks[0][usize::from(TEMP_BASE_REG)] = 41;
             banks[0][usize::from(TEMP_BASE_REG) + 1] = 0x80;
             for bank in &mut banks[1..] {
@@ -398,6 +424,7 @@ pub mod fake {
                 enter_progress: 0,
                 config_index: 0,
                 ldn: 0,
+                pins,
                 bars_found: false,
                 ec_index: 0,
                 bank_register: 0,
@@ -416,6 +443,10 @@ pub mod fake {
             fake.chip_id = chip_id;
             fake.banks[0][usize::from(CONFIGURATION_REG)] = CONFIGURATION_READY;
             fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
+            fake.banks[0][usize::from(EXTRA_FAN_REG)] = PWM6_ENABLED;
+            if chip_id == 0x8665 {
+                fake.pins[0x26] = 0x10;
+            }
             if let Some(spec) = chip_matching(|chip| chip.matches_ite(chip_id)) {
                 for channel in 0..spec.fan_count() {
                     Self::fill_channel(&mut fake.banks[0], spec, channel);
@@ -425,7 +456,7 @@ pub mod fake {
         }
 
         fn fill_channel(bank: &mut [u8; 256], spec: &crate::chips::ChipSpec, channel: usize) {
-            let crate::chips::ChipMap::Ite(map) = &spec.map else {
+            let ChipMap::Ite(map) = &spec.map else {
                 return;
             };
             bank[usize::from(map.pwm_control[channel])] = AUTO_MODE_BIT | channel as u8;
@@ -464,6 +495,8 @@ pub mod fake {
                     0x22 => 0x01,
                     0x60 if self.ldn == EC_LDN => (self.base >> 8) as u8,
                     0x61 if self.ldn == EC_LDN => self.base as u8,
+                    index @ 0x23..=0x2F => self.pins[usize::from(index)],
+                    index if self.ldn == 0x07 => self.pins[usize::from(index)],
                     _ => 0,
                 },
                 0x2F => 0xFF,
@@ -615,7 +648,8 @@ mod tests {
                 slot: Slot::Primary,
                 chip_id: IT8655E_ID,
                 version: 1,
-                base_address: 0x290
+                base_address: 0x290,
+                wiring: Wiring::ALL,
             }
         );
         assert!(chip.fan_control());

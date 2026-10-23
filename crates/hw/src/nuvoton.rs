@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use crate::HwError;
 use crate::chips::{ChipMap, NctMap, Tach};
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
     BankDump, CHIP_ID_REG, ChannelState, ChipConfig, ChipReadings, ConfigSpace, ControlKind,
@@ -122,12 +123,17 @@ pub(crate) fn read_config<P: PortIo>(
             if io_lock && unlock {
                 unlock_io_space(space)?;
             }
+            let wiring = match &chip.map {
+                ChipMap::Nuvoton(map) => pinmux::nct_wiring(space, map.pinmux, chip_id, map.fans)?,
+                ChipMap::Ite(_) | ChipMap::Ec(_) => Wiring::ALL,
+            };
             Ok(ChipConfig {
                 chip,
                 slot,
                 chip_id,
                 version: revision,
                 base_address,
+                wiring,
             })
         },
         exit_config,
@@ -421,6 +427,7 @@ pub mod fake {
         pub enter_progress: usize,
         pub config_index: u8,
         pub ldn: u8,
+        pub pins: BTreeMap<(u8, u8), u8>,
         pub bars_found: bool,
         pub lock_register: u8,
         pub hwm_index: u8,
@@ -444,6 +451,15 @@ pub mod fake {
                 enter_progress: 0,
                 config_index: 0,
                 ldn: 0,
+                pins: BTreeMap::from([
+                    ((0, 0x1A), 0x02),
+                    ((0, 0x1C), if id == 0xD8 { 0xC0 } else { 0x00 }),
+                    ((0, 0x1D), 0x10),
+                    ((0, 0x2A), 0x18),
+                    ((0, 0x2D), 0x03),
+                    ((0x12, 0xE0), 0x18),
+                    ((0x12, 0xED), 0x04),
+                ]),
                 bars_found: false,
                 lock_register: 0,
                 hwm_index: 0,
@@ -515,7 +531,10 @@ pub mod fake {
                     IO_LOCK_REG if self.ldn == HWM_LDN => self.lock_register,
                     0x60 if self.ldn == HWM_LDN => (self.base >> 8) as u8,
                     0x61 if self.ldn == HWM_LDN => self.base as u8,
-                    _ => 0,
+                    index => {
+                        let ldn = if index < 0x30 { 0 } else { self.ldn };
+                        self.pins.get(&(ldn, index)).copied().unwrap_or(0)
+                    }
                 },
                 p if p == self.base + ADDRESS_PORT_OFFSET => self.hwm_index,
                 p if p == self.base + DATA_PORT_OFFSET => {
@@ -962,6 +981,49 @@ mod tests {
         );
     }
 
+    fn wiring_with(id: u8, revision: u8, pins: &[((u8, u8), u8)]) -> Wiring {
+        let mut fake = FakeNct::new(id, revision);
+        fake.pins.extend(pins.iter().copied());
+        read_config(&mut fake, Slot::Primary, false).unwrap().wiring
+    }
+
+    #[test]
+    fn hardware_monitor_and_ldn_12_pin_registers_are_read_from_their_own_device() {
+        let nct6798 = [((0, 0x2B), 0x04), ((0, 0x1D), 0x0C), ((0, 0x2D), 0x00)];
+        let in_ldn_12 = wiring_with(
+            0xD4,
+            0x2B,
+            &[&nct6798[..], &[((0x12, 0xEB), 0x0C)]].concat(),
+        );
+        assert!(in_ldn_12.has_tach(6) && in_ldn_12.has_pwm(6));
+        let in_hwm = wiring_with(
+            0xD4,
+            0x2B,
+            &[&nct6798[..], &[((0x0B, 0xEB), 0x0C)]].concat(),
+        );
+        assert!(!in_hwm.is_wired(6));
+
+        let nct6799 = [((0, 0x2A), 0x00), ((0x12, 0xE0), 0x00)];
+        let in_hwm = wiring_with(
+            0xD8,
+            0x02,
+            &[&nct6799[..], &[((0x0B, 0xE6), 0x28)]].concat(),
+        );
+        assert!(in_hwm.has_tach(5) && in_hwm.has_pwm(5));
+        let in_ldn_12 = wiring_with(
+            0xD8,
+            0x02,
+            &[&nct6799[..], &[((0x12, 0xE6), 0x28)]].concat(),
+        );
+        assert!(!in_ldn_12.is_wired(5));
+    }
+
+    #[test]
+    fn a_chip_linux_reads_as_another_model_shows_every_header() {
+        assert_eq!(wiring_with(0xD4, 0x2A, &[((0, 0x1C), 0xFF)]), Wiring::ALL);
+        assert!(!wiring_with(0xD4, 0x2B, &[((0, 0x1C), 0xFF)]).is_wired(2));
+    }
+
     static MONITOR_ONLY_6798: ChipSpec = ChipSpec {
         name: "test NCT6798D",
         fan_control: false,
@@ -978,6 +1040,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: true,
+            pinmux: pinmux::NctMux::Nct6798,
         }),
     };
 
@@ -997,6 +1060,7 @@ mod tests {
             slots: &[],
             sources: &[],
             io_lock: true,
+            pinmux: pinmux::NctMux::Nct6798,
         }),
     };
 
