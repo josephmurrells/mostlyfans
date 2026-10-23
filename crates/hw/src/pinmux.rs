@@ -175,24 +175,30 @@ pub(crate) fn ite_wiring<P: PortIo>(
 ) -> Result<Wiring, HwError> {
     space.select(ITE_GPIO_LDN)?;
     let mut values: Vec<(u8, u8)> = Vec::new();
-    let mut wiring = Wiring::ALL;
     for rule in mux.rules().iter().filter(|rule| rule.channel < channels) {
-        let value = match values
+        if !values
             .iter()
-            .find(|(register, _)| *register == rule.register)
+            .any(|(register, _)| *register == rule.register)
         {
-            Some(&(_, value)) => value,
-            None => {
-                let value = space.read(rule.register)?;
-                values.push((rule.register, value));
-                value
-            }
-        };
-        if (value & (1 << rule.bit) != 0) != rule.wired_when_set {
-            wiring = wiring.without(rule.channel, rule.pin);
+            values.push((rule.register, space.read(rule.register)?));
         }
     }
-    Ok(wiring)
+    Ok(apply_rules(mux.rules(), channels, |register| {
+        values
+            .iter()
+            .find(|(read, _)| *read == register)
+            .map_or(0, |&(_, value)| value)
+    }))
+}
+
+fn apply_rules(rules: &[Rule], channels: usize, value: impl Fn(u8) -> u8) -> Wiring {
+    rules
+        .iter()
+        .filter(|rule| rule.channel < channels)
+        .filter(|rule| (value(rule.register) & (1 << rule.bit) != 0) != rule.wired_when_set)
+        .fold(Wiring::ALL, |wiring, rule| {
+            wiring.without(rule.channel, rule.pin)
+        })
 }
 
 const NCT_HWM_LDN: u8 = 0x0B;
@@ -433,6 +439,43 @@ mod tests {
         );
         assert!(wiring.is_wired(1) && wiring.is_wired(2) && !wiring.is_wired(3));
         assert!(!Wiring::ALL.has_tach(8));
+    }
+
+    #[test]
+    fn every_ite_rule_drops_only_its_own_pin() {
+        for mux in [
+            IteMux::It8620,
+            IteMux::It8625,
+            IteMux::It8655,
+            IteMux::It8665,
+            IteMux::Classic,
+        ] {
+            let rules = mux.rules();
+            let mut wired = [0u8; 256];
+            for rule in rules.iter().filter(|rule| rule.wired_when_set) {
+                wired[usize::from(rule.register)] |= 1 << rule.bit;
+            }
+            assert_eq!(
+                apply_rules(rules, 6, |register| wired[usize::from(register)]),
+                Wiring::ALL,
+                "{mux:?}"
+            );
+            for rule in rules {
+                let mut flipped = wired;
+                flipped[usize::from(rule.register)] ^= 1 << rule.bit;
+                let read = |register: u8| flipped[usize::from(register)];
+                assert_eq!(
+                    apply_rules(rules, 6, read),
+                    Wiring::ALL.without(rule.channel, rule.pin),
+                    "{mux:?} {rule:?}"
+                );
+                assert_eq!(
+                    apply_rules(rules, rule.channel, read),
+                    Wiring::ALL,
+                    "{mux:?} {rule:?}"
+                );
+            }
+        }
     }
 
     #[test]
