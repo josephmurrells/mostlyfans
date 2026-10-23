@@ -15,8 +15,8 @@ const SHOW_POLL: Duration = Duration::from_millis(250);
 const OLD_BUILD_RUNNING: &str = "FanForge, the old name of MostlyFans, is running. Turn off its Start with Windows, quit it from the tray, then start MostlyFans again.";
 
 pub struct Instance {
-    _mutex: InstanceMutex,
     _old_mutex: InstanceMutex,
+    _mutex: InstanceMutex,
     show: ShowGate,
 }
 
@@ -56,8 +56,8 @@ fn primary(mutex: InstanceMutex) -> Claim {
     }
     match show_event_name().and_then(|name| Event::create(&name, ADMIN_ONLY_SDDL)) {
         Ok(show) => Claim::Primary(Instance {
-            _mutex: mutex,
             _old_mutex: old_mutex,
+            _mutex: mutex,
             show: ShowGate(Arc::new(Mutex::new(Some(show)))),
         }),
         Err(error) => refused(&error),

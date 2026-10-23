@@ -99,7 +99,7 @@ To see which chip you have, open **Settings → About → Fan controller**. Head
 
 Quit MostlyFans from the tray, replace `mostlyfans.exe` with the new one, and run it once. If **Start with Windows** is on, its copy updates itself.
 
-**Coming from FanForge:** MostlyFans keeps its settings in a new folder and doesn't take over FanForge's. The two never run at the same time: whichever starts second refuses to start.
+**Coming from FanForge:** MostlyFans keeps its settings in a new folder and doesn't take over FanForge's. The two never run at the same time: whichever starts second refuses to start. (FanForge words this as "FanForge is already controlling fans in another user session"; it means MostlyFans.)
 
 1. In FanForge, turn off **Start with Windows** in Settings, then quit it from the tray.
 2. Start MostlyFans once, then quit it from the tray. This creates `C:\ProgramData\MostlyFans` with the right permissions; don't create the folder yourself, or MostlyFans refuses to start.
