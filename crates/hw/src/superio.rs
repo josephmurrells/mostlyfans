@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::HwError;
 use crate::chips::{CHIPS, ChipMap, ChipSpec};
 use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::pinmux::Wiring;
 use crate::port::PortIo;
 use crate::{ec, ite, nuvoton};
 
@@ -79,6 +80,7 @@ pub struct ChipConfig {
     pub chip_id: u16,
     pub version: u8,
     pub base_address: u16,
+    pub wiring: Wiring,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -259,6 +261,10 @@ pub(crate) trait Session {
     fn control_usable(&mut self) -> Result<bool, HwError> {
         Ok(true)
     }
+
+    fn wiring(&mut self, pins: Wiring) -> Result<Wiring, HwError> {
+        Ok(pins)
+    }
 }
 
 #[derive(Debug)]
@@ -268,6 +274,7 @@ pub struct SuperIo<P: PortIo> {
     pub(crate) config: ChipConfig,
     unlock: bool,
     usable: bool,
+    wiring: Wiring,
 }
 
 impl<P: PortIo> SuperIo<P> {
@@ -283,6 +290,7 @@ impl<P: PortIo> SuperIo<P> {
         Ok(Self {
             io,
             lock,
+            wiring: config.wiring,
             config,
             unlock,
             usable: true,
@@ -296,9 +304,10 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     fn check_session(&mut self) -> Result<(), HwError> {
-        self.usable = self.transaction(|session| {
+        let pins = self.config.wiring;
+        (self.usable, self.wiring) = self.transaction(|session| {
             session.verify_vendor()?;
-            session.control_usable()
+            Ok((session.control_usable()?, session.wiring(pins)?))
         })?;
         if !self.usable && self.config.chip.fan_control {
             tracing::warn!(
@@ -328,6 +337,10 @@ impl<P: PortIo> SuperIo<P> {
 
     pub fn fan_count(&self) -> usize {
         self.config.chip.fan_count()
+    }
+
+    pub fn wiring(&self) -> Wiring {
+        self.wiring
     }
 
     pub fn temp_names(&self) -> Vec<Option<&'static str>> {
