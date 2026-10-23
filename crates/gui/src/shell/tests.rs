@@ -583,7 +583,7 @@ fn second_chip_fans_are_grouped_and_only_monitored() {
     );
     assert!(
         harness
-            .query_all_by_label_contains("doesn't control them yet")
+            .query_all_by_label_contains("only controls the second fan chip on Gigabyte boards")
             .count()
             >= 2
     );

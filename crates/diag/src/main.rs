@@ -444,6 +444,14 @@ fn restore() -> DiagResult {
     }
     force_all_auto(&mut chip, &snapshot, RELEASE_BUDGET * 3)?;
     println!("all {} channels returned to BIOS control", chip.fan_count());
+    let path = paths::bios_snapshot_path();
+    if fanforge_hw::second::pending(&path) {
+        drop(chip);
+        fanforge_hw::second::release_from_disk(&path, RELEASE_BUDGET * 3)?;
+        println!(
+            "the second chip's fans and Gigabyte's fan controller are back under BIOS control"
+        );
+    }
     Ok(())
 }
 

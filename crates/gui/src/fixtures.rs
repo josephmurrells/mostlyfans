@@ -213,7 +213,9 @@ pub fn with_second_chip(mut state: ControlState) -> ControlState {
                 fan_control: false,
                 pwm_misconfigured: false,
                 fan_headers: 3,
-                note: None,
+                note: Some(
+                    "FanForge only controls the second fan chip on Gigabyte boards".to_owned(),
+                ),
             },
         ];
     }

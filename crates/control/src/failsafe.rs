@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use fanforge_hw::HwError;
 use fanforge_hw::gpu_fans::{GpuReleaser, NOT_RESPONDING};
 use fanforge_hw::port::PortIo;
+use fanforge_hw::second;
 use fanforge_hw::snapshot::BiosSnapshot;
 use fanforge_hw::superio::SuperIo;
 use fanforge_hw::system::{force_all_auto, open_chip};
@@ -56,12 +57,32 @@ pub fn release_with_gpus(
     chip.and(gpus)
 }
 
+fn with_second_chip(
+    snapshot_path: &Path,
+    budget: Duration,
+    primary: impl FnOnce(Duration) -> Result<(), HwError>,
+) -> Result<(), HwError> {
+    let started = Instant::now();
+    let (share, pending) = second::split_budget(snapshot_path, budget);
+    let primary = primary(share);
+    if !pending {
+        return primary;
+    }
+    let remaining = budget.saturating_sub(started.elapsed());
+    let second = second::release_from_disk(snapshot_path, remaining).inspect_err(|error| {
+        tracing::error!(%error, "fans on the second chip may still be at FanForge's last speed");
+    });
+    primary.and(second)
+}
+
 pub fn release_with<P: PortIo>(
     chip: &mut SuperIo<P>,
     snapshot_path: &Path,
     budget: Duration,
 ) -> Result<(), HwError> {
-    force_all_auto(chip, &load_snapshot(snapshot_path), budget)
+    with_second_chip(snapshot_path, budget, |budget| {
+        force_all_auto(chip, &load_snapshot(snapshot_path), budget)
+    })
 }
 
 pub fn release_preferring<P: PortIo>(
@@ -85,6 +106,12 @@ pub fn release_preferring<P: PortIo>(
 }
 
 pub fn release_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(), HwError> {
+    with_second_chip(snapshot_path, budget, |budget| {
+        release_primary_from_disk(snapshot_path, budget)
+    })
+}
+
+fn release_primary_from_disk(snapshot_path: &Path, budget: Duration) -> Result<(), HwError> {
     let snapshot = load_snapshot(snapshot_path);
     let deadline = Instant::now() + budget;
     loop {
