@@ -38,6 +38,13 @@ cargo test -p mostlyfans-gui render_screenshots -- --ignored
 - Safety is never relaxed: minimum duties, the 0 RPM gate, bank 0 for normal ITE access, and handing every fan back to the BIOS or driver on every exit path. A change that touches these needs a clear explanation in the pull request.
 - New chip support is based on public sources (datasheets, the Linux hwmon drivers, LibreHardwareMonitor). Where the sources disagree or leave a gap, the chip or header stays monitor-only with a warning. Describe your sources in the pull request and credit them in [NOTICE](NOTICE).
 
+## Releasing
+
+1. Bump `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows, and merge that through a pull request.
+2. Tag the merged commit on master and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
+3. The Release workflow checks the tag matches the version and is on master, runs the tests, builds, packages (`release/package.ps1`, which also runs locally after `cargo build --release`) and creates a **draft** release with the zip, the PawnIO.Modules source, `SHA256SUMS.txt` and build attestations.
+4. Check the draft's files and notes, then publish it.
+
 ## Licensing of contributions
 
 MostlyFans is licensed under the [GPL-3.0-or-later](LICENSE). By submitting a contribution you agree that it's your own work, or that you have the right to submit it, and that it's licensed under the same terms.

@@ -2,3 +2,4 @@
 *.log
 /PLAN.md
 /.claude/
+/dist

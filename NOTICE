@@ -15,6 +15,8 @@ crates/hw/modules/IsaBridgeEC.bin)
   release; their source is the 0.2.11 tag (commit
   52a7e536dff3e53c96917a28caac5e0fa6510696):
   https://github.com/namazso/PawnIO.Modules/tree/0.2.11
+  Each MostlyFans release also attaches that source as
+  PawnIO.Modules-0.2.11-source.zip.
 
 LibreHardwareMonitor
   https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
