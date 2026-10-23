@@ -202,11 +202,11 @@ pub fn collect(
                 Alert::new(
                     Severity::MonitorOnly,
                     format!(
-                        "Monitor-only mode: the BIOS left every fan output of the {} off with inverted polarity, which isn't safe to drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                        "Monitor-only mode: the BIOS set up the fan outputs of the {} with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
                         board.chip_name
                     ),
                 )
-                .detail("Check the fan settings in the BIOS setup: turn fan control on or load the defaults, then restart the PC."),
+                .detail("Check the fan settings in the BIOS setup: switch the fan headers to PWM or Smart Fan mode, or update the BIOS, then restart the PC."),
             );
         } else if state.monitor_only {
             let text = if let Some(board) = unverified {
@@ -530,7 +530,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             alert.text,
-            "Monitor-only mode: the BIOS left every fan output of the ITE IT8628E off with inverted polarity, which isn't safe to drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
+            "Monitor-only mode: the BIOS set up the fan outputs of the ITE IT8628E with inverted polarity, a known BIOS fault that Linux it87 also won't drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
         );
         assert!(alert.detail.as_deref().unwrap().contains("BIOS setup"));
         assert!(
