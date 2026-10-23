@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::HwError;
 use crate::chips::{ChipMap, NctMap, Tach};
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT};
 use crate::pinmux::{self, Wiring};
 use crate::port::PortIo;
 use crate::superio::{
@@ -325,7 +325,7 @@ impl<P: PortIo> crate::superio::Session for Session<'_, P> {
 
 pub(crate) fn io_space_locked<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
 ) -> Result<bool, HwError> {
     if !matches!(&config.chip.map, ChipMap::Nuvoton(map) if map.io_lock) {
@@ -348,7 +348,7 @@ pub(crate) type LdnConfig = (BTreeMap<String, u8>, BTreeMap<String, u8>);
 
 pub(crate) fn ldn_config<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
 ) -> Result<LdnConfig, HwError> {
     let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
@@ -363,7 +363,7 @@ pub(crate) fn ldn_config<P: PortIo>(
 
 pub(crate) fn dump<P: PortIo>(
     io: &mut P,
-    lock: &NamedMutex,
+    lock: &BusLock,
     config: &ChipConfig,
 ) -> Result<RegisterDump, HwError> {
     let (global_config, ec_ldn_config) = ldn_config(io, lock, config)?;
@@ -648,6 +648,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    use crate::mutex::NamedMutex;
     use std::cell::Cell;
 
     use super::fake::FakeNct;

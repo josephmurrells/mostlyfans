@@ -295,8 +295,13 @@ impl Engine {
         let runtime = self.fans.get(&fan);
         let fault = runtime.and_then(|runtime| runtime.fault.clone());
         let failing = runtime.is_some_and(|runtime| runtime.failures > 0);
+        let monitored = readings
+            .fan(&fan)
+            .is_some_and(|reading| reading.monitor_only);
         let started = if self.is_monitor_only_for(fan.kind()) {
             Err("FanForge is in monitor-only mode".to_owned())
+        } else if monitored {
+            Err("FanForge only monitors this fan".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Err(format!("{} is active", cause.describe()))
         } else if let Some(reason) = fault {
@@ -339,6 +344,11 @@ impl Engine {
         let fan = calibration.fan().clone();
         let abort = if self.is_monitor_only_for(fan.kind()) {
             Some("monitor-only mode turned on".to_owned())
+        } else if readings
+            .fan(&fan)
+            .is_some_and(|reading| reading.monitor_only)
+        {
+            Some("FanForge only monitors this fan".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Some(format!("{} fired", cause.describe()))
         } else if identifying == Some(&fan) {
@@ -1146,6 +1156,24 @@ mod tests {
             assert_eq!(Rig::status(&outcome, "pwm2").state, FanState::MonitorOnly);
             assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::Controlled);
         }
+    }
+
+    #[test]
+    fn a_monitor_only_header_cannot_be_calibrated() {
+        let mut rig = Rig::new(Config::default(), open_limits());
+        rig.readings.fans[1].monitor_only = true;
+        rig.engine.request_calibration("pwm2".into()).unwrap();
+        let outcome = rig.tick();
+        assert!(outcome.commands.is_empty());
+        assert_eq!(
+            rig.engine
+                .calibration_view()
+                .last
+                .map(|report| report.outcome),
+            Some(CalibrationOutcome::Aborted(
+                "FanForge only monitors this fan".to_owned()
+            ))
+        );
     }
 
     #[test]

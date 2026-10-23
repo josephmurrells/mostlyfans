@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::HwError;
 use crate::chips::{CHIPS, ChipMap, ChipSpec};
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use std::sync::Arc;
+
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT, NamedMutex};
 use crate::pinmux::Wiring;
 use crate::port::PortIo;
 use crate::{ec, ite, nuvoton};
@@ -251,45 +253,79 @@ pub fn detect<P: PortIo>(
     }
 }
 
-pub fn detect_second<P: PortIo>(
-    primary: &ChipConfig,
-    open: impl FnOnce(Slot) -> Result<P, HwError>,
-    lock: impl FnOnce() -> Result<NamedMutex, HwError>,
-    verify: bool,
-) -> Option<SuperIo<P>> {
-    if primary.slot != Slot::Primary || !matches!(primary.chip.map, ChipMap::Ite(_)) {
-        return None;
+#[derive(Debug)]
+pub enum SecondProbe<P: PortIo> {
+    Found(SuperIo<P>),
+    NotLooked,
+    Nothing(u16),
+    Alias(&'static str),
+    Failed(HwError),
+}
+
+impl<P: PortIo> SecondProbe<P> {
+    pub fn chip(self) -> Option<SuperIo<P>> {
+        match self {
+            Self::Found(chip) => Some(chip),
+            _ => None,
+        }
     }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Found(chip) => format!("{} on 0x4E", chip.chip().name),
+            Self::NotLooked => {
+                "not looked for (the first chip isn't an ITE chip on 0x2E)".to_owned()
+            }
+            Self::Nothing(0xFFFF | 0x0000) => "none on 0x4E".to_owned(),
+            Self::Nothing(0x8883) => {
+                "an IT8792E on 0x4E reports 0x8883 (it was entered twice), so it is left alone"
+                    .to_owned()
+            }
+            Self::Nothing(chip_id) => {
+                format!("chip id {chip_id:#06x} on 0x4E isn't a second fan chip FanForge knows")
+            }
+            Self::Alias(name) => format!(
+                "{name} on 0x4E answers at the first chip's address (the same chip twice), so it is ignored"
+            ),
+            Self::Failed(error) => format!("a chip on 0x4E could not be set up: {error}"),
+        }
+    }
+}
+
+pub fn detect_second<P: PortIo>(
+    primary: &SuperIo<P>,
+    open: impl FnOnce(Slot) -> Result<P, HwError>,
+    verify: bool,
+) -> SecondProbe<P> {
+    let config = primary.config;
+    if config.slot != Slot::Primary || !matches!(config.chip.map, ChipMap::Ite(_)) {
+        return SecondProbe::NotLooked;
+    }
+    let lock = primary.bus_lock();
     let connected = open(Slot::Secondary).and_then(|io| {
-        let lock = lock()?;
         if verify {
             SuperIo::probe_second(io, lock)
         } else {
             SuperIo::attach_second(io, lock)
         }
     });
-    match connected {
-        Ok(chip) if chip.config.base_address == primary.base_address => {
-            tracing::info!(
-                chip = chip.chip().name,
-                "the chip on 0x4E answers at the primary chip's base address; ignoring the alias"
-            );
-            None
+    let probe = match connected {
+        Ok(chip) if chip.config.base_address == config.base_address => {
+            SecondProbe::Alias(chip.chip().name)
         }
-        Ok(chip) => {
-            tracing::info!(
-                chip = chip.chip().name,
-                base = format_args!("{:#06x}", chip.config.base_address),
-                "found a second fan chip on 0x4E"
-            );
-            Some(chip)
+        Ok(chip) => SecondProbe::Found(chip),
+        Err(HwError::ChipNotFound(chip_id)) => SecondProbe::Nothing(chip_id),
+        Err(error) => SecondProbe::Failed(error),
+    };
+    match &probe {
+        SecondProbe::Found(_) | SecondProbe::Alias(_) | SecondProbe::Failed(_) => {
+            tracing::info!(second = %probe.describe(), "second fan chip");
         }
-        Err(HwError::ChipNotFound(_)) => None,
-        Err(error) => {
-            tracing::warn!(%error, "the second fan chip on 0x4E could not be set up");
-            None
+        SecondProbe::NotLooked | SecondProbe::Nothing(_) => {
+            tracing::debug!(second = %probe.describe(), "second fan chip");
         }
     }
+    probe
 }
 
 pub(crate) trait Session {
@@ -311,7 +347,8 @@ pub(crate) trait Session {
 #[derive(Debug)]
 pub struct SuperIo<P: PortIo> {
     pub(crate) io: P,
-    lock: NamedMutex,
+    lock: Arc<BusLock>,
+    abandonments_seen: u64,
     pub(crate) config: ChipConfig,
     unlock: bool,
     usable: bool,
@@ -320,16 +357,16 @@ pub struct SuperIo<P: PortIo> {
 
 impl<P: PortIo> SuperIo<P> {
     pub fn attach(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        Self::connect(io, slot, lock, false)
+        Self::connect(io, slot, BusLock::new(lock), false)
     }
 
-    fn connect(io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
+    fn connect(io: P, slot: Slot, lock: Arc<BusLock>, unlock: bool) -> Result<Self, HwError> {
         Self::connect_with(io, lock, unlock, |io| read_config(io, slot, unlock))
     }
 
     fn connect_with(
         mut io: P,
-        lock: NamedMutex,
+        lock: Arc<BusLock>,
         unlock: bool,
         read: impl FnOnce(&mut P) -> Result<ChipConfig, HwError>,
     ) -> Result<Self, HwError> {
@@ -339,6 +376,7 @@ impl<P: PortIo> SuperIo<P> {
         };
         Ok(Self {
             io,
+            abandonments_seen: lock.abandonments(),
             lock,
             wiring: config.wiring,
             config,
@@ -348,18 +386,22 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        let mut chip = Self::connect(io, slot, lock, true)?;
+        let mut chip = Self::connect(io, slot, BusLock::new(lock), true)?;
         chip.check_session()?;
         Ok(chip)
     }
 
-    pub fn attach_second(io: P, lock: NamedMutex) -> Result<Self, HwError> {
+    pub fn bus_lock(&self) -> Arc<BusLock> {
+        Arc::clone(&self.lock)
+    }
+
+    pub fn attach_second(io: P, lock: Arc<BusLock>) -> Result<Self, HwError> {
         Self::connect_with(io, lock, false, |io| {
             ite::read_config(io, Slot::Secondary, true)
         })
     }
 
-    pub fn probe_second(io: P, lock: NamedMutex) -> Result<Self, HwError> {
+    pub fn probe_second(io: P, lock: Arc<BusLock>) -> Result<Self, HwError> {
         let mut chip = Self::attach_second(io, lock)?;
         chip.check_session()?;
         Ok(chip)
@@ -425,8 +467,10 @@ impl<P: PortIo> SuperIo<P> {
         &mut self,
         action: impl FnOnce(&mut dyn Session) -> Result<T, HwError>,
     ) -> Result<T, HwError> {
-        let guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
-        let abandoned = guard.was_abandoned();
+        let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
+        let abandonments = self.lock.abandonments();
+        let abandoned = abandonments != self.abandonments_seen;
+        self.abandonments_seen = abandonments;
         if abandoned {
             tracing::warn!(mutex = %self.lock.name(), "bus mutex was abandoned; reinitialising the chip");
             self.config = reread_config(&mut self.io, &self.config, self.unlock)?;

@@ -163,9 +163,9 @@ fn detect() -> DiagResult {
     println!("Board: {} {}", identity.manufacturer, identity.product);
     let mut chip = attach_chip()?;
     describe_chip(&mut chip)?;
-    if let Some(mut second) = attach_second_chip(&chip.config()) {
-        println!();
-        println!("Second fan chip:");
+    let second = attach_second_chip(&chip);
+    println!("Second fan chip: {}", second.describe());
+    if let Some(mut second) = second.chip() {
         describe_chip(&mut second)?;
     }
     Ok(())
@@ -268,8 +268,11 @@ fn read() -> DiagResult {
 fn dump(out: Option<&Path>, slot: u8) -> DiagResult {
     let mut primary = attach_chip()?;
     let dump = if slot == 2 {
-        attach_second_chip(&primary.config())
-            .ok_or("no second fan chip answers on 0x4E")?
+        let second = attach_second_chip(&primary);
+        let described = second.describe();
+        second
+            .chip()
+            .ok_or_else(|| format!("no second fan chip to dump: {described}"))?
             .dump()?
     } else {
         primary.dump()?
