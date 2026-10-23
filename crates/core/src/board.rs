@@ -61,6 +61,8 @@ pub struct BoardInfo {
     pub chip_name: String,
     #[serde(default)]
     pub fan_control: bool,
+    #[serde(default)]
+    pub pwm_misconfigured: bool,
     pub fan_headers: usize,
     pub likely_cpu_fan: Option<FanId>,
 }

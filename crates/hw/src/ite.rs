@@ -371,6 +371,49 @@ pub(crate) fn dump<P: PortIo>(
     })
 }
 
+pub(crate) fn pwm_configured<P: PortIo>(
+    io: &mut P,
+    lock: &NamedMutex,
+    config: &ChipConfig,
+    map: &IteMap,
+) -> Result<bool, HwError> {
+    if !map.polarity_check {
+        return Ok(true);
+    }
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    let mut ec = Ec::new(io, config.base_address, map);
+    let original = if map.bank_select {
+        Some(ec.read(BANK_REG)?).filter(|bank| bank & BANK_MASK != 0)
+    } else {
+        None
+    };
+    let value = match original {
+        Some(original) => {
+            let wanted = original & !BANK_MASK;
+            let value = ec
+                .write(BANK_REG, wanted)
+                .and_then(|()| ec.read(BANK_REG))
+                .and_then(|read| {
+                    if read == wanted {
+                        ec.read(FAN_CONTROL_REG)
+                    } else {
+                        Err(HwError::VerifyFailed {
+                            register: u16::from(BANK_REG),
+                            written: wanted,
+                            read,
+                        })
+                    }
+                });
+            let restored = ec.write(BANK_REG, original);
+            let value = value?;
+            restored?;
+            value
+        }
+        None => ec.read(FAN_CONTROL_REG)?,
+    };
+    Ok(value & PWM_CONFIGURED != 0)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake {
     use std::sync::{Arc, Mutex, PoisonError};
@@ -1151,9 +1194,63 @@ mod tests {
             chip.set_duty(0, 0x80),
             Err(HwError::NoFanControl("ITE IT8628E"))
         ));
+        assert!(chip.pwm_misconfigured());
         chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x01;
         chip.reinitialize().unwrap();
         assert!(chip.fan_control());
+        assert!(!chip.pwm_misconfigured());
+    }
+
+    #[test]
+    fn the_read_only_pwm_check_leaves_the_bank_as_it_found_it() {
+        let mut fake = FakeIte::chip(0x8686);
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x70;
+        fake.banks[2][usize::from(FAN_CONTROL_REG)] = 0x87;
+        fake.bank_register = 0x40 | 0x01;
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("pwm-check")).unwrap();
+        assert!(!chip.check_pwm_configuration().unwrap());
+        assert_eq!(chip.io.bank_register, 0x41);
+        assert!(chip.fan_control());
+
+        chip.io.banks[0][usize::from(FAN_CONTROL_REG)] = 0x80;
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert_eq!(chip.io.bank_register, 0x41);
+
+        chip.io.bank_register = 0x00;
+        let writes = data_writes(&chip.io).len();
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert_eq!(data_writes(&chip.io).len(), writes);
+    }
+
+    #[test]
+    fn a_failed_pwm_check_still_puts_the_bank_back() {
+        let mut fake = FakeIte::chip(0x8686);
+        fake.bank_register = 0x40 | 0x01;
+        fake.unreadable_registers.push(FAN_CONTROL_REG);
+        let mut chip = SuperIo::attach(fake, Slot::Primary, lock("pwm-check-error")).unwrap();
+        assert!(matches!(
+            chip.check_pwm_configuration(),
+            Err(HwError::ReadNotAcknowledged(FAN_CONTROL_REG))
+        ));
+        assert_eq!(chip.io.bank_register, 0x41);
+
+        chip.io.unreadable_registers.clear();
+        chip.io.stuck_registers.push(BANK_REG);
+        assert!(matches!(
+            chip.check_pwm_configuration(),
+            Err(HwError::VerifyFailed { .. })
+        ));
+        assert_eq!(chip.io.bank_register, 0x41);
+    }
+
+    #[test]
+    fn the_it8655e_skips_the_pwm_check() {
+        let mut fake = FakeIte::new();
+        fake.banks[0][usize::from(FAN_CONTROL_REG)] = 0x00;
+        let mut chip = probe(fake, "pwm-8655");
+        assert!(chip.fan_control());
+        assert!(chip.check_pwm_configuration().unwrap());
+        assert!(!chip.pwm_misconfigured());
     }
 
     #[test]

@@ -177,10 +177,12 @@ fn detect() -> DiagResult {
         };
         println!("  Header {}: {note}", channel + 1);
     }
-    let control = if chip.fan_control() {
-        "supported"
-    } else {
+    let control = if !chip.chip().fan_control {
         "monitor only (FanForge doesn't support fan control on this chip)"
+    } else if !chip.check_pwm_configuration()? {
+        "monitor only (the BIOS set up the fan outputs with inverted polarity, a known BIOS fault that Linux it87 also won't drive; check the fan settings in the BIOS setup)"
+    } else {
+        "supported"
     };
     println!("Fan control: {control}");
     if chip.io_space_locked()? {
