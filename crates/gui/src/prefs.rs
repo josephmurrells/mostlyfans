@@ -1,7 +1,7 @@
-use fanforge_core::{FanId, SensorId};
+use mostlyfans_core::{FanId, SensorId};
 use serde::{Deserialize, Serialize};
 
-const KEY: &str = "fanforge-ui";
+const KEY: &str = "mostlyfans-ui";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Page {

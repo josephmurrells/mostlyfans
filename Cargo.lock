@@ -1434,88 +1434,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fanforge-control"
-version = "0.1.0"
-dependencies = [
- "fanforge-core",
- "fanforge-hw",
- "fanforge-win",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
- "windows-service",
-]
-
-[[package]]
-name = "fanforge-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml 1.1.8+spec-1.1.0",
-]
-
-[[package]]
-name = "fanforge-diag"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ctrlc",
- "fanforge-core",
- "fanforge-hw",
- "fanforge-win",
- "serde_json",
-]
-
-[[package]]
-name = "fanforge-gui"
-version = "0.1.0"
-dependencies = [
- "clap",
- "eframe",
- "egui_kittest",
- "embed-manifest",
- "embed-resource",
- "fanforge-control",
- "fanforge-core",
- "fanforge-hw",
- "fanforge-win",
- "ron",
- "serde",
- "sha2",
- "tempfile",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tray-icon",
-]
-
-[[package]]
-name = "fanforge-hw"
-version = "0.1.0"
-dependencies = [
- "fanforge-core",
- "fanforge-win",
- "nvml-wrapper",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
- "windows",
-]
-
-[[package]]
-name = "fanforge-win"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "windows",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2664,6 +2582,88 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "mostlyfans-control"
+version = "0.1.0"
+dependencies = [
+ "mostlyfans-core",
+ "mostlyfans-hw",
+ "mostlyfans-win",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows-service",
+]
+
+[[package]]
+name = "mostlyfans-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
+name = "mostlyfans-diag"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ctrlc",
+ "mostlyfans-core",
+ "mostlyfans-hw",
+ "mostlyfans-win",
+ "serde_json",
+]
+
+[[package]]
+name = "mostlyfans-gui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eframe",
+ "egui_kittest",
+ "embed-manifest",
+ "embed-resource",
+ "mostlyfans-control",
+ "mostlyfans-core",
+ "mostlyfans-hw",
+ "mostlyfans-win",
+ "ron",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tray-icon",
+]
+
+[[package]]
+name = "mostlyfans-hw"
+version = "0.1.0"
+dependencies = [
+ "mostlyfans-core",
+ "mostlyfans-win",
+ "nvml-wrapper",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "mostlyfans-win"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows",
 ]
 
 [[package]]

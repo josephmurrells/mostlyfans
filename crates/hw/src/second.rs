@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_core::board::{
+use mostlyfans_core::board::{
     ChipInfo, chip_label, chip_temp_sensor_id, default_fan_name, temp_label,
 };
-use fanforge_core::engine::Action;
-use fanforge_core::telemetry::{FanReading, HardwareMode, SensorReading};
-use fanforge_core::{Duty, FanId};
+use mostlyfans_core::engine::Action;
+use mostlyfans_core::telemetry::{FanReading, HardwareMode, SensorReading};
+use mostlyfans_core::{Duty, FanId};
 
 use crate::HwError;
 use crate::gigabyte::{
@@ -21,7 +21,7 @@ use crate::superio::{ChipReadings, SuperIo};
 
 pub const SECOND_CHIP: usize = 1;
 pub const LOST_CONTACT: &str =
-    "FanForge lost contact with the second fan chip and handed its fans back";
+    "MostlyFans lost contact with the second fan chip and handed its fans back";
 pub const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 const FAILURES_BEFORE_BACKOFF: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(10);
@@ -32,10 +32,10 @@ const FAILING_RELEASE_BUDGET: Duration = Duration::from_millis(200);
 const RETRY_PAUSE: Duration = Duration::from_millis(20);
 pub const PRIMARY_SHARE: f32 = 0.6;
 const IT8792E_ID: u16 = 0x8733;
-const NOT_GIGABYTE: &str = "FanForge only controls the second fan chip on Gigabyte boards";
-const NO_ROUTE: &str = "FanForge can't reach Gigabyte's fan controller on this board";
+const NOT_GIGABYTE: &str = "MostlyFans only controls the second fan chip on Gigabyte boards";
+const NO_ROUTE: &str = "MostlyFans can't reach Gigabyte's fan controller on this board";
 const G3_WITHOUT_ECIO: &str =
-    "the fan speeds on this board can't be read reliably, so FanForge only monitors these fans";
+    "the fan speeds on this board can't be read reliably, so MostlyFans only monitors these fans";
 
 pub fn snapshot_path(primary: &Path) -> PathBuf {
     primary.with_file_name(SNAPSHOT_FILE)
@@ -100,7 +100,7 @@ pub fn discover<P: PortIo>(
 ) -> Result<Control, String> {
     let name = chip.chip().name;
     if !chip.fan_control() {
-        return Err(format!("FanForge doesn't control fans on the {name}"));
+        return Err(format!("MostlyFans doesn't control fans on the {name}"));
     }
     if !board.gigabyte {
         return Err(NOT_GIGABYTE.to_owned());
@@ -151,7 +151,7 @@ pub fn discover<P: PortIo>(
     tracing::info!(
         route = ?control.route.kind(),
         generation = ?control.generation,
-        "FanForge can take over the second fan chip from Gigabyte's fan controller"
+        "MostlyFans can take over the second fan chip from Gigabyte's fan controller"
     );
     Ok(control)
 }
@@ -443,7 +443,7 @@ impl<P: PortIo> SecondChip<P> {
             if current & gigabyte::SMARTFAN_ON == 0 {
                 tracing::warn!(
                     current,
-                    "Gigabyte's fan controller was already off before FanForge took over; it will be switched on when FanForge lets go"
+                    "Gigabyte's fan controller was already off before MostlyFans took over; it will be switched on when MostlyFans lets go"
                 );
             }
             self.snapshot.smartfan = Some(current);
@@ -833,7 +833,7 @@ mod tests {
         };
         let lock = BusLock::new(
             NamedMutex::open(&format!(
-                r"Local\fanforge-second-{tag}-{}",
+                r"Local\mostlyfans-second-{tag}-{}",
                 std::process::id()
             ))
             .unwrap(),
@@ -1122,7 +1122,7 @@ mod tests {
         fake.ite.with(|chip| chip.smfi_active = true);
         let lock = BusLock::new(
             NamedMutex::open(&format!(
-                r"Local\fanforge-second-smfi-{}",
+                r"Local\mostlyfans-second-smfi-{}",
                 std::process::id()
             ))
             .unwrap(),
@@ -1158,7 +1158,7 @@ mod tests {
         fake.ite.with(|chip| chip.smfi_active = true);
         let lock = BusLock::new(
             NamedMutex::open(&format!(
-                r"Local\fanforge-second-g3smfi-{}",
+                r"Local\mostlyfans-second-g3smfi-{}",
                 std::process::id()
             ))
             .unwrap(),

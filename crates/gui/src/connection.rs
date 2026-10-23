@@ -1,11 +1,11 @@
 use std::io;
 use std::sync::Arc;
 
-use fanforge_control::backend::Backend;
-use fanforge_control::controller::{CommandResult, Controller};
-use fanforge_core::state::ControlState;
+use mostlyfans_control::backend::Backend;
+use mostlyfans_control::controller::{CommandResult, Controller};
+use mostlyfans_core::state::ControlState;
 
-pub use fanforge_control::controller::{ControlStatus, Request, RequestKind};
+pub use mostlyfans_control::controller::{ControlStatus, Request, RequestKind};
 
 pub trait ControlLink {
     fn view(&self) -> (ControlStatus, Option<Arc<ControlState>>);

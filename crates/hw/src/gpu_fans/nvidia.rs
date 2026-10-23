@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fanforge_win::SystemLibrary;
+use mostlyfans_win::SystemLibrary;
 use nvml_wrapper::enums::device::FanControlPolicy;
 use nvml_wrapper::{Device, Nvml};
 

@@ -100,7 +100,7 @@ enum Target {
     Failed(String),
 }
 
-pub const CHIP_OVERRIDDEN: &str = "Gigabyte's fan controller keeps overriding the fans on the second chip, so FanForge handed all of them back to it";
+pub const CHIP_OVERRIDDEN: &str = "Gigabyte's fan controller keeps overriding the fans on the second chip, so MostlyFans handed all of them back to it";
 
 fn extra_chip(fan: &FanId) -> Option<usize> {
     fan.header_channel()
@@ -237,7 +237,7 @@ impl Engine {
             );
         }
         if self.is_monitor_only() {
-            return Err("FanForge is in monitor-only mode".to_owned());
+            return Err("MostlyFans is in monitor-only mode".to_owned());
         }
         if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             return Err(format!("{} is active", cause.describe()));
@@ -333,9 +333,9 @@ impl Engine {
             .fan(&fan)
             .is_some_and(|reading| reading.monitor_only);
         let started = if self.is_monitor_only_for(fan.kind()) {
-            Err("FanForge is in monitor-only mode".to_owned())
+            Err("MostlyFans is in monitor-only mode".to_owned())
         } else if monitored {
-            Err("FanForge only monitors this fan".to_owned())
+            Err("MostlyFans only monitors this fan".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Err(format!("{} is active", cause.describe()))
         } else if let Some(reason) = fault {
@@ -382,7 +382,7 @@ impl Engine {
             .fan(&fan)
             .is_some_and(|reading| reading.monitor_only)
         {
-            Some("FanForge only monitors this fan".to_owned())
+            Some("MostlyFans only monitors this fan".to_owned())
         } else if let Some(cause) = self.critical.active_cause(&self.config.safety) {
             Some(format!("{} fired", cause.describe()))
         } else if identifying == Some(&fan) {
@@ -1234,7 +1234,7 @@ mod tests {
                 .last
                 .map(|report| report.outcome),
             Some(CalibrationOutcome::Aborted(
-                "FanForge only monitors this fan".to_owned()
+                "MostlyFans only monitors this fan".to_owned()
             ))
         );
     }

@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use fanforge_core::board::{
+use mostlyfans_core::board::{
     BoardIdentity, BoardInfo, ChipInfo, FanLimits, default_fan_name, temp_label, temp_sensor_id,
 };
-use fanforge_core::engine::{Action, Command};
-use fanforge_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
-use fanforge_core::{Duty, FanId, SensorId};
+use mostlyfans_core::engine::{Action, Command};
+use mostlyfans_core::telemetry::{FanReading, HardwareMode, Readings, SensorReading};
+use mostlyfans_core::{Duty, FanId, SensorId};
 
 use crate::HwError;
 use crate::amd::CpuInfo;
@@ -491,7 +491,7 @@ mod tests {
 
     fn lock(tag: &str) -> NamedMutex {
         NamedMutex::open(&format!(
-            r"Local\fanforge-system-{tag}-{}",
+            r"Local\mostlyfans-system-{tag}-{}",
             std::process::id()
         ))
         .unwrap()

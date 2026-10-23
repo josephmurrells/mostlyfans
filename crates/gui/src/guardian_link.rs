@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_control::guardian::{NO_HARDWARE_EXIT_CODE, Signal, SignalSink};
-use fanforge_win::{
+use mostlyfans_control::guardian::{NO_HARDWARE_EXIT_CODE, Signal, SignalSink};
+use mostlyfans_win::{
     AnonymousPipe, Breakaway, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
     PROCESS_TERMINATE, Spawned,
 };
@@ -30,12 +30,12 @@ fn guardian_arguments(values: &[usize]) -> Vec<String> {
 
 fn spawn_guardian(executable: &Path) -> io::Result<(Spawned, File)> {
     let pipe = AnonymousPipe::new()?;
-    let writer = fanforge_win::nonblocking_writer(pipe.write)?;
-    let parent = fanforge_win::duplicate_current_process(
+    let writer = mostlyfans_win::nonblocking_writer(pipe.write)?;
+    let parent = mostlyfans_win::duplicate_current_process(
         PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
     )?;
     let spawned =
-        fanforge_win::spawn_with_handles(executable, &[&parent, &pipe.read], guardian_arguments)?;
+        mostlyfans_win::spawn_with_handles(executable, &[&parent, &pipe.read], guardian_arguments)?;
     Ok((spawned, writer))
 }
 
@@ -71,7 +71,7 @@ impl Inner {
             if restarts.len() > RESPAWN_LIMIT {
                 self.notices.set(
                     Topic::Guardian,
-                    "The guardian keeps stopping, so FanForge is unprotected against forced termination: if it is killed, fans stay at their last speed until the next start.",
+                    "The guardian keeps stopping, so MostlyFans is unprotected against forced termination: if it is killed, fans stay at their last speed until the next start.",
                 );
                 return;
             }
@@ -82,7 +82,7 @@ impl Inner {
                     tracing::error!(%error, "could not start the guardian");
                     self.notices.set(
                         Topic::Guardian,
-                        format!("The guardian could not start ({error}); FanForge is unprotected against forced termination."),
+                        format!("The guardian could not start ({error}); MostlyFans is unprotected against forced termination."),
                     );
                     thread::sleep(RESPAWN_PAUSE);
                     continue;
@@ -91,7 +91,7 @@ impl Inner {
             *self.writer() = Some(writer);
             self.notices.clear(Topic::Guardian);
             if spawned.breakaway == Breakaway::Denied {
-                let in_job = fanforge_win::current_process_in_job();
+                let in_job = mostlyfans_win::current_process_in_job();
                 tracing::warn!(?in_job, "guardian could not leave the app's job");
                 self.notices.set(
                     Topic::GuardianJob,
@@ -110,7 +110,7 @@ impl Inner {
             if code == Some(NO_HARDWARE_EXIT_CODE) {
                 self.notices.set(
                     Topic::Guardian,
-                    "The guardian could not open the fan controller, so FanForge is unprotected against forced termination.",
+                    "The guardian could not open the fan controller, so MostlyFans is unprotected against forced termination.",
                 );
                 return;
             }
@@ -127,7 +127,7 @@ pub struct GuardianLink {
 
 impl GuardianLink {
     pub fn start(executable: PathBuf, notices: Notices) -> Self {
-        let executable_lock = fanforge_win::lock_against_replacement(&executable)
+        let executable_lock = mostlyfans_win::lock_against_replacement(&executable)
             .map_err(
                 |error| tracing::warn!(%error, "could not lock the executable against replacement"),
             )
@@ -162,7 +162,7 @@ impl GuardianLink {
             self.inner.supervising.store(false, Ordering::SeqCst);
             self.inner.notices.set(
                 Topic::Guardian,
-                format!("The guardian could not start ({error}); FanForge is unprotected against forced termination."),
+                format!("The guardian could not start ({error}); MostlyFans is unprotected against forced termination."),
             );
         }
     }

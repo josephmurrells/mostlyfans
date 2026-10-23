@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn missing_registry_values_are_none() {
         assert_eq!(
-            read_local_machine_string(r"SOFTWARE\FanForgeDoesNotExist", "Nope"),
+            read_local_machine_string(r"SOFTWARE\MostlyFansDoesNotExist", "Nope"),
             None
         );
         assert!(

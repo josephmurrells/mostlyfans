@@ -1,6 +1,6 @@
 [package]
-name = "fanforge-win"
-description = "Small safe wrappers over Win32 APIs shared by FanForge crates."
+name = "mostlyfans-win"
+description = "Small safe wrappers over Win32 APIs shared by MostlyFans crates."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

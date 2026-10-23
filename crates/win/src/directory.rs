@@ -54,7 +54,7 @@ pub fn secure_directory(path: &Path, sddl: &str) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "{} is a junction or link; delete it and start FanForge again",
+                "{} is a junction or link; delete it and start MostlyFans again",
                 path.display()
             ),
         ));
@@ -98,7 +98,7 @@ pub fn secure_directory(path: &Path, sddl: &str) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "{} is owned by an untrusted account; delete it and start FanForge again",
+                "{} is owned by an untrusted account; delete it and start MostlyFans again",
                 path.display()
             ),
         ));

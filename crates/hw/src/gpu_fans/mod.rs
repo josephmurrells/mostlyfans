@@ -7,7 +7,7 @@ mod worker;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use fanforge_core::FanId;
+use mostlyfans_core::FanId;
 
 pub use release::GpuReleaser;
 pub use worker::{GpuFans, GpuReadings, NOT_RESPONDING};

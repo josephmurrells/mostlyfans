@@ -8,11 +8,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fanforge_core::board::FanLimits;
-use fanforge_core::engine::Action;
-use fanforge_core::state::GpuFanInfo;
-use fanforge_core::telemetry::{FanReading, HardwareMode};
-use fanforge_core::{Duty, FanId};
+use mostlyfans_core::board::FanLimits;
+use mostlyfans_core::engine::Action;
+use mostlyfans_core::state::GpuFanInfo;
+use mostlyfans_core::telemetry::{FanReading, HardwareMode};
+use mostlyfans_core::{Duty, FanId};
 
 use super::ownership::{self, Loaded, Ownership};
 use super::{DriverOpener, FOREIGN, FanDriver, GpuDesc, locate, writes};
@@ -348,7 +348,7 @@ impl Worker {
         match ownership::save(&self.path, &self.owned) {
             Ok(()) => true,
             Err(error) => {
-                tracing::error!(%error, "could not save which GPU fans FanForge controls");
+                tracing::error!(%error, "could not save which GPU fans MostlyFans controls");
                 false
             }
         }
@@ -415,7 +415,7 @@ impl Worker {
                 self.inner.lock().owned = self.owned.fans.clone();
                 self.report(
                     fan,
-                    "could not record that FanForge controls this fan".to_owned(),
+                    "could not record that MostlyFans controls this fan".to_owned(),
                 );
                 return;
             }

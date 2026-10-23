@@ -4,16 +4,18 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use fanforge_control::controller::{DIRECT_RELEASE_BUDGET, QUIT_WAIT};
-use fanforge_win::paths::INSTANCE_MUTEX;
-use fanforge_win::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
+use mostlyfans_control::controller::{DIRECT_RELEASE_BUDGET, QUIT_WAIT};
+use mostlyfans_win::paths::{INSTANCE_MUTEX, OLD_INSTANCE_MUTEX};
+use mostlyfans_win::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
 
 use crate::tray::reveal;
 
 const EXIT_MARGIN: Duration = Duration::from_secs(4);
 const SHOW_POLL: Duration = Duration::from_millis(250);
+const OLD_BUILD_RUNNING: &str = "FanForge, the old name of MostlyFans, is running. Turn off its Start with Windows, quit it from the tray, then start MostlyFans again.";
 
 pub struct Instance {
+    _old_mutex: InstanceMutex,
     _mutex: InstanceMutex,
     show: ShowGate,
 }
@@ -30,21 +32,31 @@ fn exit_wait() -> Duration {
 
 fn show_event_name() -> io::Result<String> {
     Ok(format!(
-        r"Local\FanForge.Show.{}",
-        fanforge_win::current_session_id()?
+        r"Local\MostlyFans.Show.{}",
+        mostlyfans_win::current_session_id()?
     ))
 }
 
 fn refused(error: &io::Error) -> Claim {
     tracing::error!(%error, "single-instance check failed");
     Claim::Refused(format!(
-        "FanForge could not check for another running copy: {error}"
+        "MostlyFans could not check for another running copy: {error}"
     ))
 }
 
 fn primary(mutex: InstanceMutex) -> Claim {
+    let old_mutex = match InstanceMutex::create(OLD_INSTANCE_MUTEX, ADMIN_ONLY_SDDL) {
+        Ok(old_mutex) => old_mutex,
+        Err(error) => return refused(&error),
+    };
+    match old_mutex.acquire(Duration::ZERO) {
+        Ok(true) => {}
+        Ok(false) => return Claim::Refused(OLD_BUILD_RUNNING.to_owned()),
+        Err(error) => return refused(&error),
+    }
     match show_event_name().and_then(|name| Event::create(&name, ADMIN_ONLY_SDDL)) {
         Ok(show) => Claim::Primary(Instance {
+            _old_mutex: old_mutex,
             _mutex: mutex,
             show: ShowGate(Arc::new(Mutex::new(Some(show)))),
         }),
@@ -71,7 +83,7 @@ pub fn claim() -> Claim {
     match mutex.acquire(exit_wait()) {
         Ok(true) => primary(mutex),
         Ok(false) => Claim::Refused(
-            "FanForge is already controlling fans in another user session.".to_owned(),
+            "MostlyFans is already controlling fans in another user session.".to_owned(),
         ),
         Err(error) => refused(&error),
     }

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use fanforge_core::FanId;
-use fanforge_core::store::{self, StoreError};
+use mostlyfans_core::FanId;
+use mostlyfans_core::store::{self, StoreError};
 use serde::{Deserialize, Serialize};
 
 use crate::ite::IT8655E_ID;

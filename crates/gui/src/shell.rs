@@ -5,8 +5,8 @@ use eframe::egui::{
     self, Align2, CornerRadius, FontId, Id, Key, KeyboardShortcut, Margin, Modifiers, RichText,
     Role, Sense, Stroke, UiBuilder, WidgetInfo, pos2, vec2,
 };
-use fanforge_core::config::Config;
-use fanforge_core::state::{ControlState, HardwareStatus};
+use mostlyfans_core::config::Config;
+use mostlyfans_core::state::{ControlState, HardwareStatus};
 
 use crate::alerts::{self, Action, AlertArea};
 use crate::changes;
@@ -374,7 +374,7 @@ impl Shell {
                     .color(palette.accent),
             );
             if !compact {
-                ui.label(widgets::value("FanForge", SECTION));
+                ui.label(widgets::value("MostlyFans", SECTION));
             }
         });
         ui.add_space(SPACE_XL);
@@ -707,7 +707,7 @@ fn gpu_identify_block(status: &ControlStatus, state: &ControlState) -> Option<&'
     if matches!(status, ControlStatus::Stopped(_)) {
         Some("Fan control is stopped")
     } else if state.gpus.monitor_only {
-        Some("Monitor-only mode: FanForge is not controlling the graphics card fans")
+        Some("Monitor-only mode: MostlyFans is not controlling the graphics card fans")
     } else {
         None
     }
@@ -717,7 +717,7 @@ fn identify_block(status: &ControlStatus, state: &ControlState) -> Option<&'stat
     if matches!(status, ControlStatus::Stopped(_)) {
         Some("Fan control is stopped")
     } else if state.monitor_only {
-        Some("Monitor-only mode: FanForge is not controlling the fans")
+        Some("Monitor-only mode: MostlyFans is not controlling the fans")
     } else if state.hardware != HardwareStatus::Ready {
         Some("The fan controller is not available")
     } else {

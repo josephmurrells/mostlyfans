@@ -10,10 +10,10 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
-fanforge-core = { path = "crates/core" }
-fanforge-win = { path = "crates/win" }
-fanforge-hw = { path = "crates/hw" }
-fanforge-control = { path = "crates/control" }
+mostlyfans-core = { path = "crates/core" }
+mostlyfans-win = { path = "crates/win" }
+mostlyfans-hw = { path = "crates/hw" }
+mostlyfans-control = { path = "crates/control" }
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 eframe = { version = "0.37", features = ["persistence"] }

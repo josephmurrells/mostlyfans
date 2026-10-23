@@ -3,9 +3,9 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use fanforge_core::FanId;
-use fanforge_core::config::Config;
-use fanforge_core::state::ControlState;
+use mostlyfans_core::FanId;
+use mostlyfans_core::config::Config;
+use mostlyfans_core::state::ControlState;
 
 pub enum LoopMessage {
     ReplaceConfig(Box<Config>, SyncSender<Result<(), String>>),

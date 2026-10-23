@@ -85,7 +85,7 @@ mod tests {
 
     use super::*;
 
-    const PREFS: &str = r#""fanforge-ui": "(page:Overview,setup_skipped:false,pinned_sensors:None,pinned_fans:None)""#;
+    const PREFS: &str = r#""mostlyfans-ui": "(page:Overview,setup_skipped:false,pinned_sensors:None,pinned_fans:None)""#;
 
     fn window(width: f32, height: f32) -> String {
         format!(
@@ -128,7 +128,7 @@ mod tests {
     fn a_window_saved_while_minimized_is_forgotten_and_prefs_are_kept() {
         let after: HashMap<String, String> = ron::from_str(&run(&file(64.0, 64.0))).unwrap();
         assert!(!after.contains_key(WINDOW_KEY));
-        assert!(after["fanforge-ui"].contains("page:Overview"));
+        assert!(after["mostlyfans-ui"].contains("page:Overview"));
     }
 
     #[test]

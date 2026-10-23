@@ -2,11 +2,11 @@ use std::io;
 use std::path::PathBuf;
 use std::process;
 
-use fanforge_control::controller::{DIRECT_RELEASE_BUDGET, Remote};
-use fanforge_control::failsafe;
-use fanforge_hw::gpu_fans::GpuReleaser;
-use fanforge_hw::system::{Chip, open_chip};
-use fanforge_win::{PowerEvent, PowerSubscription, SessionEvent};
+use mostlyfans_control::controller::{DIRECT_RELEASE_BUDGET, Remote};
+use mostlyfans_control::failsafe;
+use mostlyfans_hw::gpu_fans::GpuReleaser;
+use mostlyfans_hw::system::{Chip, open_chip};
+use mostlyfans_win::{PowerEvent, PowerSubscription, SessionEvent};
 
 use crate::guardian_link::GuardianLink;
 use crate::logging;
@@ -38,7 +38,7 @@ pub fn watch(
         .map_err(|error| tracing::warn!(%error, "no spare hardware handle for session end"))
         .ok();
     let session_remote = remote.clone();
-    fanforge_win::spawn_session_window(move |event| match event {
+    mostlyfans_win::spawn_session_window(move |event| match event {
         SessionEvent::QueryEnd => tracing::info!("session end requested"),
         SessionEvent::EndCancelled => tracing::info!("session end cancelled; keeping control"),
         SessionEvent::Ending { close_app } => {
@@ -51,7 +51,7 @@ pub fn watch(
             process::exit(0);
         }
     })?;
-    let power = fanforge_win::subscribe_power(move |event| match event {
+    let power = mostlyfans_win::subscribe_power(move |event| match event {
         PowerEvent::Suspend => {
             if !remote.suspend() {
                 tracing::warn!("control loop did not confirm the suspend in time");

@@ -9,8 +9,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use eframe::egui;
-use fanforge_hw::pawnio;
-use fanforge_win::paths;
+use mostlyfans_hw::pawnio;
+use mostlyfans_win::paths;
 use sha2::{Digest, Sha256};
 
 use crate::alerts::{Action, Alert, Severity};
@@ -46,8 +46,8 @@ fn download(target: &Path) -> io::Result<()> {
         fs::create_dir_all(directory)?;
     }
     remove_if_present(target)?;
-    let output = fanforge_win::run_captured(
-        Command::new(fanforge_win::system_dir()?.join("curl.exe"))
+    let output = mostlyfans_win::run_captured(
+        Command::new(mostlyfans_win::system_dir()?.join("curl.exe"))
             .args([
                 "--fail",
                 "--location",
@@ -96,7 +96,7 @@ fn verify(target: &Path) -> io::Result<()> {
 }
 
 fn run_installer(target: &Path) -> io::Result<Installed> {
-    let output = fanforge_win::run_captured(
+    let output = mostlyfans_win::run_captured(
         Command::new(target)
             .args(["-install", "-silent"])
             .creation_flags(CREATE_NO_WINDOW),
@@ -194,7 +194,7 @@ impl PawnIoPanel {
         if self.outcome == Some(Ok(Installed::RestartRequired)) {
             return Some(Alert::new(
                 Severity::Driver,
-                "PawnIO is installed. Restart Windows to finish, then start FanForge again.",
+                "PawnIO is installed. Restart Windows to finish, then start MostlyFans again.",
             ));
         }
         if !driver_missing {
@@ -209,7 +209,7 @@ impl PawnIoPanel {
         Some(
             Alert::new(
                 Severity::Driver,
-                "The PawnIO driver is not installed. FanForge needs it to reach the fan controller.",
+                "The PawnIO driver is not installed. MostlyFans needs it to reach the fan controller.",
             )
             .detail(detail)
             .action(Action::InstallPawnIo),
