@@ -435,7 +435,7 @@ impl<P: PortIo> SuperIo<P> {
         self.transaction(|session| session.restore(channel, saved))
     }
 
-    pub fn pwm_configured(&mut self) -> Result<bool, HwError> {
+    pub fn check_pwm_configuration(&mut self) -> Result<bool, HwError> {
         match &self.config.chip.map {
             ChipMap::Ite(map) => ite::pwm_configured(&mut self.io, &self.lock, &self.config, map),
             ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Ok(true),
