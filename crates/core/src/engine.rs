@@ -496,7 +496,10 @@ impl Engine {
                 (fan.kind() == FanKind::Gpu && !self.limits.contains_key(fan))
                     .then(|| "the driver hasn't reported the fan's minimum speed".to_owned())
             });
-        if self.is_monitor_only_for(fan.kind()) {
+        let reading_monitor_only = readings
+            .fan(fan)
+            .is_some_and(|reading| reading.monitor_only);
+        if self.is_monitor_only_for(fan.kind()) || reading_monitor_only {
             Some(FanState::MonitorOnly)
         } else if let Some(reason) = unavailable {
             Some(FanState::Unavailable(reason))
@@ -912,6 +915,7 @@ mod tests {
                 .into_iter()
                 .map(|id| FanReading {
                     unavailable: None,
+                    monitor_only: false,
                     id: id.into(),
                     label: id.into(),
                     rpm: Some(1000),
@@ -1027,6 +1031,7 @@ mod tests {
             mode: HardwareMode::Auto,
             duty: None,
             unavailable: None,
+            monitor_only: false,
         });
         let mut all = rig.engine.limits().clone();
         if let Some(limits) = limits {
@@ -1108,6 +1113,39 @@ mod tests {
             fan.duty = fan.duty.map(|duty| Duty::new(duty.percent().round()));
         }
         assert!(writes > 5);
+    }
+
+    #[test]
+    fn a_monitor_only_header_gets_no_commands_while_the_others_are_driven() {
+        let mut rig = Rig::new(
+            config_with(&[
+                (
+                    "pwm1",
+                    FanMode::Manual {
+                        duty: Duty::new(50.0),
+                    },
+                ),
+                (
+                    "pwm2",
+                    FanMode::Manual {
+                        duty: Duty::new(60.0),
+                    },
+                ),
+            ]),
+            open_limits(),
+        );
+        rig.readings.fans[1].monitor_only = true;
+        for _ in 0..3 {
+            let outcome = rig.tick();
+            assert!(
+                outcome
+                    .commands
+                    .iter()
+                    .all(|command| command.fan.as_str() != "pwm2")
+            );
+            assert_eq!(Rig::status(&outcome, "pwm2").state, FanState::MonitorOnly);
+            assert_eq!(Rig::status(&outcome, "pwm1").state, FanState::Controlled);
+        }
     }
 
     #[test]

@@ -77,6 +77,7 @@ pub fn state() -> ControlState {
         },
         duty: duty.map(Duty::new),
         unavailable: None,
+        monitor_only: false,
     };
     let status = |index: usize, state: FanState, output: Option<f32>| FanStatus {
         id: fan(index),
@@ -98,6 +99,7 @@ pub fn state() -> ControlState {
             pwm_misconfigured: false,
             fan_headers: 3,
             likely_cpu_fan: Some(fan(0)),
+            chips: Vec::new(),
         }),
         readings: Readings {
             sensors: vec![
@@ -145,6 +147,7 @@ pub fn with_gpu(mut state: ControlState) -> ControlState {
             mode: HardwareMode::Manual,
             duty: duty.map(Duty::new),
             unavailable: None,
+            monitor_only: false,
         });
         state.fans.push(FanStatus {
             id: id.clone(),

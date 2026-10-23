@@ -21,6 +21,10 @@ pub(crate) const EC_LDN: u8 = 0x04;
 
 const CONFIG_PORT: u16 = 0x2E;
 const ENTER_SEQUENCE: [u8; 4] = [0x87, 0x01, 0x55, 0x55];
+const SECONDARY_ENTER_SEQUENCE: [u8; 4] = [0x87, 0x01, 0x55, 0xAA];
+const NO_CHIP: u16 = 0xFFFF;
+const REENTERED_IT8792E: u16 = 0x8883;
+pub const SECOND_CHIP_IDS: [u16; 3] = [0x8790, 0x8733, 0x8695];
 const CONFIG_CONTROL_REG: u8 = 0x02;
 const CONFIG_EXIT_VALUE: u8 = 0x02;
 const CHIP_VERSION_REG: u8 = 0x22;
@@ -77,42 +81,83 @@ pub(crate) fn is_ite_id(chip_id: u16) -> bool {
     matches!(chip_id >> 8, 0x86 | 0x87)
 }
 
-pub(crate) fn read_config<P: PortIo>(io: &mut P, probing: bool) -> Result<ChipConfig, HwError> {
-    with_config_space(
-        io,
-        CONFIG_PORT,
-        &ENTER_SEQUENCE,
-        |space| {
-            let chip_id = space.read_word(CHIP_ID_REG)?;
-            let chip = match chip_matching(|chip| chip.matches_ite(chip_id)) {
-                Some(chip) => chip,
-                None if matches!(chip_id, 0x0000 | 0xFFFF) => {
-                    return Err(HwError::ChipNotFound(chip_id));
-                }
-                None if is_ite_id(chip_id) || !probing => {
-                    return Err(HwError::UnsupportedChip(chip_id));
-                }
-                None => return Err(HwError::NotIte(chip_id)),
+fn with_slot_config<P: PortIo, T>(
+    io: &mut P,
+    slot: Slot,
+    action: impl FnOnce(&mut ConfigSpace<'_, P>) -> Result<T, HwError>,
+) -> Result<T, HwError> {
+    match slot {
+        Slot::Primary => with_config_space(io, CONFIG_PORT, &ENTER_SEQUENCE, action, exit_config),
+        Slot::Secondary => {
+            let port = slot.config_port();
+            let entered = with_config_space(
+                io,
+                port,
+                &[],
+                |space| space.read_word(CHIP_ID_REG),
+                |_, _| Ok(()),
+            )? != NO_CHIP;
+            let enter: &[u8] = if entered {
+                &[]
+            } else {
+                &SECONDARY_ENTER_SEQUENCE
             };
-            let version = space.read(CHIP_VERSION_REG)? & 0x0F;
-            space.io.find_bars()?;
-            space.select(EC_LDN)?;
-            let base_address = space.read_base_address()?;
-            let wiring = match &chip.map {
-                ChipMap::Ite(map) => pinmux::ite_wiring(space, map.pinmux, map.fans)?,
-                ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Wiring::ALL,
-            };
-            Ok(ChipConfig {
-                chip,
-                slot: Slot::Primary,
-                chip_id,
-                version,
-                base_address,
-                wiring,
-            })
-        },
-        exit_config,
-    )
+            with_config_space(io, port, enter, action, |_, _| Ok(()))
+        }
+    }
+}
+
+fn second_chip_id(chip_id: u16) -> Result<u16, HwError> {
+    if chip_id == REENTERED_IT8792E {
+        tracing::debug!(
+            "the chip on 0x4E reports 0x8883 (an IT8792E entered twice); leaving it alone"
+        );
+    }
+    if SECOND_CHIP_IDS.contains(&chip_id) {
+        Ok(chip_id)
+    } else {
+        Err(HwError::ChipNotFound(chip_id))
+    }
+}
+
+pub(crate) fn read_config<P: PortIo>(
+    io: &mut P,
+    slot: Slot,
+    probing: bool,
+) -> Result<ChipConfig, HwError> {
+    with_slot_config(io, slot, |space| {
+        let chip_id = space.read_word(CHIP_ID_REG)?;
+        let chip_id = match slot {
+            Slot::Primary => chip_id,
+            Slot::Secondary => second_chip_id(chip_id)?,
+        };
+        let chip = match chip_matching(|chip| chip.matches_ite(chip_id)) {
+            Some(chip) => chip,
+            None if matches!(chip_id, 0x0000 | 0xFFFF) => {
+                return Err(HwError::ChipNotFound(chip_id));
+            }
+            None if is_ite_id(chip_id) || !probing => {
+                return Err(HwError::UnsupportedChip(chip_id));
+            }
+            None => return Err(HwError::NotIte(chip_id)),
+        };
+        let version = space.read(CHIP_VERSION_REG)? & 0x0F;
+        space.io.find_bars()?;
+        space.select(EC_LDN)?;
+        let base_address = space.read_base_address()?;
+        let wiring = match &chip.map {
+            ChipMap::Ite(map) => pinmux::ite_wiring(space, map.pinmux, map.fans)?,
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Wiring::ALL,
+        };
+        Ok(ChipConfig {
+            chip,
+            slot,
+            chip_id,
+            version,
+            base_address,
+            wiring,
+        })
+    })
 }
 
 struct Ec<'a, P: PortIo> {
@@ -320,13 +365,9 @@ pub(crate) fn dump<P: PortIo>(
 ) -> Result<RegisterDump, HwError> {
     let (global_config, ec_ldn_config) = {
         let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-        with_config_space(
-            io,
-            CONFIG_PORT,
-            &ENTER_SEQUENCE,
-            |space| space.dump(EC_LDN, &EC_LDN_DUMP_REGS),
-            exit_config,
-        )?
+        with_slot_config(io, config.slot, |space| {
+            space.dump(EC_LDN, &EC_LDN_DUMP_REGS)
+        })?
     };
 
     let bank_register = {
@@ -425,6 +466,8 @@ pub mod fake {
     #[derive(Debug, Clone)]
     pub struct FakeIte {
         pub chip_id: u16,
+        pub port: u16,
+        pub key: [u8; 4],
         pub base: u16,
         pub config_mode: bool,
         pub enter_progress: usize,
@@ -462,6 +505,8 @@ pub mod fake {
             }
             Self {
                 chip_id: IT8655E_ID,
+                port: CONFIG_PORT,
+                key: ENTER_SEQUENCE,
                 base: 0x290,
                 config_mode: false,
                 enter_progress: 0,
@@ -478,6 +523,15 @@ pub mod fake {
                 echo_index: true,
                 exits: 0,
                 writes: Vec::new(),
+            }
+        }
+
+        pub fn second(chip_id: u16) -> Self {
+            Self {
+                port: 0x4E,
+                key: SECONDARY_ENTER_SEQUENCE,
+                base: 0x2A0,
+                ..Self::chip(chip_id)
             }
         }
 
@@ -532,7 +586,7 @@ pub mod fake {
                 return Err(HwError::ReadNotAcknowledged(self.ec_index));
             }
             Ok(match port {
-                0x2F if self.config_mode => match self.config_index {
+                p if p == self.port + 1 && self.config_mode => match self.config_index {
                     0x20 => (self.chip_id >> 8) as u8,
                     0x21 => self.chip_id as u8,
                     0x22 => 0x01,
@@ -542,7 +596,7 @@ pub mod fake {
                     index if self.ldn == 0x07 => self.pins[usize::from(index)],
                     _ => 0,
                 },
-                0x2F => 0xFF,
+                p if p == self.port + 1 => 0xFF,
                 p if p == self.base + ADDRESS_PORT_OFFSET => {
                     if self.echo_index {
                         self.ec_index
@@ -565,26 +619,26 @@ pub mod fake {
             if self.offline || (self.is_ec_port(port) && !self.bars_found) {
                 return Err(HwError::AccessDenied);
             }
-            let index = if port == 0x2F {
+            let index = if port == self.port + 1 {
                 self.config_index
             } else {
                 self.ec_index
             };
             self.writes.push((port, value, index));
             match port {
-                CONFIG_PORT if self.config_mode => self.config_index = value,
-                CONFIG_PORT => {
-                    if value == ENTER_SEQUENCE[self.enter_progress] {
+                p if p == self.port && self.config_mode => self.config_index = value,
+                p if p == self.port => {
+                    if value == self.key[self.enter_progress] {
                         self.enter_progress += 1;
                     } else {
-                        self.enter_progress = usize::from(value == ENTER_SEQUENCE[0]);
+                        self.enter_progress = usize::from(value == self.key[0]);
                     }
-                    if self.enter_progress == ENTER_SEQUENCE.len() {
+                    if self.enter_progress == self.key.len() {
                         self.config_mode = true;
                         self.enter_progress = 0;
                     }
                 }
-                0x2F if self.config_mode => match self.config_index {
+                p if p == self.port + 1 && self.config_mode => match self.config_index {
                     0x07 => self.ldn = value,
                     CONFIG_CONTROL_REG if value & CONFIG_EXIT_VALUE != 0 => {
                         self.config_mode = false;
@@ -707,7 +761,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::UnsupportedChip(0x8613))
         ));
         assert!(!io.config_mode);
@@ -717,7 +771,7 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::ChipNotFound(0xFFFF))
         ));
     }
@@ -729,12 +783,123 @@ mod tests {
             ..FakeIte::new()
         };
         assert!(matches!(
-            read_config(&mut io, true),
+            read_config(&mut io, Slot::Primary, true),
             Err(HwError::NotIte(0xD42B))
         ));
         assert!(io.config_mode);
         assert_eq!(io.exits, 0);
         assert!(io.writes.iter().all(|&(port, ..)| port == CONFIG_PORT));
+    }
+
+    fn config_writes(fake: &FakeIte, port: u16) -> Vec<u8> {
+        fake.writes
+            .iter()
+            .filter(|(written, ..)| *written == port)
+            .map(|&(_, value, _)| value)
+            .collect()
+    }
+
+    #[test]
+    fn a_second_chip_on_4e_is_entered_with_its_own_key_and_never_exited() {
+        let mut chip = SuperIo::probe_second(FakeIte::second(0x8733), lock("second")).unwrap();
+        assert_eq!(chip.chip().name, "ITE IT8792E");
+        assert_eq!(chip.config().slot, Slot::Secondary);
+        assert_eq!(chip.config().base_address, 0x2A0);
+        assert!(!chip.fan_control());
+        assert_eq!(chip.read().unwrap().rpm.len(), 3);
+        chip.reinitialize().unwrap();
+        chip.dump().unwrap();
+        assert!(chip.io.config_mode);
+        assert_eq!(chip.io.exits, 0);
+        assert!(
+            chip.io
+                .writes
+                .iter()
+                .all(|&(port, ..)| port != CONFIG_PORT && port != CONFIG_PORT + 1)
+        );
+        assert_eq!(&config_writes(&chip.io, 0x4E)[..2], &[0x20, 0x21]);
+        assert_eq!(
+            config_writes(&chip.io, 0x4E)
+                .windows(4)
+                .filter(|window| *window == SECONDARY_ENTER_SEQUENCE)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_second_chip_already_in_config_mode_is_not_entered_again() {
+        let mut fake = FakeIte::second(0x8695);
+        fake.config_mode = true;
+        let chip = SuperIo::attach_second(fake, lock("second-entered")).unwrap();
+        assert_eq!(chip.chip().name, "ITE IT87952E");
+        assert!(!config_writes(&chip.io, 0x4E).contains(&0x87));
+        assert_eq!(chip.io.exits, 0);
+    }
+
+    #[test]
+    fn only_the_second_chip_ids_are_taken_from_4e() {
+        for chip_id in [0x8883, 0x8686, 0xD42B, 0xFFFF] {
+            let mut fake = FakeIte::second(chip_id);
+            assert!(
+                matches!(
+                    read_config(&mut fake, Slot::Secondary, true),
+                    Err(HwError::ChipNotFound(found)) if found == chip_id
+                ),
+                "{chip_id:#06x}"
+            );
+            assert_eq!(fake.exits, 0);
+            assert!(!fake.bars_found);
+        }
+    }
+
+    #[test]
+    fn a_second_chip_is_looked_for_only_beside_a_primary_ite_and_never_as_an_alias() {
+        let primary = probe(FakeIte::chip(0x8689), "second-primary").config();
+        let found = crate::superio::detect_second(
+            &primary,
+            |_| Ok(FakeIte::second(0x8733)),
+            || Ok(lock("second-found")),
+            true,
+        );
+        assert_eq!(found.map(|chip| chip.chip().name), Some("ITE IT8792E"));
+
+        let alias = crate::superio::detect_second(
+            &primary,
+            |_| {
+                Ok(FakeIte {
+                    base: 0x290,
+                    ..FakeIte::second(0x8733)
+                })
+            },
+            || Ok(lock("second-alias")),
+            true,
+        );
+        assert!(alias.is_none());
+
+        let nuvoton = ChipConfig {
+            chip: chip_matching(|chip| chip.matches_nuvoton(0xD4, 0x2B)).unwrap(),
+            ..primary
+        };
+        let opened = std::cell::Cell::new(false);
+        let none = crate::superio::detect_second::<FakeIte>(
+            &nuvoton,
+            |_| {
+                opened.set(true);
+                Err(HwError::AccessDenied)
+            },
+            || Ok(lock("second-nuvoton")),
+            true,
+        );
+        assert!(none.is_none() && !opened.get());
+
+        let empty = crate::superio::detect_second(
+            &primary,
+            |_| Ok(FakeIte::second(0xFFFF)),
+            || Ok(lock("second-empty")),
+            true,
+        );
+        assert!(empty.is_none());
     }
 
     #[test]
@@ -746,7 +911,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    read_config(&mut io, true),
+                    read_config(&mut io, Slot::Primary, true),
                     Err(HwError::InvalidBaseAddress { .. })
                 ),
                 "base {base:#x}"
