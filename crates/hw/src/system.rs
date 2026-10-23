@@ -151,6 +151,7 @@ impl<P: PortIo> Hardware<P> {
             chip_id: self.chip.config().chip_id,
             chip_name: self.chip.chip().name.to_owned(),
             fan_control: self.chip.fan_control(),
+            pwm_misconfigured: self.chip.pwm_misconfigured(),
             fan_headers: self.chip.fan_count(),
             likely_cpu_fan: Some(FanId::for_channel(0)),
         }

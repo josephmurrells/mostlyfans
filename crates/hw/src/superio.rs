@@ -338,6 +338,10 @@ impl<P: PortIo> SuperIo<P> {
         self.config.chip.fan_control && self.usable
     }
 
+    pub fn pwm_misconfigured(&self) -> bool {
+        self.config.chip.fan_control && !self.usable
+    }
+
     pub fn can_release(&self) -> bool {
         self.config.chip.fan_control
     }
@@ -429,6 +433,13 @@ impl<P: PortIo> SuperIo<P> {
             return Ok(());
         }
         self.transaction(|session| session.restore(channel, saved))
+    }
+
+    pub fn pwm_configured(&mut self) -> Result<bool, HwError> {
+        match &self.config.chip.map {
+            ChipMap::Ite(map) => ite::pwm_configured(&mut self.io, &self.lock, &self.config, map),
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Ok(true),
+        }
     }
 
     pub fn io_space_locked(&mut self) -> Result<bool, HwError> {
