@@ -449,6 +449,16 @@ fn render_screenshots() {
     let mut harness = harness_with(shell(&link, Page::Overview), SIZE, Theme::Dark);
     screenshot(&mut harness, &dir, "stopped-dark");
 
+    for width in [760.0, 1080.0] {
+        let link = FakeLink::new(fixtures::state());
+        let mut harness = harness_with(
+            shell(&link, Page::Settings),
+            vec2(width, 1500.0),
+            Theme::Dark,
+        );
+        screenshot(&mut harness, &dir, &format!("settings-full-{width}-dark"));
+    }
+
     let link = FakeLink::new(fixtures::state());
     let mut harness = harness_with(shell(&link, Page::Fans), vec2(760.0, 600.0), Theme::Light);
     screenshot(&mut harness, &dir, "compact-light");

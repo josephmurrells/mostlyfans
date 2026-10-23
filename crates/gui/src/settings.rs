@@ -19,6 +19,8 @@ use crate::widgets::{self, Segment};
 
 type AutostartOutcome = (AutostartState, Option<String>);
 
+const SAFETY_LABEL_WIDTH: f32 = 180.0;
+
 #[derive(Debug)]
 pub struct AutostartPanel {
     state: AutostartState,
@@ -448,128 +450,140 @@ fn safety(ui: &mut egui::Ui, state: &ControlState, draft: &mut Config) -> bool {
     ui.add_space(SPACE_S);
     let failure = failure_time(draft);
     let safety = &mut draft.safety;
-    egui::Grid::new("safety")
-        .num_columns(2)
-        .spacing(vec2(SPACE_M * 2.0, SPACE_M))
-        .show(ui, |ui| {
-            let label = ui.label("Safety sensor");
-            let selected = state
-                .readings
-                .sensors
-                .iter()
-                .find(|sensor| sensor.id == safety.critical_sensor)
-                .map_or_else(
-                    || safety.critical_sensor.to_string(),
-                    |sensor| sensor.label.clone(),
-                );
-            ComboBox::from_id_salt("critical-sensor")
-                .selected_text(selected)
-                .width(200.0)
-                .show_ui(ui, |ui| {
-                    for sensor in state
-                        .readings
-                        .sensors
-                        .iter()
-                        .filter(|sensor| !sensor.id.is_display_only())
+    safety_grid("safety-sensor").show(ui, |ui| {
+        let label = ui.label("Safety sensor");
+        let selected = state
+            .readings
+            .sensors
+            .iter()
+            .find(|sensor| sensor.id == safety.critical_sensor)
+            .map_or_else(
+                || safety.critical_sensor.to_string(),
+                |sensor| sensor.label.clone(),
+            );
+        ComboBox::from_id_salt("critical-sensor")
+            .selected_text(selected)
+            .width(200.0)
+            .show_ui(ui, |ui| {
+                for sensor in state
+                    .readings
+                    .sensors
+                    .iter()
+                    .filter(|sensor| !sensor.id.is_display_only())
+                {
+                    let label = format!("{}  ({})", sensor.label, format::celsius(sensor.celsius));
+                    if ui
+                        .selectable_label(sensor.id == safety.critical_sensor, label)
+                        .clicked()
                     {
-                        let label =
-                            format!("{}  ({})", sensor.label, format::celsius(sensor.celsius));
-                        if ui
-                            .selectable_label(sensor.id == safety.critical_sensor, label)
-                            .clicked()
-                        {
-                            safety.critical_sensor = sensor.id.clone();
-                            changed = true;
-                        }
+                        safety.critical_sensor = sensor.id.clone();
+                        changed = true;
                     }
-                })
-                .response
-                .labelled_by(label.id);
-            ui.end_row();
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        ui.end_row();
+    });
+    ui.add_space(SPACE_M);
+    changed |= ui
+        .checkbox(
+            &mut safety.critical_enabled,
+            "Critical temperature override: all fans to 100% when it gets too hot",
+        )
+        .changed();
+    ui.add_space(SPACE_M);
 
-            ui.label("");
-            changed |= ui
-                .checkbox(
-                    &mut safety.critical_enabled,
-                    "Critical temperature override: all fans to 100% when it gets too hot",
-                )
-                .changed();
-            ui.end_row();
+    let critical = safety.critical_enabled;
+    let releasing = critical || safety.sensor_fallback_enabled;
+    safety_grid("safety-critical").show(ui, |ui| {
+        let label = ui.label("Full speed at");
+        changed |= ui
+            .add_enabled(
+                critical,
+                Slider::new(&mut safety.critical_c, 40.0..=110.0)
+                    .suffix(" °C")
+                    .fixed_decimals(1)
+                    .clamping(SliderClamping::Edits),
+            )
+            .labelled_by(label.id)
+            .changed();
+        ui.end_row();
 
-            let critical = safety.critical_enabled;
-            let releasing = critical || safety.sensor_fallback_enabled;
-            let label = ui.label("Full speed at");
+        let label = ui.label("Back to normal below");
+        let max_release = safety.critical_c - 1.0;
+        changed |= ui
+            .add_enabled(
+                releasing,
+                Slider::new(&mut safety.release_c, 0.0..=max_release)
+                    .suffix(" °C")
+                    .fixed_decimals(1)
+                    .clamping(SliderClamping::Edits),
+            )
+            .labelled_by(label.id)
+            .changed();
+        ui.end_row();
+
+        let label = ui.label("for at least");
+        changed |= ui
+            .add_enabled(
+                releasing,
+                DragValue::new(&mut safety.release_hold_secs)
+                    .range(0.0..=600.0)
+                    .speed(0.5)
+                    .suffix(" s"),
+            )
+            .labelled_by(label.id)
+            .changed();
+        ui.end_row();
+    });
+    ui.add_space(SPACE_M);
+    changed |= ui
+        .checkbox(
+            &mut safety.sensor_fallback_enabled,
+            "Missing-sensor fallback: fans go to 100% when their sensor stops reporting",
+        )
+        .changed();
+    ui.add_space(SPACE_M);
+
+    safety_grid("safety-missing").show(ui, |ui| {
+        let label = ui.label("Missing sensor readings");
+        ui.horizontal(|ui| {
             changed |= ui
-                .add_enabled(
-                    critical,
-                    Slider::new(&mut safety.critical_c, 40.0..=110.0)
-                        .suffix(" °C")
-                        .fixed_decimals(1)
-                        .clamping(SliderClamping::Edits),
-                )
+                .add(DragValue::new(&mut safety.sensor_failure_ticks).range(1..=60))
                 .labelled_by(label.id)
                 .changed();
-            ui.end_row();
-
-            let label = ui.label("Back to normal below");
-            let max_release = safety.critical_c - 1.0;
-            changed |= ui
-                .add_enabled(
-                    releasing,
-                    Slider::new(&mut safety.release_c, 0.0..=max_release)
-                        .suffix(" °C")
-                        .fixed_decimals(1)
-                        .clamping(SliderClamping::Edits),
-                )
-                .labelled_by(label.id)
-                .changed();
-            ui.end_row();
-
-            let label = ui.label("for at least");
-            changed |= ui
-                .add_enabled(
-                    releasing,
-                    DragValue::new(&mut safety.release_hold_secs)
-                        .range(0.0..=600.0)
-                        .speed(0.5)
-                        .suffix(" s"),
-                )
-                .labelled_by(label.id)
-                .changed();
-            ui.end_row();
-
-            ui.label("");
-            changed |= ui
-                .checkbox(
-                    &mut safety.sensor_fallback_enabled,
-                    "Missing-sensor fallback: fans go to 100% when their sensor stops reporting",
-                )
-                .changed();
-            ui.end_row();
-
-            let consequence = if safety.sensor_fallback_enabled {
-                "then the fan goes to 100% (every fan, for the safety sensor), until it reads below the normal temperature again for the hold time"
-            } else {
-                "then the fan goes back to BIOS control; a lost safety sensor only raises a warning"
-            };
-            let label = ui.label("Missing sensor readings");
-            ui.horizontal(|ui| {
-                changed |= ui
-                    .add(DragValue::new(&mut safety.sensor_failure_ticks).range(1..=60))
-                    .labelled_by(label.id)
-                    .changed();
-                ui.label(widgets::caption(
-                    ui,
-                    format!("readings ≈ {failure:.1} s at the current interval, {consequence}"),
-                ));
-            });
-            ui.end_row();
+            ui.label(widgets::caption(
+                ui,
+                format!("readings ≈ {failure:.1} s at the current interval"),
+            ));
         });
+        ui.end_row();
+    });
+    ui.add_space(SPACE_S);
+    let missed = safety.sensor_failure_ticks;
+    let consequence = if safety.sensor_fallback_enabled {
+        format!(
+            "When a sensor misses {missed} readings in a row, its fans go to 100% (every fan, for the safety sensor) until it reads below the normal temperature again for the hold time."
+        )
+    } else {
+        format!(
+            "When a sensor misses {missed} readings in a row, its fans go back to BIOS control; a lost safety sensor only raises a warning."
+        )
+    };
+    ui.label(widgets::caption(ui, consequence));
     if safety.release_c >= safety.critical_c {
         safety.release_c = safety.critical_c - 1.0;
         changed = true;
     }
     changed
+}
+
+fn safety_grid(id: &str) -> egui::Grid {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .min_col_width(SAFETY_LABEL_WIDTH)
+        .spacing(vec2(SPACE_M * 2.0, SPACE_M))
 }
 
 fn about(ui: &mut egui::Ui, state: &ControlState) {
