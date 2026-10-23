@@ -415,6 +415,25 @@ pub(crate) fn dump<P: PortIo>(
     })
 }
 
+const SMFI_LDN: u8 = 0x0F;
+const LDN_ACTIVE_REG: u8 = 0x30;
+
+pub(crate) fn smfi_active<P: PortIo>(
+    io: &mut P,
+    lock: &BusLock,
+    config: &ChipConfig,
+) -> Result<bool, HwError> {
+    let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
+    with_slot_config(io, config.slot, |space| {
+        space.select(SMFI_LDN)?;
+        let first = space.read(LDN_ACTIVE_REG)?;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let second = space.read(LDN_ACTIVE_REG)?;
+        space.select(EC_LDN)?;
+        Ok(first == second && first != 0)
+    })
+}
+
 pub(crate) fn pwm_configured<P: PortIo>(
     io: &mut P,
     lock: &BusLock,
@@ -477,6 +496,7 @@ pub mod fake {
         pub config_index: u8,
         pub ldn: u8,
         pub pins: [u8; 256],
+        pub smfi_active: bool,
         pub bars_found: bool,
         pub ec_index: u8,
         pub bank_register: u8,
@@ -516,6 +536,7 @@ pub mod fake {
                 config_index: 0,
                 ldn: 0,
                 pins,
+                smfi_active: false,
                 bars_found: false,
                 ec_index: 0,
                 bank_register: 0,
@@ -595,6 +616,7 @@ pub mod fake {
                     0x22 => 0x01,
                     0x60 if self.ldn == EC_LDN => (self.base >> 8) as u8,
                     0x61 if self.ldn == EC_LDN => self.base as u8,
+                    0x30 if self.ldn == 0x0F => u8::from(self.smfi_active),
                     index @ 0x23..=0x2F => self.pins[usize::from(index)],
                     index if self.ldn == 0x07 => self.pins[usize::from(index)],
                     _ => 0,
@@ -810,7 +832,7 @@ mod tests {
         assert_eq!(chip.chip().name, "ITE IT8792E");
         assert_eq!(chip.config().slot, Slot::Secondary);
         assert_eq!(chip.config().base_address, 0x2A0);
-        assert!(!chip.fan_control());
+        assert!(chip.fan_control());
         assert_eq!(chip.read().unwrap().rpm.len(), 3);
         chip.reinitialize().unwrap();
         chip.dump().unwrap();

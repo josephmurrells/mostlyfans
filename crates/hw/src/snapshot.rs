@@ -19,8 +19,19 @@ pub struct BiosSnapshot {
     pub channels: BTreeMap<FanId, ChannelState>,
     #[serde(default)]
     pub owned: BTreeSet<FanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smartfan: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smartfan_route: Option<SmartfanRoute>,
     #[serde(skip)]
     pub lost: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmartfanRoute {
+    Smfi,
+    Ecio,
 }
 
 fn default_chip_id() -> u16 {
@@ -43,6 +54,8 @@ impl BiosSnapshot {
             chip_id,
             channels: BTreeMap::new(),
             owned: BTreeSet::new(),
+            smartfan: None,
+            smartfan_route: None,
             lost: false,
         }
     }

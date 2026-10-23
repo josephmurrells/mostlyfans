@@ -77,6 +77,8 @@ pub struct ChipInfo {
     #[serde(default)]
     pub pwm_misconfigured: bool,
     pub fan_headers: usize,
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 pub fn chip_label(chip_name: &str) -> &str {

@@ -154,7 +154,7 @@ impl BridgeState {
     }
 }
 
-pub trait Bridge {
+pub trait Bridge: std::fmt::Debug + Send {
     fn second_window(&mut self) -> Result<Option<u64>, HwError>;
     fn current_state(&mut self) -> Result<BridgeState, HwError>;
     fn set_state(&mut self, state: BridgeState) -> Result<(), HwError>;
@@ -231,7 +231,19 @@ impl Bridge for IsaBridge {
     }
 }
 
-pub fn with_window<B: Bridge, T>(
+pub struct Window<'a>(pub &'a mut dyn Bridge);
+
+impl H2Ram for Window<'_> {
+    fn read(&mut self, offset: u16, _deadline: Instant) -> Result<u8, HwError> {
+        self.0.read_byte(offset)
+    }
+
+    fn write(&mut self, offset: u16, value: u8, _deadline: Instant) -> Result<(), HwError> {
+        self.0.write_byte(offset, value)
+    }
+}
+
+pub fn with_window<B: Bridge + ?Sized, T>(
     bridge: &mut B,
     action: impl FnOnce(&mut B) -> Result<T, HwError>,
 ) -> Result<T, HwError> {
@@ -250,7 +262,7 @@ pub fn with_window<B: Bridge, T>(
     Ok(value)
 }
 
-pub fn smfi_present<B: Bridge>(bridge: &mut B) -> Result<bool, HwError> {
+pub fn smfi_present<B: Bridge + ?Sized>(bridge: &mut B) -> Result<bool, HwError> {
     if bridge.second_window()?.is_none() {
         return Ok(false);
     }

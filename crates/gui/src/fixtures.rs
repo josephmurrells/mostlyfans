@@ -205,6 +205,7 @@ pub fn with_second_chip(mut state: ControlState) -> ControlState {
                 fan_control: board.fan_control,
                 pwm_misconfigured: false,
                 fan_headers: board.fan_headers,
+                note: None,
             },
             fanforge_core::board::ChipInfo {
                 chip_id: 0x8733,
@@ -212,6 +213,7 @@ pub fn with_second_chip(mut state: ControlState) -> ControlState {
                 fan_control: false,
                 pwm_misconfigured: false,
                 fan_headers: 3,
+                note: None,
             },
         ];
     }
