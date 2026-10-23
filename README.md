@@ -49,7 +49,7 @@ MostlyFans is built so a mistake, a crash or a bad setting can't leave your PC w
 - **Failed sensors:** if a sensor a curve uses stops reporting, that fan goes to full speed. If the safety sensor stops, every fan does.
 - **Fans that don't follow:** if a motherboard fan stops while MostlyFans asks it to spin, MostlyFans runs it at full speed for 2 seconds, then hands it back to the BIOS and shows why. It does the same, without the full-speed burst, when a fan's speed doesn't change with its duty (for example a 3-pin fan on a PWM header, or a pump). Fix the cause, then press **Try again**. For a pump or a fixed-speed fan, turn off **Response check** in that fan's **Advanced** settings.
 - **Back to BIOS control:** when you quit, sign out, shut down or sleep, or if MostlyFans crashes or is stopped with **End task** in Task Manager, every fan goes back to your BIOS fan settings, and graphics card fans go back to the driver. A small watchdog process handles this even if the main app is killed. The one exception is Task Manager's **End process tree**, which stops the watchdog too: fans then stay at their last speed, never below their minimum, until MostlyFans next starts (or, for graphics card fans, until the PC restarts).
-- **Other fan tools:** if FanControl, SpeedFan, Argus Monitor, Fan Xpert, AI Suite 3 or Armoury Crate (or an old FanForge build) is running, MostlyFans only monitors and never touches the fans, so the two can't fight. If MSI Afterburner, EVGA Precision X1 or ASUS GPU Tweak III is running, only the graphics card fans are left alone. A graphics card fan that another program has already set to a manual speed is never taken over.
+- **Other fan tools:** if FanControl, SpeedFan, Argus Monitor, Fan Xpert, AI Suite 3 or Armoury Crate is running, MostlyFans only monitors and never touches the fans, so the two can't fight. If MSI Afterburner, EVGA Precision X1 or ASUS GPU Tweak III is running, only the graphics card fans are left alone. A graphics card fan that another program has already set to a manual speed is never taken over.
 
 To pause fan control without quitting, turn on **Monitor only** in Settings or the tray menu. Every fan goes back to the BIOS (and graphics card fans to the driver) while MostlyFans keeps showing temperatures and speeds, and the safety overrides don't act, just as if MostlyFans were closed. **Resume control** in the notice turns it off again, and so does restarting MostlyFans.
 
@@ -99,13 +99,12 @@ To see which chip you have, open **Settings → About → Fan controller**. Head
 
 Quit MostlyFans from the tray, replace `mostlyfans.exe` with the new one, and run it once. If **Start with Windows** is on, its copy updates itself.
 
-**Coming from FanForge:** MostlyFans keeps its settings in a new folder and doesn't take over FanForge's.
+**Coming from FanForge:** MostlyFans keeps its settings in a new folder and doesn't take over FanForge's. The two never run at the same time: whichever starts second refuses to start.
 
 1. In FanForge, turn off **Start with Windows** in Settings, then quit it from the tray.
-2. To keep your fan names, curves and profiles, copy `config.toml` from `C:\ProgramData\FanForge` to `C:\ProgramData\MostlyFans` (create the folder) before you first start MostlyFans.
-3. Delete `fanforge.exe`, and optionally `C:\ProgramData\FanForge` and `C:\Program Files\FanForge`.
-
-If FanForge is still running, MostlyFans only monitors until it closes.
+2. Start MostlyFans once, then quit it from the tray. This creates `C:\ProgramData\MostlyFans` with the right permissions; don't create the folder yourself, or MostlyFans refuses to start.
+3. To keep your fan names, curves and profiles, copy everything in `C:\ProgramData\FanForge` except the `logs` folder into `C:\ProgramData\MostlyFans`, replacing the files there. Explorer asks for administrator permission. The Overview pins go back to automatic.
+4. Delete `fanforge.exe`, and optionally `C:\ProgramData\FanForge` and `C:\Program Files\FanForge`.
 
 ## Uninstalling
 

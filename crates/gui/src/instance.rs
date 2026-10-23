@@ -5,16 +5,18 @@ use std::time::Duration;
 
 use eframe::egui;
 use mostlyfans_control::controller::{DIRECT_RELEASE_BUDGET, QUIT_WAIT};
-use mostlyfans_win::paths::INSTANCE_MUTEX;
+use mostlyfans_win::paths::{INSTANCE_MUTEX, OLD_INSTANCE_MUTEX};
 use mostlyfans_win::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
 
 use crate::tray::reveal;
 
 const EXIT_MARGIN: Duration = Duration::from_secs(4);
 const SHOW_POLL: Duration = Duration::from_millis(250);
+const OLD_BUILD_RUNNING: &str = "FanForge, the old name of MostlyFans, is running. Turn off its Start with Windows, quit it from the tray, then start MostlyFans again.";
 
 pub struct Instance {
     _mutex: InstanceMutex,
+    _old_mutex: InstanceMutex,
     show: ShowGate,
 }
 
@@ -43,9 +45,19 @@ fn refused(error: &io::Error) -> Claim {
 }
 
 fn primary(mutex: InstanceMutex) -> Claim {
+    let old_mutex = match InstanceMutex::create(OLD_INSTANCE_MUTEX, ADMIN_ONLY_SDDL) {
+        Ok(old_mutex) => old_mutex,
+        Err(error) => return refused(&error),
+    };
+    match old_mutex.acquire(Duration::ZERO) {
+        Ok(true) => {}
+        Ok(false) => return Claim::Refused(OLD_BUILD_RUNNING.to_owned()),
+        Err(error) => return refused(&error),
+    }
     match show_event_name().and_then(|name| Event::create(&name, ADMIN_ONLY_SDDL)) {
         Ok(show) => Claim::Primary(Instance {
             _mutex: mutex,
+            _old_mutex: old_mutex,
             show: ShowGate(Arc::new(Mutex::new(Some(show)))),
         }),
         Err(error) => refused(&error),

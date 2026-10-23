@@ -85,7 +85,7 @@ fn offer_legacy_removal() {
     }
     let remove = message_box(
         TITLE,
-        "The old MostlyFans service is installed. It would fight this app over the fans.\n\nRemove it now?\n\nIf you choose No, MostlyFans only monitors and leaves the fans to the BIOS.",
+        "The old FanForge service is installed. It would fight this app over the fans.\n\nRemove it now?\n\nIf you choose No, MostlyFans only monitors and leaves the fans to the BIOS.",
         DialogKind::Question,
     );
     if !remove {
