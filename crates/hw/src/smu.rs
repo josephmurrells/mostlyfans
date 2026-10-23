@@ -52,44 +52,70 @@ const CODE_NAMES: [&str; 42] = [
     "BristolRidge",
     "StoneyRidge",
 ];
-const CORE_TEMP_LAYOUTS: [CoreTempLayout; 6] = [
+pub const CCD_FUSE: u32 = 0x0005_D218;
+const CCD_ENABLE_SHIFT: u32 = 22;
+const CORE_FUSE_BASE: u32 = 0x3008_1800;
+const CORE_FUSE_CCD_STRIDE: u32 = 0x0200_0000;
+const MATISSE_FUSES: CoreMap = CoreMap::Fuses { offset: 0x238 };
+const VERMEER_FUSES: CoreMap = CoreMap::Fuses { offset: 0x598 };
+const CEZANNE_FIELDS: CoreMap = CoreMap::IdleFields(&[200, 208, 224, 232, 240, 248, 256, 264, 296]);
+const CORE_TEMP_LAYOUTS: [CoreTempLayout; 7] = [
     CoreTempLayout {
         version: 0x0024_0803,
         offset: 179,
         cores: 16,
+        map: MATISSE_FUSES,
     },
     CoreTempLayout {
         version: 0x0024_0903,
         offset: 163,
         cores: 8,
+        map: MATISSE_FUSES,
     },
     CoreTempLayout {
         version: 0x0038_0804,
         offset: 201,
         cores: 16,
+        map: VERMEER_FUSES,
     },
     CoreTempLayout {
         version: 0x0038_0805,
         offset: 204,
         cores: 16,
+        map: VERMEER_FUSES,
     },
     CoreTempLayout {
         version: 0x0038_0904,
         offset: 185,
         cores: 8,
+        map: VERMEER_FUSES,
     },
     CoreTempLayout {
         version: 0x0038_0905,
         offset: 188,
         cores: 8,
+        map: VERMEER_FUSES,
+    },
+    CoreTempLayout {
+        version: 0x0040_0005,
+        offset: 216,
+        cores: 8,
+        map: CEZANNE_FIELDS,
     },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreMap {
+    Fuses { offset: u32 },
+    IdleFields(&'static [usize]),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoreTempLayout {
     pub version: u32,
     pub offset: usize,
     pub cores: usize,
+    pub map: CoreMap,
 }
 
 impl CoreTempLayout {
@@ -99,20 +125,64 @@ impl CoreTempLayout {
             .find(|layout| layout.version == version)
     }
 
-    pub fn core_temps(&self, table: &[f32]) -> Option<Vec<CoreTemp>> {
-        let slots = table.get(self.offset..self.offset + self.cores)?;
-        Some(
-            slots
-                .iter()
-                .enumerate()
-                .map(|(core, &celsius)| CoreTemp {
+    pub fn all_slots(&self) -> Vec<usize> {
+        (0..self.cores).collect()
+    }
+
+    pub fn ccds(&self) -> usize {
+        self.cores.div_ceil(CORES_PER_CCD)
+    }
+
+    pub fn core_temps(&self, table: &[f32], slots: &[usize]) -> Option<Vec<CoreTemp>> {
+        slots
+            .iter()
+            .enumerate()
+            .map(|(core, &slot)| {
+                let celsius = *table
+                    .get(self.offset + slot)
+                    .filter(|_| slot < self.cores)?;
+                Some(CoreTemp {
                     core,
-                    ccd: core / CORES_PER_CCD + 1,
+                    ccd: slot / CORES_PER_CCD + 1,
                     celsius,
                 })
-                .collect(),
-        )
+            })
+            .collect()
     }
+
+    pub fn active_slots(&self, table: &[f32], fields: &[usize]) -> Option<Vec<usize>> {
+        let mut slots = Vec::new();
+        for slot in 0..self.cores {
+            let mut values = fields.iter().map(|field| table.get(field + slot).copied());
+            let active = values.try_fold(false, |active, value| Some(active || value? != 0.0))?;
+            if active {
+                slots.push(slot);
+            }
+        }
+        Some(slots)
+    }
+}
+
+pub fn core_fuse_addresses(offset: u32, ccd_fuse: u32, ccds: usize) -> Vec<Option<u32>> {
+    let enabled = ccd_fuse >> CCD_ENABLE_SHIFT;
+    (0..ccds as u32)
+        .map(|ccd| {
+            (enabled & (1 << ccd) != 0)
+                .then(|| (CORE_FUSE_BASE + offset) | (ccd * CORE_FUSE_CCD_STRIDE))
+        })
+        .collect()
+}
+
+pub fn fused_slots(core_fuses: &[Option<u32>]) -> Vec<usize> {
+    core_fuses
+        .iter()
+        .enumerate()
+        .flat_map(|(ccd, fuse)| {
+            (0..CORES_PER_CCD)
+                .filter(move |core| fuse.is_some_and(|fuse| fuse & (1 << core) == 0))
+                .map(move |core| ccd * CORES_PER_CCD + core)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -248,7 +318,11 @@ mod tests {
             CoreTempLayout::for_version(0x0024_0903).unwrap().offset,
             163
         );
-        assert_eq!(CoreTempLayout::for_version(0x0040_0005), None);
+        assert_eq!(
+            CoreTempLayout::for_version(0x0040_0005).unwrap().offset,
+            216
+        );
+        assert_eq!(CoreTempLayout::for_version(0x0040_0004), None);
     }
 
     #[test]
@@ -256,10 +330,8 @@ mod tests {
         let mut table = vec![0.0; 300];
         table[201] = 45.0;
         table[216] = 52.0;
-        let temps = CoreTempLayout::for_version(0x0038_0804)
-            .unwrap()
-            .core_temps(&table)
-            .unwrap();
+        let layout = CoreTempLayout::for_version(0x0038_0804).unwrap();
+        let temps = layout.core_temps(&table, &layout.all_slots()).unwrap();
         assert_eq!(temps.len(), 16);
         assert_eq!(
             temps[0],
@@ -282,6 +354,54 @@ mod tests {
     #[test]
     fn a_short_table_has_no_core_temps() {
         let layout = CoreTempLayout::for_version(0x0038_0904).unwrap();
-        assert_eq!(layout.core_temps(&[0.0; 190]), None);
+        assert_eq!(layout.core_temps(&[0.0; 190], &layout.all_slots()), None);
+        assert_eq!(layout.core_temps(&[0.0; 300], &[8]), None);
+    }
+
+    #[test]
+    fn a_twelve_core_part_reads_six_cores_from_each_ccd() {
+        let ccd_fuse = 0b11 << 22;
+        let addresses = core_fuse_addresses(0x598, ccd_fuse, 2);
+        assert_eq!(addresses, [Some(0x3008_1D98), Some(0x3208_1D98)]);
+        let slots = fused_slots(&[Some(0b1100_0000), Some(0xFFFF_FF81)]);
+        assert_eq!(slots, [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14]);
+
+        let layout = CoreTempLayout::for_version(0x0038_0805).unwrap();
+        let mut table = vec![0.0; 300];
+        table[204 + 9] = 55.0;
+        let temps = layout.core_temps(&table, &slots).unwrap();
+        assert_eq!(temps.len(), 12);
+        assert_eq!(
+            temps[6],
+            CoreTemp {
+                core: 6,
+                ccd: 2,
+                celsius: 55.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_ccd_the_fuses_leave_out_has_no_cores() {
+        let addresses = core_fuse_addresses(0x238, 0b01 << 22, 2);
+        assert_eq!(addresses, [Some(0x3008_1A38), None]);
+        assert_eq!(fused_slots(&[Some(0), None]), (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cezanne_finds_fused_off_cores_from_all_zero_fields() {
+        let layout = CoreTempLayout::for_version(0x0040_0005).unwrap();
+        let CoreMap::IdleFields(fields) = layout.map else {
+            panic!("Cezanne reads its core map from the PM table");
+        };
+        let mut table = vec![0.0; 372];
+        for slot in [0, 1, 2, 3, 4, 7] {
+            table[232 + slot] = 1.5;
+        }
+        assert_eq!(
+            layout.active_slots(&table, fields),
+            Some(vec![0, 1, 2, 3, 4, 7])
+        );
+        assert_eq!(layout.active_slots(&table[..250], fields), None);
     }
 }

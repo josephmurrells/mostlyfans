@@ -154,6 +154,11 @@ impl AmdCpu {
         &self.info
     }
 
+    pub fn read_smn_word(&self, address: u32) -> Result<u32, HwError> {
+        let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
+        self.read_smn(address)
+    }
+
     fn read_smn(&self, address: u32) -> Result<u32, HwError> {
         let output = self
             .module
