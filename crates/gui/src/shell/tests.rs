@@ -17,6 +17,7 @@ use super::*;
 use crate::autostart::AutostartState;
 use crate::fixtures::{self, FakeLink};
 use crate::notices::Topic;
+use crate::overview::unnamed_fans;
 
 const SIZE: Vec2 = vec2(1080.0, 720.0);
 
@@ -437,6 +438,12 @@ fn render_screenshots() {
     settle(&mut harness);
     screenshot(&mut harness, &dir, "prompt-dark");
 
+    let link = FakeLink::new(fixtures::with_second_chip(fixtures::state()));
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::second_chip_fan(0));
+    let mut harness = harness_with(view, SIZE, Theme::Dark);
+    screenshot(&mut harness, &dir, "fans-second-chip-dark");
+
     let link = FakeLink::new(fixtures::state());
     link.0.borrow_mut().status = ControlStatus::Stopped("the control thread panicked".into());
     let mut harness = harness_with(shell(&link, Page::Overview), SIZE, Theme::Dark);
@@ -552,6 +559,80 @@ fn a_gpu_fan_shows_driver_control_without_header_settings() {
     assert!(
         harness
             .query_by_label_contains("minimum 30% (driver)")
+            .is_some()
+    );
+}
+
+#[test]
+fn second_chip_fans_are_grouped_and_only_monitored() {
+    let link = FakeLink::new(fixtures::with_second_chip(fixtures::state()));
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::second_chip_fan(1));
+    let mut harness = harness_with(view, SIZE, Theme::Dark);
+    assert!(
+        harness
+            .query_by_label("Motherboard (second chip)")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Motherboard").is_some());
+    assert!(
+        harness
+            .query_all_by_label_contains("Fan 2 (IT8792E)")
+            .next()
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("only controls the second fan chip on Gigabyte boards")
+            .count()
+            >= 2
+    );
+    let plain = harness_with(
+        shell(&FakeLink::new(fixtures::state()), Page::Fans),
+        SIZE,
+        Theme::Dark,
+    );
+    for text in ["not set up", "No fan connected"] {
+        assert_eq!(
+            harness.query_all_by_label_contains(text).count(),
+            plain.query_all_by_label_contains(text).count(),
+            "{text}"
+        );
+    }
+    let identify = widgets::with_icon(icons::IDENTIFY, "Identify");
+    assert!(harness.query_by_label(&identify).is_none());
+    assert!(harness.query_by_label("Calibrate").is_none());
+    assert!(harness.query_by_label("Header type").is_none());
+    assert!(harness.query_by_label("Fixed").is_none());
+    harness.run();
+    assert!(link.sent().is_empty());
+}
+
+#[test]
+fn second_chip_fans_are_never_offered_to_follow_or_to_set_up() {
+    let state = fixtures::with_second_chip(fixtures::state());
+    assert!(
+        unnamed_fans(&state, &state.config)
+            .iter()
+            .all(|fan| fan.header_channel().is_some_and(|(chip, _)| chip == 0))
+    );
+    let candidates = crate::fans::follow_candidates(&state.config, &state, &fixtures::fan(0));
+    assert!(!candidates.is_empty());
+    assert!(
+        candidates
+            .iter()
+            .all(|(fan, _)| fan.header_channel().is_some_and(|(chip, _)| chip == 0))
+    );
+}
+
+#[test]
+fn settings_lists_the_second_fan_controller() {
+    let link = FakeLink::new(fixtures::with_second_chip(fixtures::state()));
+    let harness = harness(&link, Page::Settings);
+    assert!(harness.query_by_label("Second fan controller").is_some());
+    assert!(
+        harness
+            .query_by_label("ITE IT8792E (0x8733) · 3 fan headers · monitor only")
             .is_some()
     );
 }

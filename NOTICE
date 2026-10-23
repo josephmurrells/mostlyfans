@@ -5,7 +5,8 @@ Licensed under the GNU General Public License v3.0 or later (see LICENSE).
 FanForge includes or is derived from the following third-party work.
 
 PawnIO modules (crates/hw/modules/LpcIO.bin, crates/hw/modules/AMDFamily17.bin,
-crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin)
+crates/hw/modules/IntelMSR.bin, crates/hw/modules/RyzenSMU.bin,
+crates/hw/modules/IsaBridgeEC.bin)
   Copyright (C) namazso
   https://github.com/namazso/PawnIO.Modules
   Licensed under the GNU Lesser General Public License v2.1; the license text

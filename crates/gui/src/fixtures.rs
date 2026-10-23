@@ -77,6 +77,7 @@ pub fn state() -> ControlState {
         },
         duty: duty.map(Duty::new),
         unavailable: None,
+        monitor_only: false,
     };
     let status = |index: usize, state: FanState, output: Option<f32>| FanStatus {
         id: fan(index),
@@ -95,8 +96,10 @@ pub fn state() -> ControlState {
             chip_id: 0x8655,
             chip_name: "ITE IT8655E".to_owned(),
             fan_control: true,
+            pwm_misconfigured: false,
             fan_headers: 3,
             likely_cpu_fan: Some(fan(0)),
+            chips: Vec::new(),
         }),
         readings: Readings {
             sensors: vec![
@@ -144,6 +147,7 @@ pub fn with_gpu(mut state: ControlState) -> ControlState {
             mode: HardwareMode::Manual,
             duty: duty.map(Duty::new),
             unavailable: None,
+            monitor_only: false,
         });
         state.fans.push(FanStatus {
             id: id.clone(),
@@ -165,6 +169,55 @@ pub fn with_gpu(mut state: ControlState) -> ControlState {
     let active = state.config.active_profile.clone();
     if let Some(profile) = state.config.profiles.get_mut(&active) {
         profile.fans.insert(gpu_fan(0), FanMode::Curve { curve });
+    }
+    state
+}
+
+pub fn second_chip_fan(index: usize) -> FanId {
+    FanId::for_chip_channel(1, index)
+}
+
+pub fn with_second_chip(mut state: ControlState) -> ControlState {
+    for index in 0..3 {
+        let id = second_chip_fan(index);
+        state.readings.fans.push(FanReading {
+            id: id.clone(),
+            label: format!("Fan {} (IT8792E)", index + 1),
+            rpm: Some(900 + 100 * index as u32),
+            mode: HardwareMode::Auto,
+            duty: None,
+            unavailable: None,
+            monitor_only: true,
+        });
+        state.fans.push(FanStatus {
+            id: id.clone(),
+            state: FanState::MonitorOnly,
+            target: None,
+            output: None,
+        });
+        state.limits.insert(id, FanLimits::default());
+    }
+    if let Some(board) = state.board.as_mut() {
+        board.chips = vec![
+            fanforge_core::board::ChipInfo {
+                chip_id: board.chip_id,
+                chip_name: board.chip_name.clone(),
+                fan_control: board.fan_control,
+                pwm_misconfigured: false,
+                fan_headers: board.fan_headers,
+                note: None,
+            },
+            fanforge_core::board::ChipInfo {
+                chip_id: 0x8733,
+                chip_name: "ITE IT8792E".to_owned(),
+                fan_control: false,
+                pwm_misconfigured: false,
+                fan_headers: 3,
+                note: Some(
+                    "FanForge only controls the second fan chip on Gigabyte boards".to_owned(),
+                ),
+            },
+        ];
     }
     state
 }

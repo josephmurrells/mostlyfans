@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::HwError;
 use crate::chips::{CHIPS, ChipMap, ChipSpec};
-use crate::mutex::{DEFAULT_TIMEOUT, NamedMutex};
+use std::sync::Arc;
+
+use crate::mutex::{BusLock, DEFAULT_TIMEOUT, NamedMutex};
 use crate::pinmux::Wiring;
 use crate::port::PortIo;
 use crate::{ec, ite, nuvoton};
@@ -200,7 +202,7 @@ pub(crate) fn chip_matching(matches: impl Fn(&ChipSpec) -> bool) -> Option<&'sta
 
 fn read_config<P: PortIo>(io: &mut P, slot: Slot, unlock: bool) -> Result<ChipConfig, HwError> {
     if slot == Slot::Primary {
-        match ite::read_config(io, true) {
+        match ite::read_config(io, Slot::Primary, true) {
             Err(HwError::ChipNotFound(_) | HwError::NotIte(_)) => {}
             result => return result,
         }
@@ -218,7 +220,7 @@ fn reread_config<P: PortIo>(
         found,
     };
     let config = match current.chip.map {
-        ChipMap::Ite(_) => ite::read_config(io, false),
+        ChipMap::Ite(_) => ite::read_config(io, current.slot, false),
         ChipMap::Nuvoton(_) | ChipMap::Ec(_) => nuvoton::read_config(io, current.slot, unlock),
     }
     .map_err(|error| match error {
@@ -251,6 +253,81 @@ pub fn detect<P: PortIo>(
     }
 }
 
+#[derive(Debug)]
+pub enum SecondProbe<P: PortIo> {
+    Found(SuperIo<P>),
+    NotLooked,
+    Nothing(u16),
+    Alias(&'static str),
+    Failed(HwError),
+}
+
+impl<P: PortIo> SecondProbe<P> {
+    pub fn chip(self) -> Option<SuperIo<P>> {
+        match self {
+            Self::Found(chip) => Some(chip),
+            _ => None,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Found(chip) => format!("{} on 0x4E", chip.chip().name),
+            Self::NotLooked => {
+                "not looked for (the first chip isn't an ITE chip on 0x2E)".to_owned()
+            }
+            Self::Nothing(0xFFFF | 0x0000) => "none on 0x4E".to_owned(),
+            Self::Nothing(0x8883) => {
+                "an IT8792E on 0x4E reports 0x8883 (it was entered twice), so it is left alone"
+                    .to_owned()
+            }
+            Self::Nothing(chip_id) => {
+                format!("chip id {chip_id:#06x} on 0x4E isn't a second fan chip FanForge knows")
+            }
+            Self::Alias(name) => format!(
+                "{name} on 0x4E answers at the first chip's address (the same chip twice), so it is ignored"
+            ),
+            Self::Failed(error) => format!("a chip on 0x4E could not be set up: {error}"),
+        }
+    }
+}
+
+pub fn detect_second<P: PortIo>(
+    primary: &SuperIo<P>,
+    open: impl FnOnce(Slot) -> Result<P, HwError>,
+    verify: bool,
+) -> SecondProbe<P> {
+    let config = primary.config;
+    if config.slot != Slot::Primary || !matches!(config.chip.map, ChipMap::Ite(_)) {
+        return SecondProbe::NotLooked;
+    }
+    let lock = primary.bus_lock();
+    let connected = open(Slot::Secondary).and_then(|io| {
+        if verify {
+            SuperIo::probe_second(io, lock)
+        } else {
+            SuperIo::attach_second(io, lock)
+        }
+    });
+    let probe = match connected {
+        Ok(chip) if chip.config.base_address == config.base_address => {
+            SecondProbe::Alias(chip.chip().name)
+        }
+        Ok(chip) => SecondProbe::Found(chip),
+        Err(HwError::ChipNotFound(chip_id)) => SecondProbe::Nothing(chip_id),
+        Err(error) => SecondProbe::Failed(error),
+    };
+    match &probe {
+        SecondProbe::Found(_) | SecondProbe::Alias(_) | SecondProbe::Failed(_) => {
+            tracing::info!(second = %probe.describe(), "second fan chip");
+        }
+        SecondProbe::NotLooked | SecondProbe::Nothing(_) => {
+            tracing::debug!(second = %probe.describe(), "second fan chip");
+        }
+    }
+    probe
+}
+
 pub(crate) trait Session {
     fn verify_vendor(&mut self) -> Result<(), HwError>;
     fn read(&mut self) -> Result<ChipReadings, HwError>;
@@ -265,12 +342,17 @@ pub(crate) trait Session {
     fn wiring(&mut self, pins: Wiring) -> Result<Wiring, HwError> {
         Ok(pins)
     }
+
+    fn restore_exact(&mut self, channel: usize, saved: ChannelState) -> Result<(), HwError> {
+        self.restore(channel, Some(saved))
+    }
 }
 
 #[derive(Debug)]
 pub struct SuperIo<P: PortIo> {
     pub(crate) io: P,
-    lock: NamedMutex,
+    lock: Arc<BusLock>,
+    abandonments_seen: u64,
     pub(crate) config: ChipConfig,
     unlock: bool,
     usable: bool,
@@ -279,16 +361,26 @@ pub struct SuperIo<P: PortIo> {
 
 impl<P: PortIo> SuperIo<P> {
     pub fn attach(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        Self::connect(io, slot, lock, false)
+        Self::connect(io, slot, BusLock::new(lock), false)
     }
 
-    fn connect(mut io: P, slot: Slot, lock: NamedMutex, unlock: bool) -> Result<Self, HwError> {
+    fn connect(io: P, slot: Slot, lock: Arc<BusLock>, unlock: bool) -> Result<Self, HwError> {
+        Self::connect_with(io, lock, unlock, |io| read_config(io, slot, unlock))
+    }
+
+    fn connect_with(
+        mut io: P,
+        lock: Arc<BusLock>,
+        unlock: bool,
+        read: impl FnOnce(&mut P) -> Result<ChipConfig, HwError>,
+    ) -> Result<Self, HwError> {
         let config = {
             let _guard = lock.acquire(DEFAULT_TIMEOUT)?;
-            read_config(&mut io, slot, unlock)?
+            read(&mut io)?
         };
         Ok(Self {
             io,
+            abandonments_seen: lock.abandonments(),
             lock,
             wiring: config.wiring,
             config,
@@ -298,7 +390,38 @@ impl<P: PortIo> SuperIo<P> {
     }
 
     pub fn probe(io: P, slot: Slot, lock: NamedMutex) -> Result<Self, HwError> {
-        let mut chip = Self::connect(io, slot, lock, true)?;
+        let mut chip = Self::connect(io, slot, BusLock::new(lock), true)?;
+        chip.check_session()?;
+        Ok(chip)
+    }
+
+    pub(crate) fn with_bus<T>(
+        &mut self,
+        action: impl FnOnce(&mut P) -> Result<T, HwError>,
+    ) -> Result<T, HwError> {
+        let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
+        action(&mut self.io)
+    }
+
+    pub fn smfi_active(&mut self) -> Result<bool, HwError> {
+        match &self.config.chip.map {
+            ChipMap::Ite(_) => ite::smfi_active(&mut self.io, &self.lock, &self.config),
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Ok(false),
+        }
+    }
+
+    pub fn bus_lock(&self) -> Arc<BusLock> {
+        Arc::clone(&self.lock)
+    }
+
+    pub fn attach_second(io: P, lock: Arc<BusLock>) -> Result<Self, HwError> {
+        Self::connect_with(io, lock, false, |io| {
+            ite::read_config(io, Slot::Secondary, true)
+        })
+    }
+
+    pub fn probe_second(io: P, lock: Arc<BusLock>) -> Result<Self, HwError> {
+        let mut chip = Self::attach_second(io, lock)?;
         chip.check_session()?;
         Ok(chip)
     }
@@ -351,6 +474,10 @@ impl<P: PortIo> SuperIo<P> {
         self.config.chip.fan_control && self.usable
     }
 
+    pub fn pwm_misconfigured(&self) -> bool {
+        self.config.chip.fan_control && !self.usable
+    }
+
     pub fn can_release(&self) -> bool {
         self.config.chip.fan_control
     }
@@ -359,8 +486,10 @@ impl<P: PortIo> SuperIo<P> {
         &mut self,
         action: impl FnOnce(&mut dyn Session) -> Result<T, HwError>,
     ) -> Result<T, HwError> {
-        let guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
-        let abandoned = guard.was_abandoned();
+        let _guard = self.lock.acquire(DEFAULT_TIMEOUT)?;
+        let abandonments = self.lock.abandonments();
+        let abandoned = abandonments != self.abandonments_seen;
+        self.abandonments_seen = abandonments;
         if abandoned {
             tracing::warn!(mutex = %self.lock.name(), "bus mutex was abandoned; reinitialising the chip");
             self.config = reread_config(&mut self.io, &self.config, self.unlock)?;
@@ -392,9 +521,29 @@ impl<P: PortIo> SuperIo<P> {
         saved: Option<ChannelState>,
         budget: Duration,
     ) -> Result<(), HwError> {
+        self.patiently(budget, |chip| chip.restore(channel, saved))
+    }
+
+    pub fn restore_exact_patiently(
+        &mut self,
+        channel: usize,
+        saved: ChannelState,
+        budget: Duration,
+    ) -> Result<(), HwError> {
+        self.check_channel(channel)?;
+        self.patiently(budget, |chip| {
+            chip.transaction(|session| session.restore_exact(channel, saved))
+        })
+    }
+
+    fn patiently(
+        &mut self,
+        budget: Duration,
+        mut attempt: impl FnMut(&mut Self) -> Result<(), HwError>,
+    ) -> Result<(), HwError> {
         let deadline = Instant::now() + budget;
         loop {
-            match self.restore(channel, saved) {
+            match attempt(self) {
                 Err(HwError::LockTimeout(_)) if Instant::now() < deadline => continue,
                 Err(HwError::VerifyFailed { .. } | HwError::ReadNotAcknowledged(_))
                     if Instant::now() < deadline =>
@@ -442,6 +591,13 @@ impl<P: PortIo> SuperIo<P> {
             return Ok(());
         }
         self.transaction(|session| session.restore(channel, saved))
+    }
+
+    pub fn check_pwm_configuration(&mut self) -> Result<bool, HwError> {
+        match &self.config.chip.map {
+            ChipMap::Ite(map) => ite::pwm_configured(&mut self.io, &self.lock, &self.config, map),
+            ChipMap::Nuvoton(_) | ChipMap::Ec(_) => Ok(true),
+        }
     }
 
     pub fn io_space_locked(&mut self) -> Result<bool, HwError> {
@@ -593,13 +749,14 @@ mod tests {
             (0x8721, "ITE IT8721F"),
             (0x8728, "ITE IT8728F"),
             (0x8772, "ITE IT8772E"),
+            (0x8733, "ITE IT8792E"),
+            (0x8695, "ITE IT87952E"),
+            (0x8790, "ITE IT8790E"),
         ];
         for (chip_id, name) in ite_rows {
             assert_eq!(ite(chip_id), Some(name), "{chip_id:#06x}");
         }
-        for chip_id in [
-            0x8613, 0x8705, 0x8712, 0x8771, 0x8733, 0x8695, 0x0000, 0xFFFF,
-        ] {
+        for chip_id in [0x8613, 0x8705, 0x8712, 0x8771, 0x8883, 0x0000, 0xFFFF] {
             assert_eq!(ite(chip_id), None, "{chip_id:#06x}");
         }
 
@@ -645,13 +802,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_nct6683d_is_monitor_only() {
+    fn only_the_nct6683d_and_the_second_ite_chips_are_monitor_only() {
         let monitor_only: Vec<&str> = CHIPS
             .iter()
             .filter(|chip| !chip.fan_control)
             .map(|chip| chip.name)
             .collect();
-        assert_eq!(monitor_only, ["Nuvoton NCT6683D"]);
+        assert_eq!(monitor_only, ["ITE IT8790E", "Nuvoton NCT6683D"]);
     }
 
     #[test]
