@@ -271,6 +271,8 @@ impl FansView {
         let connected = format::connected(reading);
         let subtitle = if let Some(reason) = &reading.unavailable {
             format!("Not available: {reason}")
+        } else if reading.monitor_only {
+            format::rpm(reading)
         } else if !connected {
             "No fan connected".to_owned()
         } else if reading.id.kind() == FanKind::Header
