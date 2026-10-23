@@ -438,6 +438,12 @@ fn render_screenshots() {
     settle(&mut harness);
     screenshot(&mut harness, &dir, "prompt-dark");
 
+    let link = FakeLink::new(fixtures::with_second_chip(fixtures::state()));
+    let mut view = shell(&link, Page::Fans);
+    view.fans.select(fixtures::second_chip_fan(0));
+    let mut harness = harness_with(view, SIZE, Theme::Dark);
+    screenshot(&mut harness, &dir, "fans-second-chip-dark");
+
     let link = FakeLink::new(fixtures::state());
     link.0.borrow_mut().status = ControlStatus::Stopped("the control thread panicked".into());
     let mut harness = harness_with(shell(&link, Page::Overview), SIZE, Theme::Dark);
@@ -581,6 +587,18 @@ fn second_chip_fans_are_grouped_and_only_monitored() {
             .count()
             >= 2
     );
+    let plain = harness_with(
+        shell(&FakeLink::new(fixtures::state()), Page::Fans),
+        SIZE,
+        Theme::Dark,
+    );
+    for text in ["not set up", "No fan connected"] {
+        assert_eq!(
+            harness.query_all_by_label_contains(text).count(),
+            plain.query_all_by_label_contains(text).count(),
+            "{text}"
+        );
+    }
     let identify = widgets::with_icon(icons::IDENTIFY, "Identify");
     assert!(harness.query_by_label(&identify).is_none());
     assert!(harness.query_by_label("Calibrate").is_none());
