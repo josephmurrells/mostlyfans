@@ -125,6 +125,7 @@ pub fn collect(
     let live = matches!(status, ControlStatus::Running);
     if let Some(state) = state.filter(|_| live) {
         let unverified = state.board.as_ref().filter(|board| !board.fan_control);
+        let misconfigured = unverified.filter(|board| board.pwm_misconfigured);
         if state.critical {
             let text = if crate::format::nothing_driven(state) {
                 "Critical temperature: the fans are under BIOS control"
@@ -179,7 +180,12 @@ pub fn collect(
                 "Monitor-only mode is on: all fans are left to the BIOS and the graphics driver.",
             )
             .action(Action::ResumeControl);
-            if let Some(board) = unverified {
+            if let Some(board) = misconfigured {
+                alert = alert.detail(format!(
+                    "The BIOS left the fan outputs of the {} misconfigured, so the motherboard fans stay with the BIOS after you resume.",
+                    board.chip_name
+                ));
+            } else if let Some(board) = unverified {
                 alert = alert.detail(format!(
                     "FanForge doesn't support fan control on the {}, so the motherboard fans stay with the BIOS after you resume.",
                     board.chip_name
@@ -191,6 +197,17 @@ pub fn collect(
                 ));
             }
             alerts.push(alert);
+        } else if let Some(board) = misconfigured.filter(|_| state.monitor_only) {
+            alerts.push(
+                Alert::new(
+                    Severity::MonitorOnly,
+                    format!(
+                        "Monitor-only mode: the BIOS left every fan output of the {} off with inverted polarity, which isn't safe to drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                        board.chip_name
+                    ),
+                )
+                .detail("Check the fan settings in the BIOS setup: turn fan control on or load the defaults, then restart the PC."),
+            );
         } else if state.monitor_only {
             let text = if let Some(board) = unverified {
                 format!(
@@ -495,5 +512,42 @@ mod tests {
         conflict.monitor_only = false;
         let alerts = collect(&ControlStatus::Running, Some(&conflict), &[], None);
         assert_eq!(alerts[0].text, "Critical temperature: every fan is at 100%");
+    }
+
+    #[test]
+    fn a_failed_pwm_check_points_at_the_bios_instead_of_the_chip() {
+        let mut state = fixtures::state();
+        state.monitor_only = true;
+        if let Some(board) = state.board.as_mut() {
+            board.chip_name = "ITE IT8628E".to_owned();
+            board.fan_control = false;
+            board.pwm_misconfigured = true;
+        }
+        let alerts = collect(&ControlStatus::Running, Some(&state), &[], None);
+        let alert = alerts
+            .iter()
+            .find(|alert| alert.severity == Severity::MonitorOnly)
+            .unwrap();
+        assert_eq!(
+            alert.text,
+            "Monitor-only mode: the BIOS left every fan output of the ITE IT8628E off with inverted polarity, which isn't safe to drive, so FanForge only reads temperatures and fan speeds and leaves the fans to the BIOS."
+        );
+        assert!(alert.detail.as_deref().unwrap().contains("BIOS setup"));
+        assert!(
+            !alerts
+                .iter()
+                .any(|alert| alert.text.contains("doesn't support"))
+        );
+
+        state.user_monitor_only = true;
+        let alerts = collect(&ControlStatus::Running, Some(&state), &[], None);
+        let detail = alerts
+            .iter()
+            .find(|alert| alert.severity == Severity::MonitorOnly)
+            .and_then(|alert| alert.detail.as_deref())
+            .unwrap();
+        assert!(
+            detail.starts_with("The BIOS left the fan outputs of the ITE IT8628E misconfigured")
+        );
     }
 }
