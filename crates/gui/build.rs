@@ -61,6 +61,48 @@ fn icon_file(path: &Path) {
     std::fs::write(path, bytes).expect("the icon could not be written");
 }
 
+fn package(key: &str) -> String {
+    std::env::var(format!("CARGO_PKG_{key}")).expect("cargo sets the package metadata")
+}
+
+fn version_info() -> String {
+    let numbers = ["MAJOR", "MINOR", "PATCH"]
+        .map(|part| package(&format!("VERSION_{part}")))
+        .join(",");
+    let version = package("VERSION");
+    format!(
+        r#"1 VERSIONINFO
+FILEVERSION {numbers},0
+PRODUCTVERSION {numbers},0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Joseph Murrells"
+      VALUE "FileDescription", "MostlyFans"
+      VALUE "FileVersion", "{version}"
+      VALUE "InternalName", "mostlyfans"
+      VALUE "LegalCopyright", "Copyright (C) 2026 Joseph Murrells. GPL-3.0-or-later."
+      VALUE "OriginalFilename", "mostlyfans.exe"
+      VALUE "ProductName", "MostlyFans"
+      VALUE "ProductVersion", "{version}"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#
+    )
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/glyph.rs");
@@ -81,9 +123,9 @@ fn main() {
     icon_file(&icon);
     let script = out.join("mostlyfans.rc");
     let escaped = icon.display().to_string().replace('\\', "\\\\");
-    std::fs::write(&script, format!("1 ICON \"{escaped}\"\n"))
+    std::fs::write(&script, format!("1 ICON \"{escaped}\"\n{}", version_info()))
         .expect("the resource script could not be written");
     embed_resource::compile(&script, embed_resource::NONE)
         .manifest_optional()
-        .expect("the icon resource could not be compiled");
+        .expect("the icon and version resources could not be compiled");
 }
