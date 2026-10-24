@@ -655,7 +655,7 @@ fn a_gpu_tool_is_named_in_its_own_alert() {
         state.gpus.monitor_only = true;
         state.gpus.conflicts = vec!["MSI Afterburner".to_owned()];
     });
-    let harness = harness(&link, Page::Overview);
+    let mut harness = harness(&link, Page::Overview);
     assert!(
         harness
             .query_by_label_contains(
@@ -666,6 +666,13 @@ fn a_gpu_tool_is_named_in_its_own_alert() {
     assert!(
         harness
             .query_by_label_contains("Monitor-only mode")
+            .is_none()
+    );
+    harness.get_by_label(icons::CLOSE).click();
+    settle(&mut harness);
+    assert!(
+        harness
+            .query_by_label_contains("MSI Afterburner is running")
             .is_none()
     );
 }

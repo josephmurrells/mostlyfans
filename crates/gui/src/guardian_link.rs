@@ -42,6 +42,7 @@ fn spawn_guardian(executable: &Path) -> io::Result<(Spawned, File)> {
 struct Inner {
     executable: PathBuf,
     _executable_lock: Option<File>,
+    autostarted: bool,
     supervising: AtomicBool,
     writer: Mutex<Option<File>>,
     stopping: AtomicBool,
@@ -93,10 +94,12 @@ impl Inner {
             if spawned.breakaway == Breakaway::Denied {
                 let in_job = mostlyfans_win::current_process_in_job();
                 tracing::warn!(?in_job, "guardian could not leave the app's job");
-                self.notices.set(
-                    Topic::GuardianJob,
-                    "The guardian shares the app's job, so closing that job ends both and fans keep their last speed.",
-                );
+                if !self.autostarted {
+                    self.notices.set(
+                        Topic::GuardianJob,
+                        "The guardian shares the app's job, so closing that job ends both and fans keep their last speed.",
+                    );
+                }
             } else {
                 self.notices.clear(Topic::GuardianJob);
             }
@@ -126,7 +129,7 @@ pub struct GuardianLink {
 }
 
 impl GuardianLink {
-    pub fn start(executable: PathBuf, notices: Notices) -> Self {
+    pub fn start(executable: PathBuf, autostarted: bool, notices: Notices) -> Self {
         let executable_lock = mostlyfans_win::lock_against_replacement(&executable)
             .map_err(
                 |error| tracing::warn!(%error, "could not lock the executable against replacement"),
@@ -135,6 +138,7 @@ impl GuardianLink {
         let inner = Arc::new(Inner {
             executable,
             _executable_lock: executable_lock,
+            autostarted,
             supervising: AtomicBool::new(false),
             writer: Mutex::new(None),
             stopping: AtomicBool::new(false),
