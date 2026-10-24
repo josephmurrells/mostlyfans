@@ -90,13 +90,18 @@ impl Alert {
         self
     }
 
+    pub fn topic(mut self, topic: Topic) -> Self {
+        self.topic = Some(topic);
+        self
+    }
+
     pub fn busy(mut self) -> Self {
         self.busy = true;
         self
     }
 
     pub fn dismissable(&self) -> bool {
-        !self.severity.is_safety() && self.topic.is_some_and(Topic::dismissable)
+        self.topic.is_some_and(Topic::dismissable)
     }
 }
 
@@ -209,38 +214,55 @@ pub fn collect(
                 .detail("Check the fan settings in the BIOS setup: switch the fan headers to PWM or Smart Fan mode, or update the BIOS, then restart the PC."),
             );
         } else if state.monitor_only {
-            let text = if let Some(board) = unverified {
-                format!(
-                    "Monitor-only mode: MostlyFans doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
-                    board.chip_name
+            let alert = if let Some(board) = unverified {
+                Alert::new(
+                    Severity::MonitorOnly,
+                    format!(
+                        "Monitor-only mode: MostlyFans doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
+                        board.chip_name
+                    ),
                 )
             } else if state.conflicts.is_empty() {
-                "Monitor-only mode: the fans are left to the BIOS.".to_owned()
+                Alert::new(
+                    Severity::MonitorOnly,
+                    "Monitor-only mode: the fans are left to the BIOS.",
+                )
             } else if state.gpus.fans.is_empty() {
-                format!(
-                    "Monitor-only mode: {} is running, so the fans are left to the BIOS.",
-                    state.conflicts.join(", ")
+                Alert::new(
+                    Severity::MonitorOnly,
+                    format!(
+                        "Monitor-only mode: {} is running, so the fans are left to the BIOS.",
+                        state.conflicts.join(", ")
+                    ),
                 )
+                .topic(Topic::Conflict)
             } else {
-                format!(
-                    "Monitor-only mode: {} is running, so the fans are left to the BIOS and the graphics driver.",
-                    state.conflicts.join(", ")
+                Alert::new(
+                    Severity::MonitorOnly,
+                    format!(
+                        "Monitor-only mode: {} is running, so the fans are left to the BIOS and the graphics driver.",
+                        state.conflicts.join(", ")
+                    ),
                 )
+                .topic(Topic::Conflict)
             };
-            alerts.push(Alert::new(Severity::MonitorOnly, text));
+            alerts.push(alert);
         }
         if !state.user_monitor_only
             && state.gpus.monitor_only
             && !state.gpus.conflicts.is_empty()
             && !state.gpus.fans.is_empty()
         {
-            alerts.push(Alert::new(
-                Severity::MonitorOnly,
-                format!(
-                    "{} is running, so MostlyFans isn't controlling the graphics card fans. Your other fans are still controlled.",
-                    state.gpus.conflicts.join(", ")
-                ),
-            ));
+            alerts.push(
+                Alert::new(
+                    Severity::MonitorOnly,
+                    format!(
+                        "{} is running, so MostlyFans isn't controlling the graphics card fans. Your other fans are still controlled.",
+                        state.gpus.conflicts.join(", ")
+                    ),
+                )
+                .topic(Topic::GpuConflict),
+            );
         }
         for status in &state.fans {
             let FanState::Faulted(reason) = &status.state else {
@@ -292,7 +314,9 @@ pub struct AlertArea {
 }
 
 impl AlertArea {
-    fn visible(&self, alerts: Vec<Alert>) -> Vec<Alert> {
+    fn visible(&mut self, alerts: Vec<Alert>) -> Vec<Alert> {
+        self.dismissed
+            .retain(|topic, _| alerts.iter().any(|alert| alert.topic == Some(*topic)));
         alerts
             .into_iter()
             .filter(|alert| {
@@ -481,6 +505,32 @@ mod tests {
         };
         assert!(area.visible(notice("old text")).is_empty());
         assert_eq!(area.visible(notice("new text")).len(), 1);
+    }
+
+    #[test]
+    fn conflict_alerts_can_be_dismissed_until_the_conflict_returns() {
+        let mut state = fixtures::state();
+        state.monitor_only = true;
+        state.conflicts = vec!["FanControl".to_owned()];
+        state.gpus.monitor_only = true;
+        state.gpus.conflicts = vec!["MSI Afterburner".to_owned()];
+        state.gpus.fans = fixtures::with_gpu(fixtures::state()).gpus.fans;
+        let alerts = collect(&ControlStatus::Running, Some(&state), &[], None);
+        let topics: Vec<Topic> = alerts
+            .iter()
+            .filter(|alert| alert.dismissable())
+            .filter_map(|alert| alert.topic)
+            .collect();
+        assert_eq!(topics, vec![Topic::Conflict, Topic::GpuConflict]);
+
+        let mut area = AlertArea::default();
+        for alert in &alerts {
+            area.dismissed
+                .insert(alert.topic.unwrap(), alert.text.clone());
+        }
+        assert!(area.visible(alerts.clone()).is_empty());
+        area.visible(Vec::new());
+        assert_eq!(area.visible(alerts).len(), 2);
     }
 
     #[test]
