@@ -503,8 +503,10 @@ impl Shell {
         let driver_missing =
             state.is_some_and(|state| state.hardware == HardwareStatus::DriverMissing);
         let driver = self.pawnio.alert(driver_missing);
-        let alerts = alerts::collect(status, state, &self.notices.list(), driver);
-        match self.alerts.show(ui, alerts) {
+        let notices = self.notices.list();
+        let ongoing = alerts::ongoing(status, state, &notices);
+        let alerts = alerts::collect(status, state, &notices, driver);
+        match self.alerts.show(ui, alerts, &ongoing) {
             Some(Action::RestartControl) => {
                 if let Err(error) = self.link.restart() {
                     self.toasts

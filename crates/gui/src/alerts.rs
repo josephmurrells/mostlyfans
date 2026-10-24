@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{self, Margin, RichText, Stroke};
 use mostlyfans_core::engine::FanState;
@@ -307,6 +307,26 @@ pub fn collect(
     alerts
 }
 
+pub fn ongoing(
+    status: &ControlStatus,
+    state: Option<&ControlState>,
+    notices: &[(Topic, String)],
+) -> BTreeSet<Topic> {
+    let mut topics: BTreeSet<Topic> = notices.iter().map(|(topic, _)| *topic).collect();
+    match state.filter(|_| matches!(status, ControlStatus::Running)) {
+        Some(state) => {
+            if !state.conflicts.is_empty() {
+                topics.insert(Topic::Conflict);
+            }
+            if !state.gpus.conflicts.is_empty() {
+                topics.insert(Topic::GpuConflict);
+            }
+        }
+        None => topics.extend([Topic::Conflict, Topic::GpuConflict]),
+    }
+    topics
+}
+
 #[derive(Default)]
 pub struct AlertArea {
     expanded: bool,
@@ -314,9 +334,8 @@ pub struct AlertArea {
 }
 
 impl AlertArea {
-    fn visible(&mut self, alerts: Vec<Alert>) -> Vec<Alert> {
-        self.dismissed
-            .retain(|topic, _| alerts.iter().any(|alert| alert.topic == Some(*topic)));
+    fn visible(&mut self, alerts: Vec<Alert>, ongoing: &BTreeSet<Topic>) -> Vec<Alert> {
+        self.dismissed.retain(|topic, _| ongoing.contains(topic));
         alerts
             .into_iter()
             .filter(|alert| {
@@ -329,8 +348,13 @@ impl AlertArea {
             .collect()
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, alerts: Vec<Alert>) -> Option<Action> {
-        let alerts = self.visible(alerts);
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        alerts: Vec<Alert>,
+        ongoing: &BTreeSet<Topic>,
+    ) -> Option<Action> {
+        let alerts = self.visible(alerts, ongoing);
         if alerts.is_empty() {
             return None;
         }
@@ -495,6 +519,7 @@ mod tests {
         let mut area = AlertArea::default();
         area.dismissed
             .insert(Topic::Autostart, "old text".to_owned());
+        let ongoing = BTreeSet::from([Topic::Autostart]);
         let notice = |text: &str| {
             collect(
                 &ControlStatus::Running,
@@ -503,34 +528,52 @@ mod tests {
                 None,
             )
         };
-        assert!(area.visible(notice("old text")).is_empty());
-        assert_eq!(area.visible(notice("new text")).len(), 1);
+        assert!(area.visible(notice("old text"), &ongoing).is_empty());
+        assert_eq!(area.visible(notice("new text"), &ongoing).len(), 1);
     }
 
     #[test]
-    fn conflict_alerts_can_be_dismissed_until_the_conflict_returns() {
-        let mut state = fixtures::state();
+    fn conflict_alerts_stay_dismissed_until_the_tool_closes() {
+        let mut state = fixtures::with_gpu(fixtures::state());
         state.monitor_only = true;
         state.conflicts = vec!["FanControl".to_owned()];
         state.gpus.monitor_only = true;
         state.gpus.conflicts = vec!["MSI Afterburner".to_owned()];
-        state.gpus.fans = fixtures::with_gpu(fixtures::state()).gpus.fans;
-        let alerts = collect(&ControlStatus::Running, Some(&state), &[], None);
-        let topics: Vec<Topic> = alerts
-            .iter()
-            .filter(|alert| alert.dismissable())
-            .filter_map(|alert| alert.topic)
-            .collect();
-        assert_eq!(topics, vec![Topic::Conflict, Topic::GpuConflict]);
+        let frame = |area: &mut AlertArea, status: &ControlStatus, state: &ControlState| {
+            area.visible(
+                collect(status, Some(state), &[], None),
+                &ongoing(status, Some(state), &[]),
+            )
+        };
 
         let mut area = AlertArea::default();
-        for alert in &alerts {
-            area.dismissed
-                .insert(alert.topic.unwrap(), alert.text.clone());
+        let shown = frame(&mut area, &ControlStatus::Running, &state);
+        let dismissable: Vec<&Alert> = shown.iter().filter(|alert| alert.dismissable()).collect();
+        assert_eq!(
+            dismissable
+                .iter()
+                .filter_map(|alert| alert.topic)
+                .collect::<Vec<_>>(),
+            vec![Topic::Conflict, Topic::GpuConflict]
+        );
+        for alert in dismissable {
+            if let Some(topic) = alert.topic {
+                area.dismissed.insert(topic, alert.text.clone());
+            }
         }
-        assert!(area.visible(alerts.clone()).is_empty());
-        area.visible(Vec::new());
-        assert_eq!(area.visible(alerts).len(), 2);
+        assert!(frame(&mut area, &ControlStatus::Running, &state).is_empty());
+
+        frame(&mut area, &ControlStatus::Stopped("panic".into()), &state);
+        state.user_monitor_only = true;
+        frame(&mut area, &ControlStatus::Running, &state);
+        state.user_monitor_only = false;
+        assert!(frame(&mut area, &ControlStatus::Running, &state).is_empty());
+
+        let mut closed = state.clone();
+        closed.conflicts.clear();
+        closed.gpus.conflicts.clear();
+        frame(&mut area, &ControlStatus::Running, &closed);
+        assert_eq!(frame(&mut area, &ControlStatus::Running, &state).len(), 2);
     }
 
     #[test]
