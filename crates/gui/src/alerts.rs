@@ -37,6 +37,22 @@ impl Severity {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Key {
+    Notice(Topic),
+    Conflict,
+    GpuConflict,
+}
+
+impl Key {
+    fn dismissable(self) -> bool {
+        match self {
+            Self::Notice(topic) => topic.dismissable(),
+            Self::Conflict | Self::GpuConflict => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     RestartControl,
@@ -65,7 +81,7 @@ pub struct Alert {
     pub detail: Option<String>,
     pub action: Option<Action>,
     pub busy: bool,
-    pub topic: Option<Topic>,
+    pub key: Option<Key>,
 }
 
 impl Alert {
@@ -76,7 +92,7 @@ impl Alert {
             detail: None,
             action: None,
             busy: false,
-            topic: None,
+            key: None,
         }
     }
 
@@ -90,8 +106,8 @@ impl Alert {
         self
     }
 
-    pub fn topic(mut self, topic: Topic) -> Self {
-        self.topic = Some(topic);
+    pub fn key(mut self, key: Key) -> Self {
+        self.key = Some(key);
         self
     }
 
@@ -101,7 +117,8 @@ impl Alert {
     }
 
     pub fn dismissable(&self) -> bool {
-        self.topic.is_some_and(Topic::dismissable)
+        matches!(self.severity, Severity::Notice | Severity::MonitorOnly)
+            && self.key.is_some_and(Key::dismissable)
     }
 }
 
@@ -214,38 +231,38 @@ pub fn collect(
                 .detail("Check the fan settings in the BIOS setup: switch the fan headers to PWM or Smart Fan mode, or update the BIOS, then restart the PC."),
             );
         } else if state.monitor_only {
-            let alert = if let Some(board) = unverified {
-                Alert::new(
-                    Severity::MonitorOnly,
+            let (text, key) = if let Some(board) = unverified {
+                (
                     format!(
                         "Monitor-only mode: MostlyFans doesn't support fan control on the {}, so it only reads temperatures and fan speeds and leaves the fans to the BIOS.",
                         board.chip_name
                     ),
+                    None,
                 )
             } else if state.conflicts.is_empty() {
-                Alert::new(
-                    Severity::MonitorOnly,
-                    "Monitor-only mode: the fans are left to the BIOS.",
+                (
+                    "Monitor-only mode: the fans are left to the BIOS.".to_owned(),
+                    None,
                 )
             } else if state.gpus.fans.is_empty() {
-                Alert::new(
-                    Severity::MonitorOnly,
+                (
                     format!(
                         "Monitor-only mode: {} is running, so the fans are left to the BIOS.",
                         state.conflicts.join(", ")
                     ),
+                    Some(Key::Conflict),
                 )
-                .topic(Topic::Conflict)
             } else {
-                Alert::new(
-                    Severity::MonitorOnly,
+                (
                     format!(
                         "Monitor-only mode: {} is running, so the fans are left to the BIOS and the graphics driver.",
                         state.conflicts.join(", ")
                     ),
+                    Some(Key::Conflict),
                 )
-                .topic(Topic::Conflict)
             };
+            let mut alert = Alert::new(Severity::MonitorOnly, text);
+            alert.key = key;
             alerts.push(alert);
         }
         if !state.user_monitor_only
@@ -261,7 +278,7 @@ pub fn collect(
                         state.gpus.conflicts.join(", ")
                     ),
                 )
-                .topic(Topic::GpuConflict),
+                .key(Key::GpuConflict),
             );
         }
         for status in &state.fans {
@@ -296,10 +313,9 @@ pub fn collect(
         } else {
             Severity::Warning
         };
-        let mut alert = Alert::new(severity, text.clone());
-        alert.topic = Some(*topic);
+        let mut alert = Alert::new(severity, text.clone()).key(Key::Notice(*topic));
         if *topic == Topic::Autostart {
-            alert.action = Some(Action::RepairAutostart);
+            alert = alert.action(Action::RepairAutostart);
         }
         alerts.push(alert);
     }
@@ -311,38 +327,41 @@ pub fn ongoing(
     status: &ControlStatus,
     state: Option<&ControlState>,
     notices: &[(Topic, String)],
-) -> BTreeSet<Topic> {
-    let mut topics: BTreeSet<Topic> = notices.iter().map(|(topic, _)| *topic).collect();
+) -> BTreeSet<Key> {
+    let mut keys: BTreeSet<Key> = notices
+        .iter()
+        .map(|(topic, _)| Key::Notice(*topic))
+        .collect();
     match state.filter(|_| matches!(status, ControlStatus::Running)) {
         Some(state) => {
             if !state.conflicts.is_empty() {
-                topics.insert(Topic::Conflict);
+                keys.insert(Key::Conflict);
             }
             if !state.gpus.conflicts.is_empty() {
-                topics.insert(Topic::GpuConflict);
+                keys.insert(Key::GpuConflict);
             }
         }
-        None => topics.extend([Topic::Conflict, Topic::GpuConflict]),
+        None => keys.extend([Key::Conflict, Key::GpuConflict]),
     }
-    topics
+    keys
 }
 
 #[derive(Default)]
 pub struct AlertArea {
     expanded: bool,
-    dismissed: BTreeMap<Topic, String>,
+    dismissed: BTreeMap<Key, String>,
 }
 
 impl AlertArea {
-    fn visible(&mut self, alerts: Vec<Alert>, ongoing: &BTreeSet<Topic>) -> Vec<Alert> {
-        self.dismissed.retain(|topic, _| ongoing.contains(topic));
+    fn visible(&mut self, alerts: Vec<Alert>, ongoing: &BTreeSet<Key>) -> Vec<Alert> {
+        self.dismissed.retain(|key, _| ongoing.contains(key));
         alerts
             .into_iter()
             .filter(|alert| {
                 !(alert.dismissable()
                     && alert
-                        .topic
-                        .and_then(|topic| self.dismissed.get(&topic))
+                        .key
+                        .and_then(|key| self.dismissed.get(&key))
                         .is_some_and(|text| text == &alert.text))
             })
             .collect()
@@ -352,7 +371,7 @@ impl AlertArea {
         &mut self,
         ui: &mut egui::Ui,
         alerts: Vec<Alert>,
-        ongoing: &BTreeSet<Topic>,
+        ongoing: &BTreeSet<Key>,
     ) -> Option<Action> {
         let alerts = self.visible(alerts, ongoing);
         if alerts.is_empty() {
@@ -422,13 +441,13 @@ impl AlertArea {
                     },
                     |ui| {
                         if alert.dismissable()
-                            && let Some(topic) = alert.topic
+                            && let Some(key) = alert.key
                             && ui
                                 .small_button(icons::CLOSE)
                                 .on_hover_text("Dismiss")
                                 .clicked()
                         {
-                            self.dismissed.insert(topic, alert.text.clone());
+                            self.dismissed.insert(key, alert.text.clone());
                         }
                         if alert.busy {
                             ui.spinner();
@@ -471,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn safety_alerts_can_never_be_dismissed() {
+    fn only_notices_and_tool_conflicts_can_be_dismissed() {
         let mut state = fixtures::state();
         state.critical = true;
         state.monitor_only = true;
@@ -498,6 +517,45 @@ mod tests {
                 .find(|alert| alert.text == "guardian down")
                 .is_some_and(|alert| alert.severity.is_safety())
         );
+
+        let mut critical = Alert::new(Severity::Critical, "hot").key(Key::Conflict);
+        assert!(!critical.dismissable());
+        critical.severity = Severity::MonitorOnly;
+        assert!(critical.dismissable());
+    }
+
+    #[test]
+    fn monitor_only_alerts_without_a_tool_keep_no_close_button() {
+        let dismissable = |state: &ControlState| {
+            collect(&ControlStatus::Running, Some(state), &[], None)
+                .iter()
+                .any(Alert::dismissable)
+        };
+
+        let mut plain = fixtures::state();
+        plain.monitor_only = true;
+        assert!(!dismissable(&plain));
+
+        let mut unsupported = plain.clone();
+        unsupported.conflicts = vec!["FanControl".to_owned()];
+        if let Some(board) = unsupported.board.as_mut() {
+            board.fan_control = false;
+        }
+        assert!(!dismissable(&unsupported));
+
+        let mut misconfigured = unsupported.clone();
+        if let Some(board) = misconfigured.board.as_mut() {
+            board.pwm_misconfigured = true;
+        }
+        assert!(!dismissable(&misconfigured));
+
+        let mut chosen = plain.clone();
+        chosen.conflicts = vec!["FanControl".to_owned()];
+        chosen.user_monitor_only = true;
+        assert!(!dismissable(&chosen));
+
+        chosen.user_monitor_only = false;
+        assert!(dismissable(&chosen));
     }
 
     #[test]
@@ -518,8 +576,8 @@ mod tests {
     fn a_dismissed_notice_returns_when_its_text_changes() {
         let mut area = AlertArea::default();
         area.dismissed
-            .insert(Topic::Autostart, "old text".to_owned());
-        let ongoing = BTreeSet::from([Topic::Autostart]);
+            .insert(Key::Notice(Topic::Autostart), "old text".to_owned());
+        let ongoing = BTreeSet::from([Key::Notice(Topic::Autostart)]);
         let notice = |text: &str| {
             collect(
                 &ControlStatus::Running,
@@ -552,13 +610,13 @@ mod tests {
         assert_eq!(
             dismissable
                 .iter()
-                .filter_map(|alert| alert.topic)
+                .filter_map(|alert| alert.key)
                 .collect::<Vec<_>>(),
-            vec![Topic::Conflict, Topic::GpuConflict]
+            vec![Key::Conflict, Key::GpuConflict]
         );
         for alert in dismissable {
-            if let Some(topic) = alert.topic {
-                area.dismissed.insert(topic, alert.text.clone());
+            if let Some(key) = alert.key {
+                area.dismissed.insert(key, alert.text.clone());
             }
         }
         assert!(frame(&mut area, &ControlStatus::Running, &state).is_empty());

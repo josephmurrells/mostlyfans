@@ -26,6 +26,7 @@ pub struct MostlyFansApp {
     tray: Option<Tray>,
     shell: Shell,
     window: LastGoodWindow,
+    start_hidden: bool,
 }
 
 fn tint(overall: &Overall) -> [u8; 3] {
@@ -83,11 +84,17 @@ impl MostlyFansApp {
                 prefs,
             ),
             window: LastGoodWindow::default(),
+            start_hidden: false,
         }
     }
 
     pub fn with_window(mut self, window: LastGoodWindow) -> Self {
         self.window = window;
+        self
+    }
+
+    pub fn start_hidden(mut self, hidden: bool) -> Self {
+        self.start_hidden = hidden;
         self
     }
 
@@ -145,6 +152,9 @@ impl Drop for MostlyFansApp {
 impl eframe::App for MostlyFansApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(VISIBLE_REFRESH);
+        if std::mem::take(&mut self.start_hidden) && self.tray.is_some() {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        }
         self.shell.logic();
         self.handle_tray(ctx);
 

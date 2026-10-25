@@ -93,7 +93,11 @@ impl Inner {
             self.notices.clear(Topic::Guardian);
             if spawned.breakaway == Breakaway::Denied {
                 let in_job = mostlyfans_win::current_process_in_job();
-                tracing::warn!(?in_job, "guardian could not leave the app's job");
+                tracing::warn!(
+                    ?in_job,
+                    autostarted = self.autostarted,
+                    "guardian could not leave the app's job"
+                );
                 if !self.autostarted {
                     self.notices.set(
                         Topic::GuardianJob,

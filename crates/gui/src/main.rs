@@ -153,7 +153,8 @@ fn run_app(minimized: bool) -> ExitCode {
     };
     let notices = Notices::default();
     let autostart = check_autostart(&notices);
-    let guardian = GuardianLink::start(executable, minimized, notices.clone());
+    let started_by_task = minimized;
+    let guardian = GuardianLink::start(executable, started_by_task, notices.clone());
     let snapshot = paths::bios_snapshot_path();
     let shared = Arc::new(Shared::default());
     let sink = guardian.sink();
@@ -261,7 +262,8 @@ fn run_app(minimized: bool) -> ExitCode {
                     on_driver_installed,
                     prefs,
                 )
-                .with_window(window),
+                .with_window(window)
+                .start_hidden(minimized),
             ))
         }),
     );

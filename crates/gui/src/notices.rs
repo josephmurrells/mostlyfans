@@ -6,8 +6,6 @@ pub enum Topic {
     Guardian,
     GuardianJob,
     Autostart,
-    Conflict,
-    GpuConflict,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,7 +36,7 @@ impl Notices {
 
 impl Topic {
     pub fn dismissable(self) -> bool {
-        matches!(self, Self::Autostart | Self::Conflict | Self::GpuConflict)
+        matches!(self, Self::Autostart)
     }
 }
 
@@ -64,10 +62,8 @@ mod tests {
     }
 
     #[test]
-    fn only_autostart_and_conflict_alerts_can_be_dismissed() {
+    fn only_the_autostart_notice_can_be_dismissed() {
         assert!(Topic::Autostart.dismissable());
-        assert!(Topic::Conflict.dismissable());
-        assert!(Topic::GpuConflict.dismissable());
         assert!(!Topic::Guardian.dismissable());
         assert!(!Topic::GuardianJob.dismissable());
     }
