@@ -4,11 +4,16 @@ use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::System::LibraryLoader::{
-    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW, SetDefaultDllDirectories,
 };
 use windows::core::{HSTRING, PCSTR};
 
 use crate::shell::system_dir;
+
+pub fn restrict_dll_search() -> io::Result<()> {
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) }?;
+    Ok(())
+}
 
 pub type RawSymbol = unsafe extern "system" fn() -> isize;
 
@@ -52,6 +57,12 @@ impl Drop for SystemLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_libraries_still_load_once_the_search_is_restricted() {
+        restrict_dll_search().unwrap();
+        assert!(SystemLibrary::load("user32.dll").is_ok());
+    }
 
     #[test]
     fn loads_system_libraries_and_resolves_symbols() {

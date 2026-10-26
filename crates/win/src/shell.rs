@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use windows::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{
+    FOLDERID_ProgramFiles, FOLDERID_Windows, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+};
 use windows::core::{GUID, PCWSTR};
 
 pub(crate) fn known_folder(id: &GUID) -> io::Result<PathBuf> {
@@ -38,6 +40,10 @@ pub fn system_dir() -> io::Result<PathBuf> {
 
 pub fn program_files_dir() -> io::Result<PathBuf> {
     known_folder(&FOLDERID_ProgramFiles)
+}
+
+pub fn windows_dir() -> io::Result<PathBuf> {
+    known_folder(&FOLDERID_Windows)
 }
 
 fn wide_path(path: &Path) -> Vec<u16> {

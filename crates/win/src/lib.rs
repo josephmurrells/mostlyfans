@@ -21,7 +21,7 @@ pub mod topology;
 pub use dialog::{DialogKind, message_box};
 pub use directory::{PRIVATE_DATA_SDDL, secure_directory};
 pub use handle::{borrow_handle, own_handle};
-pub use library::{RawSymbol, SystemLibrary};
+pub use library::{RawSymbol, SystemLibrary, restrict_dll_search};
 pub use pipe::{AnonymousPipe, nonblocking_writer};
 pub use power::{PowerEvent, PowerSubscription, subscribe_power, unbiased_time};
 pub use process::{
@@ -32,7 +32,7 @@ pub use process::{
 pub use registry::read_local_machine_string;
 pub use security::SecurityAttributes;
 pub use session::{SessionEvent, spawn_session_window};
-pub use shell::{delete_at_reboot, program_files_dir, system_dir};
+pub use shell::{delete_at_reboot, program_files_dir, system_dir, windows_dir};
 pub use sync::{ADMIN_ONLY_SDDL, Event, InstanceMutex};
 pub use token::{current_user_sid, is_elevated};
 pub use windows::Win32::System::Threading::{

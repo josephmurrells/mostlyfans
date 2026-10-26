@@ -15,7 +15,7 @@ use mostlyfans_core::telemetry::{FanReading, HardwareMode};
 use mostlyfans_core::{Duty, FanId};
 
 use super::ownership::{self, Loaded, Ownership};
-use super::{DriverOpener, FOREIGN, FanDriver, GpuDesc, locate, writes};
+use super::{DriverOpener, FOREIGN, FanDriver, GpuDesc, WriteLock, locate};
 
 pub const NOT_RESPONDING: &str = "GPU driver not responding";
 const POLL: Duration = Duration::from_secs(1);
@@ -89,6 +89,7 @@ impl GpuFans {
         let worker = Worker {
             inner: Arc::clone(&inner),
             opener,
+            writes: WriteLock::for_ownership(&path),
             path,
             halt,
             driver: None,
@@ -223,6 +224,7 @@ struct Worker {
     owned: Ownership,
     lost: bool,
     written: BTreeMap<FanId, u32>,
+    writes: WriteLock,
 }
 
 impl Worker {
@@ -308,7 +310,8 @@ impl Worker {
     }
 
     fn release_leftovers(&mut self) {
-        let _writes = writes();
+        let writes = self.writes.clone();
+        let _writes = writes.hold();
         let Some(driver) = &self.driver else {
             return;
         };
@@ -373,7 +376,8 @@ impl Worker {
                 if !self.owned.fans.contains(fan) {
                     return;
                 }
-                let _writes = writes();
+                let writes = self.writes.clone();
+                let _writes = writes.hold();
                 match self.call(|driver| driver.restore(&gpu, index)) {
                     Ok(()) => {
                         self.written.remove(fan);
@@ -394,7 +398,8 @@ impl Worker {
     }
 
     fn set(&mut self, fan: &FanId, gpu: &GpuDesc, index: u32, duty: Duty) {
-        let _writes = writes();
+        let writes = self.writes.clone();
+        let _writes = writes.hold();
         if self.halt.load(Ordering::SeqCst) {
             return;
         }
@@ -435,7 +440,8 @@ impl Worker {
         if self.owned.fans.is_empty() {
             return Ok(());
         }
-        let _writes = writes();
+        let writes = self.writes.clone();
+        let _writes = writes.hold();
         let Some(driver) = &self.driver else {
             return Err("the GPU driver is unavailable".to_owned());
         };
@@ -680,6 +686,21 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         rig.gpus.release(Duration::from_secs(2)).unwrap();
         assert_eq!(rig.writes(), vec![Write::Speed(0, 60), Write::Restore(0)]);
+    }
+
+    #[test]
+    fn a_hung_driver_never_delays_writes_for_another_ownership_file() {
+        let hung = rig();
+        hung.set(0, 60.0);
+        wait_until(|| hung.fake.fan(0).manual);
+        hung.fake.hold();
+        assert!(hung.gpus.release(Duration::from_millis(50)).is_err());
+
+        let other = rig();
+        other.set(0, 60.0);
+        wait_until(|| other.fake.fan(0).manual);
+        assert_eq!(other.gpus.release(Duration::from_secs(2)), Ok(()));
+        hung.fake.unhold();
     }
 
     #[test]

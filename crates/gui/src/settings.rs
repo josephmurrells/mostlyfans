@@ -621,7 +621,11 @@ fn about(ui: &mut egui::Ui, state: &ControlState) {
     if ui
         .button(widgets::with_icon(icons::FOLDER, "Open log folder"))
         .clicked()
-        && let Err(error) = Command::new("explorer.exe").arg(paths::log_dir()).spawn()
+        && let Err(error) = mostlyfans_win::windows_dir().and_then(|windows| {
+            Command::new(windows.join("explorer.exe"))
+                .arg(paths::log_dir())
+                .spawn()
+        })
     {
         tracing::warn!(%error, "could not open the log folder");
     }

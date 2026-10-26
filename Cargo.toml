@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
@@ -16,7 +16,16 @@ mostlyfans-hw = { path = "crates/hw" }
 mostlyfans-control = { path = "crates/control" }
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
-eframe = { version = "0.37", features = ["persistence"] }
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "links",
+    "persistence",
+    "system_fonts",
+    "wgpu_no_default_features",
+] }
 egui_kittest = "0.37"
 nvml-wrapper = "0.13"
 ron = "0.12"
@@ -31,6 +40,12 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tray-icon = "0.26"
 windows-service = "0.8"
+wgpu = { version = "30", default-features = false, features = [
+    "dx12",
+    "parking_lot",
+    "std",
+    "wgsl",
+] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

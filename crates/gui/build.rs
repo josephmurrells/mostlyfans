@@ -115,6 +115,7 @@ fn main() {
     } else {
         ExecutionLevel::AsInvoker
     };
+    println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
     embed_manifest(new_manifest("MostlyFans").requested_execution_level(level))
         .expect("the application manifest could not be embedded");
 

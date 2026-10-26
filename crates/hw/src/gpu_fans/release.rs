@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::ownership::{self, Loaded};
-use super::{DriverOpener, FanDriver, NOT_RESPONDING, writes};
+use super::{DriverOpener, FanDriver, NOT_RESPONDING, WriteLock};
 
 type Session = Option<Box<dyn FanDriver>>;
 
@@ -15,6 +15,7 @@ pub struct GpuReleaser {
     opener: DriverOpener,
     path: PathBuf,
     spare: Arc<Mutex<Session>>,
+    writes: WriteLock,
 }
 
 impl GpuReleaser {
@@ -24,6 +25,7 @@ impl GpuReleaser {
             .ok();
         Self {
             opener,
+            writes: WriteLock::for_ownership(&path),
             path,
             spare: Arc::new(Mutex::new(driver)),
         }
@@ -39,7 +41,7 @@ impl GpuReleaser {
         thread::Builder::new()
             .name("gpu-release".into())
             .spawn(move || {
-                let _writes = writes();
+                let _writes = releaser.writes.hold();
                 let result = match releaser.spare.try_lock() {
                     Ok(mut session) => releaser.release_with(&mut session),
                     Err(TryLockError::Poisoned(poisoned)) => {

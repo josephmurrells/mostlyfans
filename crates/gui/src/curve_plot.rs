@@ -1,6 +1,6 @@
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect, Sense,
-    Shape, Stroke, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect,
+    Sense, Shape, Stroke, Vec2, pos2, vec2,
 };
 use mostlyfans_core::curve::{CurveDef, CurveKind, CurvePoint, sorted_points};
 
@@ -292,8 +292,9 @@ pub fn show(
             tag(
                 &painter,
                 palette,
-                center + vec2(10.0, -10.0),
-                Align2::LEFT_BOTTOM,
+                mapping.area,
+                center,
+                vec2(10.0, -10.0),
                 &format!("{:.0} °C → {:.0}%", point.temp, point.duty),
                 palette.text,
             );
@@ -353,15 +354,14 @@ pub fn thumbnail(ui: &mut egui::Ui, curve: &CurveDef, size: Vec2) {
 fn tag(
     painter: &egui::Painter,
     palette: &Palette,
-    anchor: Pos2,
-    align: Align2,
+    bounds: Rect,
+    point: Pos2,
+    offset: Vec2,
     text: &str,
     color: Color32,
 ) {
     let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(CAPTION), color);
-    let rect = align
-        .anchor_size(anchor, galley.size())
-        .expand2(vec2(6.0, 3.0));
+    let rect = tag_rect(bounds, point, offset, galley.size());
     painter.rect(
         rect,
         CornerRadius::same(4),
@@ -370,6 +370,22 @@ fn tag(
         egui::StrokeKind::Inside,
     );
     painter.galley(rect.min + vec2(6.0, 3.0), galley, color);
+}
+
+fn tag_rect(bounds: Rect, point: Pos2, offset: Vec2, size: Vec2) -> Rect {
+    let place = |offset: Vec2| {
+        let side = |away: f32| if away < 0.0 { Align::Max } else { Align::Min };
+        Align2([side(offset.x), side(offset.y)])
+            .anchor_size(point + offset, size)
+            .expand2(vec2(6.0, 3.0))
+    };
+    let preferred = place(offset);
+    let flip_x = preferred.left() < bounds.left() || preferred.right() > bounds.right();
+    let flip_y = preferred.top() < bounds.top() || preferred.bottom() > bounds.bottom();
+    place(vec2(
+        if flip_x { -offset.x } else { offset.x },
+        if flip_y { -offset.y } else { offset.y },
+    ))
 }
 
 fn draw_grid(painter: &egui::Painter, mapping: &Mapping, palette: &Palette, compact: bool) {
@@ -501,16 +517,17 @@ fn draw_live(painter: &egui::Painter, mapping: &Mapping, palette: &Palette, live
     };
     let center = mapping.to_screen(temp, duty);
     painter.circle(center, 5.0, palette.warn, Stroke::new(2.0, palette.surface));
-    let (align, offset) = if temp > MAX_TEMP * 0.7 {
-        (Align2::RIGHT_BOTTOM, vec2(-10.0, -8.0))
+    let offset = if temp > MAX_TEMP * 0.7 {
+        vec2(-10.0, -8.0)
     } else {
-        (Align2::LEFT_BOTTOM, vec2(10.0, -8.0))
+        vec2(10.0, -8.0)
     };
     tag(
         painter,
         palette,
-        center + offset,
-        align,
+        mapping.area,
+        center,
+        offset,
         &format!("{temp:.0} °C → {duty:.0}%"),
         palette.warn,
     );
@@ -623,6 +640,22 @@ mod tests {
             CurvePoint::new(60.0, 50.0),
             CurvePoint::new(85.0, 100.0),
         ]
+    }
+
+    #[test]
+    fn a_tag_flips_to_stay_inside_the_plot() {
+        let bounds = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let size = vec2(80.0, 14.0);
+        let offset = vec2(10.0, -10.0);
+        let middle = tag_rect(bounds, pos2(200.0, 150.0), offset, size);
+        assert!(middle.left() > 200.0 && middle.bottom() < 150.0);
+        let top = tag_rect(bounds, pos2(200.0, 0.0), offset, size);
+        assert!(top.left() > 200.0 && top.top() > 0.0);
+        let corner = tag_rect(bounds, pos2(400.0, 0.0), offset, size);
+        assert!(corner.right() < 400.0 && corner.top() > 0.0);
+        for rect in [middle, top, corner] {
+            assert!(bounds.contains_rect(rect));
+        }
     }
 
     #[test]

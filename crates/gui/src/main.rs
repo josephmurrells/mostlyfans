@@ -33,13 +33,17 @@ mod tray;
 mod widgets;
 mod window_geometry;
 
+use std::cell::RefCell;
 use std::env;
+use std::path::Path;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui;
+use eframe::egui_wgpu::WgpuSetup;
 use mostlyfans_control::conflicts::ConflictMonitor;
 use mostlyfans_control::controller::Controller;
 use mostlyfans_control::legacy::{self, Removal};
@@ -53,8 +57,9 @@ use mostlyfans_win::paths;
 use mostlyfans_win::{DialogKind, message_box};
 
 use crate::autostart::AutostartState;
+use crate::connection::ControlLink;
 use crate::guardian_link::GuardianLink;
-use crate::instance::Claim;
+use crate::instance::{Claim, ShowGate};
 use crate::notices::{Notices, Topic};
 use crate::prefs::Prefs;
 use crate::window_geometry::LastGoodWindow;
@@ -70,6 +75,14 @@ struct Cli {
     guardian: guardian::GuardianArgs,
     #[arg(long, help = "Start hidden in the system tray")]
     minimized: bool,
+}
+
+struct Startup {
+    link: Box<dyn ControlLink>,
+    notices: Notices,
+    show_gate: ShowGate,
+    autostart: AutostartState,
+    on_driver_installed: pawnio_setup::OnInstalled,
 }
 
 fn fail(text: &str) -> ExitCode {
@@ -225,48 +238,21 @@ fn run_app(minimized: bool) -> ExitCode {
 
     let window_state = paths::data_dir().join("window.ron");
     window_geometry::repair(&window_state);
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(TITLE)
-            .with_app_id("MostlyFans")
-            .with_icon(Arc::new(egui::IconData {
-                rgba: glyph::fan_rgba(WINDOW_ICON_SIZE, glyph::BLUE),
-                width: WINDOW_ICON_SIZE,
-                height: WINDOW_ICON_SIZE,
-            }))
-            .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size(window_geometry::MIN_SIZE)
-            .with_visible(!minimized),
-        persistence_path: Some(window_state),
-        ..Default::default()
-    };
-    let show_gate = instance.show_gate();
-    let result = eframe::run_native(
-        TITLE,
-        options,
-        Box::new(move |creation| {
-            let ctx = &creation.egui_ctx;
-            theme::install(ctx);
-            let prefs = Prefs::load(creation.storage);
-            let window = LastGoodWindow::load(creation.storage);
-            if let Err(error) = show_gate.forward_to(ctx) {
-                tracing::warn!(%error, "a second launch cannot bring this window forward");
-            }
-            Ok(Box::new(
-                app::MostlyFansApp::new(
-                    ctx,
-                    Box::new(controller),
-                    notices,
-                    show_gate,
-                    autostart,
-                    on_driver_installed,
-                    prefs,
-                )
-                .with_window(window)
-                .start_hidden(minimized),
-            ))
-        }),
-    );
+    let startup = Rc::new(RefCell::new(Some(Startup {
+        link: Box::new(controller),
+        notices,
+        show_gate: instance.show_gate(),
+        autostart,
+        on_driver_installed,
+    })));
+    let mut result = open_window(eframe::Renderer::Glow, &window_state, minimized, &startup);
+    if let Err(error) = &result
+        && startup.borrow().is_some()
+    {
+        tracing::warn!(%error, "OpenGL is unavailable; drawing with Direct3D 12 instead");
+        result = open_window(eframe::Renderer::Wgpu, &window_state, minimized, &startup);
+    }
+    drop(startup);
     drop(instance);
     let code = match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -279,7 +265,85 @@ fn run_app(minimized: bool) -> ExitCode {
     code
 }
 
+fn native_options(
+    renderer: eframe::Renderer,
+    window_state: &Path,
+    minimized: bool,
+) -> eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(TITLE)
+            .with_app_id("MostlyFans")
+            .with_icon(Arc::new(egui::IconData {
+                rgba: glyph::fan_rgba(WINDOW_ICON_SIZE, glyph::BLUE),
+                width: WINDOW_ICON_SIZE,
+                height: WINDOW_ICON_SIZE,
+            }))
+            .with_inner_size([1080.0, 720.0])
+            .with_min_inner_size(window_geometry::MIN_SIZE)
+            .with_visible(!minimized),
+        persistence_path: Some(window_state.to_path_buf()),
+        renderer,
+        ..Default::default()
+    };
+    if let WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends = wgpu::Backends::DX12;
+    }
+    options
+}
+
+fn open_window(
+    renderer: eframe::Renderer,
+    window_state: &Path,
+    minimized: bool,
+    startup: &Rc<RefCell<Option<Startup>>>,
+) -> eframe::Result {
+    let startup = Rc::clone(startup);
+    eframe::run_native(
+        TITLE,
+        native_options(renderer, window_state, minimized),
+        Box::new(move |creation| {
+            let Startup {
+                link,
+                notices,
+                show_gate,
+                autostart,
+                on_driver_installed,
+            } = startup
+                .borrow_mut()
+                .take()
+                .ok_or("the window was already set up")?;
+            tracing::info!(%renderer, "window ready");
+            let ctx = &creation.egui_ctx;
+            theme::install(ctx);
+            let prefs = Prefs::load(creation.storage);
+            let window = LastGoodWindow::load(creation.storage);
+            if let Err(error) = show_gate.forward_to(ctx) {
+                tracing::warn!(%error, "a second launch cannot bring this window forward");
+            }
+            Ok(Box::new(
+                app::MostlyFansApp::new(
+                    ctx,
+                    link,
+                    notices,
+                    show_gate,
+                    autostart,
+                    on_driver_installed,
+                    prefs,
+                )
+                .with_window(window)
+                .start_hidden(minimized),
+            ))
+        }),
+    )
+}
+
 fn main() -> ExitCode {
+    if let Err(error) = mostlyfans_win::restrict_dll_search() {
+        return fail(&format!(
+            "MostlyFans could not limit where Windows loads DLLs from: {error}"
+        ));
+    }
     let cli = Cli::parse();
     if cli.guardian.guardian {
         return guardian::main(&cli.guardian);

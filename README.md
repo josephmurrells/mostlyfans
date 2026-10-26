@@ -30,7 +30,7 @@ A few terms used below: a **fan header** is a fan socket on the motherboard; **d
 
 Optionally, click **Calibrate** on a fan to find the speed where it stops and starts, so its minimum speed is set from real measurements.
 
-Closing the window keeps MostlyFans running in the tray. To stop it, choose **Quit MostlyFans** from the tray menu, and your fans go straight back to BIOS control. To start MostlyFans automatically, turn on **Start with Windows** in Settings: it starts hidden in the tray at sign-in, with no administrator prompt.
+Closing the window keeps MostlyFans running in the tray; double-click the tray icon to open it again. To stop it, choose **Quit MostlyFans** from the tray menu, and your fans go straight back to BIOS control. To start MostlyFans automatically, turn on **Start with Windows** in Settings: it starts hidden in the tray at sign-in, with no administrator prompt.
 
 ## Pages
 

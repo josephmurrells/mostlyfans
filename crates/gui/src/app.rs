@@ -119,7 +119,6 @@ impl MostlyFansApp {
         }
         for action in actions {
             match action {
-                TrayAction::Show => reveal(ctx),
                 TrayAction::SelectProfile(name) => {
                     if self.shell.request_profile(name) {
                         reveal(ctx);

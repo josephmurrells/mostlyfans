@@ -5,6 +5,8 @@ pub mod ownership;
 mod release;
 mod worker;
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use mostlyfans_core::FanId;
@@ -16,10 +18,20 @@ pub const FOREIGN: &str = "controlled by another program";
 
 const BRANDS: [&str; 4] = ["NVIDIA", "GeForce", "AMD", "Radeon"];
 
-static WRITES: Mutex<()> = Mutex::new(());
+static WRITE_LOCKS: Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
 
-fn writes() -> MutexGuard<'static, ()> {
-    WRITES.lock().unwrap_or_else(PoisonError::into_inner)
+#[derive(Clone, Debug)]
+struct WriteLock(Arc<Mutex<()>>);
+
+impl WriteLock {
+    fn for_ownership(path: &Path) -> Self {
+        let mut locks = WRITE_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        Self(Arc::clone(locks.entry(path.to_path_buf()).or_default()))
+    }
+
+    fn hold(&self) -> MutexGuard<'_, ()> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,6 +90,15 @@ pub fn locate<'a>(gpus: &'a [GpuDesc], fan: &FanId) -> Option<(&'a GpuDesc, u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_locks_are_shared_per_ownership_file() {
+        let first = WriteLock::for_ownership(Path::new("first/gpu_owned.toml"));
+        let again = WriteLock::for_ownership(Path::new("first/gpu_owned.toml"));
+        let second = WriteLock::for_ownership(Path::new("second/gpu_owned.toml"));
+        assert!(Arc::ptr_eq(&first.0, &again.0));
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+    }
 
     #[test]
     fn brand_prefixes_are_dropped_from_gpu_names() {

@@ -9,11 +9,10 @@ use tray_icon::{Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use crate::glyph;
 
 const ICON_SIZE: u32 = 32;
-const PROFILE_OFFSET: usize = 3;
+const PROFILE_OFFSET: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
-    Show,
     SelectProfile(String),
     MonitorOnly(bool),
 }
@@ -23,7 +22,6 @@ pub struct Tray {
     menu: Menu,
     status: MenuItem,
     tint: [u8; 3],
-    show_id: MenuId,
     monitor_only: CheckMenuItem,
     profiles: Vec<(MenuId, CheckMenuItem, String)>,
     profile_names: Vec<String>,
@@ -36,13 +34,10 @@ impl Tray {
     pub fn new(ctx: &egui::Context) -> Result<Self, Box<dyn std::error::Error>> {
         let menu = Menu::new();
         let status = MenuItem::new("Starting…", false, None);
-        let show = MenuItem::new("Open MostlyFans", true, None);
         let monitor_only = CheckMenuItem::new("Monitor only", true, false, None);
         let exit = MenuItem::new("Quit MostlyFans", true, None);
         menu.append_items(&[
             &status,
-            &PredefinedMenuItem::separator(),
-            &show,
             &PredefinedMenuItem::separator(),
             &monitor_only,
             &PredefinedMenuItem::separator(),
@@ -51,8 +46,6 @@ impl Tray {
 
         let (menu_tx, events) = mpsc::channel();
         let menu_ctx = ctx.clone();
-        let show_id = show.id().clone();
-        let show_for_handler = show_id.clone();
         let exit_id = exit.id().clone();
         let exit_requested = Arc::new(AtomicBool::new(false));
         let exit_flag = Arc::clone(&exit_requested);
@@ -60,8 +53,6 @@ impl Tray {
             if event.id == exit_id {
                 exit_flag.store(true, Ordering::SeqCst);
                 menu_ctx.send_viewport_cmd(ViewportCommand::Close);
-            } else if event.id == show_for_handler {
-                reveal(&menu_ctx);
             }
             menu_tx.send(event).ok();
             menu_ctx.request_repaint();
@@ -88,7 +79,6 @@ impl Tray {
             menu,
             status,
             tint: glyph::BLUE,
-            show_id,
             monitor_only,
             profiles: Vec::new(),
             profile_names: Vec::new(),
@@ -105,9 +95,7 @@ impl Tray {
     pub fn actions(&self) -> Vec<TrayAction> {
         let mut actions = Vec::new();
         while let Ok(event) = self.events.try_recv() {
-            if event.id == self.show_id {
-                actions.push(TrayAction::Show);
-            } else if event.id == *self.monitor_only.id() {
+            if event.id == *self.monitor_only.id() {
                 actions.push(TrayAction::MonitorOnly(self.monitor_only.is_checked()));
             } else if let Some((_, _, name)) =
                 self.profiles.iter().find(|(id, _, _)| *id == event.id)
