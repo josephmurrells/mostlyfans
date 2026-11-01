@@ -2526,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-control"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "mostlyfans-core",
  "mostlyfans-hw",
@@ -2539,7 +2539,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-diag"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-gui"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clap",
  "eframe",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-hw"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "mostlyfans-core",
  "mostlyfans-win",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "mostlyfans-win"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "tempfile",
  "windows",

@@ -34,7 +34,7 @@ cargo test -p mostlyfans-gui render_screenshots -- --ignored
 ## Code style
 
 - Idiomatic Rust, formatted with `rustfmt`, with no clippy warnings.
-- No code comments. Names and small functions carry the meaning. The one exception is the MPL-2.0 license header in the files derived from LibreHardwareMonitor.
+- No code comments. Names and small functions carry the meaning. There are two exceptions: the MPL-2.0 license header in the files derived from LibreHardwareMonitor, and a `// SAFETY:` comment on each `unsafe` block explaining why it's sound.
 - Safety is never relaxed: minimum duties, the 0 RPM gate, bank 0 for normal ITE access, and handing every fan back to the BIOS or driver on every exit path. A change that touches these needs a clear explanation in the pull request.
 - New chip support is based on public sources (datasheets, the Linux hwmon drivers, LibreHardwareMonitor). Where the sources disagree or leave a gap, the chip or header stays monitor-only with a warning. Describe your sources in the pull request and credit them in [NOTICE](NOTICE).
 
